@@ -4,7 +4,7 @@
   "description": "Snapi CLI",
   "type": "module",
   "bin": {
-    "snapi": "./dist/index.js"
+    "snapi": "./dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -25,11 +25,16 @@
   ],
   "license": "MIT",
   "devDependencies": {
-    "@types/node": "^22.0.0",
-    "prettier": "^3.8.1",
-    "typescript": "^5.7.0"
+    "@types/node": "24.10.9",
+    "prettier": "3.8.1",
+    "typescript": "5.9.3"
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "@microsoft/api-extractor": "7.55.2",
+    "commander": "14.0.2",
+    "zod": "4.3.6"
   }
 }

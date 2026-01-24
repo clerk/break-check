@@ -1,35 +1,28 @@
-#!/usr/bin/env node
+/**
+ * @clerk/snapi - API breaking changes detection for TypeScript packages
+ */
 
-const args = process.argv.slice(2);
+// Types
+export {
+  ChangeType,
+  ChangeSeverity,
+  type ChangeCategory,
+  type ApiChange,
+  type PackageAnalysis,
+  type AnalysisResult,
+  type ApiSnapshot,
+  type PackageInfo,
+} from "./types.js";
 
-function main() {
-  const command = args[0];
-
-  if (!command || command === "--help" || command === "-h") {
-    console.log(`
-snapi - Snapi CLI
-
-Usage:
-  snapi <command> [options]
-
-Commands:
-  help    Show this help message
-  version Show version
-
-Options:
-  -h, --help     Show help
-  -v, --version  Show version
-`);
-    return;
-  }
-
-  if (command === "--version" || command === "-v" || command === "version") {
-    console.log("0.0.1");
-    return;
-  }
-
-  console.log(`Unknown command: ${command}`);
-  process.exit(1);
-}
-
-main();
+// Config
+export {
+  CONFIG_FILE_NAME,
+  ConfigSchema,
+  type SnapiConfig,
+  createDefaultConfig,
+  findConfigFile,
+  loadConfig,
+  writeConfig,
+  getConfigDir,
+  resolvePackagePaths,
+} from "./config.js";
