@@ -33,3 +33,6 @@ export {
   type ApiExtractorRunnerOptions,
   readPackageInfo,
 } from "./utils/api-extractor.js";
+
+// Analyzers
+export { ApiDiffAnalyzer } from "./analyzers/api-diff.js";
