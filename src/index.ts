@@ -26,3 +26,10 @@ export {
   getConfigDir,
   resolvePackagePaths,
 } from "./config.js";
+
+// Utils
+export {
+  ApiExtractorRunner,
+  type ApiExtractorRunnerOptions,
+  readPackageInfo,
+} from "./utils/api-extractor.js";
