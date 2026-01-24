@@ -37,3 +37,9 @@ export {
 // Analyzers
 export { ApiDiffAnalyzer } from "./analyzers/api-diff.js";
 export { VersionAnalyzer } from "./analyzers/version.js";
+
+// Reporters
+export {
+  MarkdownReporter,
+  type MarkdownReporterOptions,
+} from "./reporters/markdown.js";
