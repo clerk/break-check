@@ -25,3 +25,12 @@ pnpm-debug.log*
 
 # Test coverage
 coverage/
+
+# Snapi output
+.api-snapshots/
+.api-snapshots-baseline/
+report.json
+report.md
+
+# Local config (contains machine-specific paths)
+snapi.config.json
