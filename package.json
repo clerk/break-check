@@ -16,6 +16,7 @@
     "clean": "rm -rf dist",
     "dev": "tsc --watch",
     "format": "prettier --write .",
+    "prepare": "npm run build",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit"
   },
