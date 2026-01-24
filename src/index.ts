@@ -34,6 +34,12 @@ export {
   readPackageInfo,
 } from "./utils/api-extractor.js";
 
+// Core
+export {
+  BreakingChangesDetector,
+  type DetectorOptions,
+} from "./core/detector.js";
+
 // Analyzers
 export { ApiDiffAnalyzer } from "./analyzers/api-diff.js";
 export { VersionAnalyzer } from "./analyzers/version.js";
