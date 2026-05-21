@@ -25,7 +25,7 @@
     "clean": "rm -rf dist",
     "dev": "tsc --watch",
     "format": "prettier --write .",
-    "prepack": "pnpm build",
+    "prepare": "pnpm build",
     "start": "node dist/index.js",
     "test": "pnpm build && node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit"

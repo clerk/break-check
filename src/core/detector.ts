@@ -236,15 +236,7 @@ export class BreakingChangesDetector {
       // Get previous version from baseline package.json if available
       previousVersion = baselineSnapshot.version;
       if (previousVersion === "unknown") {
-        // Try to extract from the api.json metadata
-        try {
-          JSON.parse(fs.readFileSync(baselineSnapshot.apiJsonPath, "utf-8"));
-          // API Extractor stores package name but not version directly
-          // We'll use the current version minus assumed patch for comparison
-          previousVersion = this.inferPreviousVersion(packageInfo.version);
-        } catch {
-          previousVersion = "0.0.0";
-        }
+        previousVersion = this.inferPreviousVersion(packageInfo.version);
       }
 
       changes = this.diffAnalyzer.analyze(
