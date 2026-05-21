@@ -1,45 +1,67 @@
 # @clerk/snapi
 
-CLI tool to detect API breaking changes in TypeScript packages.
+CLI tool for detecting TypeScript API changes in packages that publish
+declaration files.
+
+snapi uses Microsoft API Extractor to snapshot public `.d.ts` surfaces, then
+compares a current snapshot against a baseline snapshot. It is designed for PR
+checks where a package should fail CI when a breaking API change is not matched
+by the expected version bump.
+
+## Requirements
+
+- Node.js 20 or newer
+- Packages must be built before snapshotting so their declaration files exist
+- Each configured package must expose a declaration entrypoint through
+  `types`, `typings`, root `exports["."].types`, `main` plus matching `.d.ts`,
+  `dist/index.d.ts`, or root `index.d.ts`
 
 ## Installation
 
 ```bash
-# npm
 npm install -D @clerk/snapi
-
-# pnpm
 pnpm add -D @clerk/snapi
-
-# yarn
 yarn add -D @clerk/snapi
 ```
 
 ## Quick Start
 
-1. Initialize configuration:
-   ```bash
-   npx snapi init
-   ```
+Create a config:
 
-2. Edit `snapi.config.json` to add your packages:
-   ```json
-   {
-     "packages": ["packages/my-lib", "packages/my-other-lib"],
-     "snapshotDir": ".api-snapshots",
-     "mainBranch": "main"
-   }
-   ```
+```bash
+npx snapi init
+```
 
-3. Generate baseline snapshot (from main branch):
-   ```bash
-   npx snapi snapshot
-   ```
+Edit `snapi.config.json`:
 
-4. Make changes, then detect breaking changes:
-   ```bash
-   npx snapi detect --baseline .api-snapshots-baseline
-   ```
+```json
+{
+  "packages": ["packages/my-lib", "packages/my-other-lib"],
+  "snapshotDir": ".api-snapshots",
+  "mainBranch": "main",
+  "checkVersionBump": true,
+  "outputFormat": "markdown"
+}
+```
+
+Generate a baseline from your main branch:
+
+```bash
+git switch main
+pnpm build
+npx snapi snapshot --output .api-snapshots-baseline
+```
+
+Compare the current branch against that baseline:
+
+```bash
+git switch -
+pnpm build
+npx snapi detect --baseline .api-snapshots-baseline --fail-on-breaking
+```
+
+Relative package, snapshot, and baseline paths are resolved from the directory
+that contains `snapi.config.json`.
 
 ## CLI Commands
 
@@ -68,9 +90,11 @@ Options:
   -v, --verbose        Show verbose output
 ```
 
+`snapshot` exits non-zero when a configured package cannot be analyzed.
+
 ### `snapi detect`
 
-Detect breaking changes between baseline and current snapshots.
+Detect API changes between baseline and current snapshots.
 
 ```bash
 snapi detect [options]
@@ -79,20 +103,23 @@ Options:
   -c, --config <path>     Config file path (default: "snapi.config.json")
   -b, --baseline <path>   Baseline snapshots directory (required)
   -o, --output <path>     Output report path
-  --format <format>       Output format: markdown|json (default: "markdown")
+  --format <format>       Output format: markdown|json
   --fail-on-breaking      Exit with code 1 if breaking changes found
   -v, --verbose           Show verbose output
 ```
 
+When `--format json` writes to stdout, progress and summary logs are written to
+stderr so stdout remains parseable JSON.
+
 ## Configuration
 
-| Option | Type | Default | Description |
-|--------|------|---------|-------------|
-| `packages` | string[] | required | Package paths to analyze |
-| `snapshotDir` | string | `.api-snapshots` | Snapshot output directory |
-| `mainBranch` | string | `main` | Base branch for comparison |
-| `checkVersionBump` | boolean | `true` | Validate version bumps match changes |
-| `outputFormat` | string | `markdown` | Report format |
+| Option             | Type     | Default          | Description                                  |
+| ------------------ | -------- | ---------------- | -------------------------------------------- |
+| `packages`         | string[] | required         | Package paths to analyze                     |
+| `snapshotDir`      | string   | `.api-snapshots` | Snapshot output directory                    |
+| `mainBranch`       | string   | `main`           | Base branch name for repo-specific workflows |
+| `checkVersionBump` | boolean  | `true`           | Mark insufficient version bumps in reports   |
+| `outputFormat`     | string   | `markdown`       | Default report format                        |
 
 ## GitHub Actions Integration
 
@@ -102,7 +129,11 @@ name: API Breaking Changes
 on:
   pull_request:
     paths:
-      - 'packages/**'
+      - "packages/**"
+
+permissions:
+  contents: read
+  pull-requests: write
 
 jobs:
   check-api:
@@ -112,34 +143,35 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          cache: 'pnpm'
+          node-version: "24"
+          cache: "pnpm"
 
-      - run: pnpm install
+      - run: pnpm install --frozen-lockfile
 
-      # Build packages (required for .d.ts files)
-      - run: pnpm build
-
-      # Generate baseline from main branch
       - name: Generate baseline
         run: |
-          git stash --include-untracked
-          git checkout origin/main
+          git switch --detach origin/main
           pnpm install --frozen-lockfile
           pnpm build
-          pnpm snapi snapshot --output .baseline
-          git checkout -
-          git stash pop || true
+          pnpm snapi snapshot --output .api-snapshots-baseline
 
-      # Generate current and compare
-      - name: Detect changes
-        run: pnpm snapi detect --baseline .baseline --output report.md --fail-on-breaking
+      - name: Restore PR checkout
+        run: |
+          git switch --detach "$GITHUB_SHA"
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Detect API changes
+        id: detect
+        run: pnpm snapi detect --baseline .api-snapshots-baseline --output report.md --fail-on-breaking
         continue-on-error: true
 
-      # Post PR comment
       - name: Comment on PR
         uses: actions/github-script@v7
         with:
@@ -158,34 +190,64 @@ jobs:
               c.body.includes('API Changes Report')
             );
 
-            const body = report;
-
             if (botComment) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 comment_id: botComment.id,
-                body,
+                body: report,
               });
             } else {
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body,
+                body: report,
               });
             }
+
+      - name: Fail on breaking changes
+        if: steps.detect.outcome == 'failure'
+        run: exit 1
 ```
+
+For larger monorepos, generate baseline snapshots on `main` and upload them as
+artifacts. PR checks can then download the latest baseline artifact instead of
+checking out and rebuilding `main`.
 
 ## Change Detection
 
-snapi detects the following types of changes:
+snapi currently detects:
 
-| Type | Severity | Examples |
-|------|----------|----------|
-| **Breaking** | Major | Removed exports, removed required parameters, narrowed types |
-| **Non-breaking** | Minor | Added optional parameters, widened types |
-| **Addition** | Minor | New exports, new optional members |
+| Type         | Severity | Examples                                                     |
+| ------------ | -------- | ------------------------------------------------------------ |
+| Breaking     | Major    | Removed exports, removed required members, signature changes |
+| Non-breaking | Minor    | Required members becoming optional                           |
+| Addition     | Minor    | New exports, new members                                     |
+
+The analyzer is conservative for signature modifications. It is useful as a CI
+guardrail, but type-level widening and narrowing should be expanded before this
+is treated as a complete semver oracle.
+
+## Troubleshooting
+
+### No TypeScript declarations found
+
+Build the package first and confirm `package.json` points to a real `.d.ts`
+entrypoint.
+
+### Baseline directory not found
+
+Generate the baseline first, or pass an absolute path to `--baseline`.
+Relative baseline paths are resolved from the config directory.
+
+### API Extractor failed
+
+Run with `--verbose` to see API Extractor diagnostics:
+
+```bash
+snapi snapshot --verbose
+```
 
 ## License
 
