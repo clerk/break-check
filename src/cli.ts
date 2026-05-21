@@ -17,6 +17,7 @@ import { BreakingChangesDetector } from "./core/detector.js";
 import { MarkdownReporter } from "./reporters/markdown.js";
 
 const program = new Command();
+const OUTPUT_FORMATS = ["markdown", "json"] as const;
 
 program
   .name("snapi")
@@ -70,7 +71,7 @@ program
       }
 
       const detector = new BreakingChangesDetector(config, {
-        verbose: options.verbose ?? true,
+        verbose: Boolean(options.verbose),
         configPath,
       });
 
@@ -99,26 +100,40 @@ program
   .option("-c, --config <path>", "Config file path", CONFIG_FILE_NAME)
   .requiredOption("-b, --baseline <path>", "Baseline snapshots directory")
   .option("-o, --output <path>", "Output report path")
-  .option("--format <format>", "Output format (markdown|json)", "markdown")
+  .option("--format <format>", "Output format (markdown|json)")
   .option("--fail-on-breaking", "Exit with code 1 if breaking changes found")
   .option("-v, --verbose", "Show verbose output")
   .action(async (options) => {
     try {
       const configPath = path.resolve(process.cwd(), options.config);
       const config = loadConfig(configPath);
+      const format = String(options.format ?? config.outputFormat);
+
+      if (!OUTPUT_FORMATS.includes(format as (typeof OUTPUT_FORMATS)[number])) {
+        throw new Error(`Invalid output format: ${format}`);
+      }
+
+      const isJsonStdout = format === "json" && !options.output;
+      const logInfo = (message: string): void => {
+        if (isJsonStdout) {
+          console.error(message);
+        } else {
+          console.log(message);
+        }
+      };
 
       const detector = new BreakingChangesDetector(config, {
-        verbose: options.verbose,
+        verbose: Boolean(options.verbose),
         configPath,
       });
 
-      console.log("Detecting API changes...\n");
+      logInfo("Detecting API changes...\n");
       const result = await detector.detect(options.baseline);
 
       // Generate report
       const reporter = new MarkdownReporter();
       const report =
-        options.format === "json"
+        format === "json"
           ? reporter.generateJson(result)
           : reporter.generate(result);
 
@@ -126,30 +141,28 @@ program
       if (options.output) {
         const outputPath = path.resolve(process.cwd(), options.output);
         fs.writeFileSync(outputPath, report, "utf-8");
-        console.log(`Report written to: ${outputPath}`);
+        logInfo(`Report written to: ${outputPath}`);
       } else {
         console.log(report);
       }
 
       // Summary
-      console.log("\nSummary:");
-      console.log(`  Packages analyzed: ${result.summary.totalPackages}`);
-      console.log(`  Breaking changes: ${result.summary.breakingChanges}`);
-      console.log(
-        `  Non-breaking changes: ${result.summary.nonBreakingChanges}`,
-      );
-      console.log(`  Additions: ${result.summary.additions}`);
+      logInfo("\nSummary:");
+      logInfo(`  Packages analyzed: ${result.summary.totalPackages}`);
+      logInfo(`  Breaking changes: ${result.summary.breakingChanges}`);
+      logInfo(`  Non-breaking changes: ${result.summary.nonBreakingChanges}`);
+      logInfo(`  Additions: ${result.summary.additions}`);
 
       // Exit with error if breaking changes found and flag is set
       if (options.failOnBreaking && result.hasBreakingChanges) {
-        console.log("\n✗ Breaking changes detected");
+        logInfo("\n✗ Breaking changes detected");
         process.exit(1);
       }
 
       if (result.hasBreakingChanges) {
-        console.log("\n⚠ Breaking changes detected");
+        logInfo("\n⚠ Breaking changes detected");
       } else {
-        console.log("\n✓ No breaking changes detected");
+        logInfo("\n✓ No breaking changes detected");
       }
     } catch (error) {
       console.error(

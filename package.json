@@ -3,21 +3,31 @@
   "version": "0.0.1",
   "description": "Snapi CLI",
   "type": "module",
+  "packageManager": "pnpm@10.33.2",
   "bin": {
     "snapi": "./dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
   "files": [
     "dist"
   ],
   "scripts": {
     "build": "tsc",
+    "check": "pnpm check:format && pnpm typecheck && pnpm test && pnpm pack --dry-run",
+    "check:format": "prettier --check .",
     "clean": "rm -rf dist",
     "dev": "tsc --watch",
     "format": "prettier --write .",
-    "prepare": "npm run build",
+    "prepack": "pnpm build",
     "start": "node dist/index.js",
+    "test": "pnpm build && node --test test/*.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "keywords": [
@@ -25,13 +35,21 @@
     "snapi"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/clerk/snapi.git"
+  },
+  "bugs": {
+    "url": "https://github.com/clerk/snapi/issues"
+  },
+  "homepage": "https://github.com/clerk/snapi#readme",
   "devDependencies": {
     "@types/node": "24.10.9",
     "prettier": "3.8.1",
     "typescript": "5.9.3"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=20"
   },
   "dependencies": {
     "@microsoft/api-extractor": "7.55.2",

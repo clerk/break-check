@@ -13,6 +13,8 @@ import {
 } from "@microsoft/api-extractor";
 import type { ApiSnapshot, PackageInfo } from "../types.js";
 
+const SNAPSHOT_METADATA_VERSION = 1;
+
 /**
  * Options for the ApiExtractorRunner
  */
@@ -86,20 +88,45 @@ export class ApiExtractorRunner {
       packageOutputDir,
       `${safePackageName}.api.md`,
     );
+    const metadataPath = path.join(packageOutputDir, "snapi.snapshot.json");
 
     // Verify output files exist
     if (!fs.existsSync(apiJsonPath)) {
       throw new Error(`API Extractor did not generate ${apiJsonPath}`);
     }
 
-    return {
+    const timestamp = new Date().toISOString();
+    const snapshot: ApiSnapshot = {
       packageName: name,
       packagePath,
       version,
-      timestamp: new Date().toISOString(),
+      timestamp,
       apiJsonPath,
       apiReportPath: fs.existsSync(apiReportPath) ? apiReportPath : "",
+      metadataPath,
     };
+
+    fs.writeFileSync(
+      metadataPath,
+      JSON.stringify(
+        {
+          schemaVersion: SNAPSHOT_METADATA_VERSION,
+          packageName: snapshot.packageName,
+          packagePath: snapshot.packagePath,
+          version: snapshot.version,
+          timestamp: snapshot.timestamp,
+          apiJsonFile: path.basename(snapshot.apiJsonPath),
+          apiReportFile: snapshot.apiReportPath
+            ? path.basename(snapshot.apiReportPath)
+            : null,
+        },
+        null,
+        2,
+      ) + "\n",
+      "utf-8",
+    );
+
+    return snapshot;
   }
 
   /**
@@ -227,10 +254,22 @@ export class ApiExtractorRunner {
       },
     };
 
-    // Add compiler config if tsconfig exists
     if (tsconfigPath) {
       configObject.compiler = {
         tsconfigFilePath: tsconfigPath,
+      };
+    } else {
+      configObject.compiler = {
+        overrideTsconfig: {
+          compilerOptions: {
+            target: "ES2022",
+            module: "NodeNext",
+            moduleResolution: "NodeNext",
+            strict: true,
+            skipLibCheck: true,
+          },
+          files: [entryPoint],
+        },
       };
     }
 

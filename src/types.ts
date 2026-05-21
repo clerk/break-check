@@ -133,6 +133,8 @@ export interface ApiSnapshot {
   apiReportPath: string;
   /** Path to the .api.json file */
   apiJsonPath: string;
+  /** Path to snapi metadata for this snapshot */
+  metadataPath: string;
 }
 
 /**

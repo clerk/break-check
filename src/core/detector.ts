@@ -4,7 +4,11 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { SnapiConfig, resolvePackagePaths } from "../config.js";
+import {
+  CONFIG_FILE_NAME,
+  SnapiConfig,
+  resolvePackagePaths,
+} from "../config.js";
 import { ApiExtractorRunner, readPackageInfo } from "../utils/api-extractor.js";
 import { ApiDiffAnalyzer } from "../analyzers/api-diff.js";
 import { VersionAnalyzer } from "../analyzers/version.js";
@@ -35,13 +39,17 @@ export class BreakingChangesDetector {
   private versionAnalyzer: VersionAnalyzer;
   private verbose: boolean;
   private configPath: string;
+  private configDir: string;
 
   constructor(
     private config: SnapiConfig,
     options: DetectorOptions = {},
   ) {
     this.verbose = options.verbose ?? false;
-    this.configPath = options.configPath ?? process.cwd();
+    this.configPath = path.resolve(
+      options.configPath ?? path.join(process.cwd(), CONFIG_FILE_NAME),
+    );
+    this.configDir = path.dirname(this.configPath);
     this.extractor = new ApiExtractorRunner(
       this.resolveOutputDir(config.snapshotDir),
       { verbose: this.verbose },
@@ -57,19 +65,18 @@ export class BreakingChangesDetector {
   async generateSnapshots(): Promise<Map<string, ApiSnapshot>> {
     const snapshots = new Map<string, ApiSnapshot>();
     const packagePaths = resolvePackagePaths(this.config, this.configPath);
+    const failures: string[] = [];
 
     for (const packagePath of packagePaths) {
       const packageInfo = readPackageInfo(packagePath);
 
       if (!packageInfo) {
-        this.log(`Skipping ${packagePath}: no package.json found`);
+        failures.push(`${packagePath}: no package.json found`);
         continue;
       }
 
       if (!packageInfo.typesEntryPoint) {
-        this.log(
-          `Skipping ${packageInfo.name}: no TypeScript declarations found`,
-        );
+        failures.push(`${packageInfo.name}: no TypeScript declarations found`);
         continue;
       }
 
@@ -81,10 +88,17 @@ export class BreakingChangesDetector {
         this.log(`  ✓ Generated snapshot for ${packageInfo.name}`);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        this.log(
-          `  ✗ Failed to generate snapshot for ${packageInfo.name}: ${message}`,
-        );
+        failures.push(`${packageInfo.name}: ${message}`);
       }
+    }
+
+    if (failures.length > 0) {
+      throw new Error(
+        [
+          "Failed to generate API snapshots:",
+          ...failures.map((f) => `  - ${f}`),
+        ].join("\n"),
+      );
     }
 
     return snapshots;
@@ -96,7 +110,11 @@ export class BreakingChangesDetector {
    * @returns Complete analysis result
    */
   async detect(baselineDir: string): Promise<AnalysisResult> {
-    const resolvedBaselineDir = path.resolve(this.configPath, baselineDir);
+    const resolvedBaselineDir = this.resolveConfigRelativePath(baselineDir);
+
+    if (!fs.existsSync(resolvedBaselineDir)) {
+      throw new Error(`Baseline directory not found: ${resolvedBaselineDir}`);
+    }
 
     // Generate current snapshots
     this.log("Generating current API snapshots...");
@@ -148,22 +166,57 @@ export class BreakingChangesDetector {
       safePackageName,
       `${safePackageName}.api.json`,
     );
+    const metadataPath = path.join(
+      baselineDir,
+      safePackageName,
+      "snapi.snapshot.json",
+    );
 
     if (!fs.existsSync(apiJsonPath)) {
       this.log(`No baseline found for ${packageName}`);
       return null;
     }
 
-    // Read version from the baseline snapshot metadata or package
-    // For now, we'll use "unknown" as we don't store version in snapshot
+    const metadata = this.readSnapshotMetadata(metadataPath);
+
     return {
       packageName,
-      packagePath: "",
-      version: "unknown",
-      timestamp: "",
+      packagePath: metadata?.packagePath ?? "",
+      version: metadata?.version ?? "unknown",
+      timestamp: metadata?.timestamp ?? "",
       apiJsonPath,
       apiReportPath: "",
+      metadataPath,
     };
+  }
+
+  private readSnapshotMetadata(
+    metadataPath: string,
+  ): { packagePath?: string; version?: string; timestamp?: string } | null {
+    if (!fs.existsSync(metadataPath)) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(fs.readFileSync(metadataPath, "utf-8")) as {
+        packagePath?: unknown;
+        version?: unknown;
+        timestamp?: unknown;
+      };
+
+      return {
+        packagePath:
+          typeof parsed.packagePath === "string"
+            ? parsed.packagePath
+            : undefined,
+        version:
+          typeof parsed.version === "string" ? parsed.version : undefined,
+        timestamp:
+          typeof parsed.timestamp === "string" ? parsed.timestamp : undefined,
+      };
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -185,9 +238,7 @@ export class BreakingChangesDetector {
       if (previousVersion === "unknown") {
         // Try to extract from the api.json metadata
         try {
-          const apiJson = JSON.parse(
-            fs.readFileSync(baselineSnapshot.apiJsonPath, "utf-8"),
-          );
+          JSON.parse(fs.readFileSync(baselineSnapshot.apiJsonPath, "utf-8"));
           // API Extractor stores package name but not version directly
           // We'll use the current version minus assumed patch for comparison
           previousVersion = this.inferPreviousVersion(packageInfo.version);
@@ -212,10 +263,9 @@ export class BreakingChangesDetector {
       previousVersion,
       packageInfo.version,
     );
-    const isValidBump = this.versionAnalyzer.isValidBump(
-      recommendedBump,
-      actualBump,
-    );
+    const isValidBump =
+      this.versionAnalyzer.isValidBump(recommendedBump, actualBump) ||
+      !this.config.checkVersionBump;
 
     return {
       packageName: packageInfo.name,
@@ -326,7 +376,13 @@ export class BreakingChangesDetector {
    * Resolve output directory relative to config
    */
   private resolveOutputDir(dir: string): string {
-    return path.resolve(path.dirname(this.configPath), dir);
+    return this.resolveConfigRelativePath(dir);
+  }
+
+  private resolveConfigRelativePath(targetPath: string): string {
+    return path.isAbsolute(targetPath)
+      ? targetPath
+      : path.resolve(this.configDir, targetPath);
   }
 
   /**
