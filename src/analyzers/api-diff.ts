@@ -11,109 +11,121 @@ import {
   ChangeCategory,
 } from "../types.js";
 
-/**
- * Represents a parsed API item from .api.json
- */
-interface ParsedApiItem {
-  /** Unique key for comparison */
-  key: string;
-  /** Kind of API element */
-  kind: ChangeCategory;
-  /** Name of the item */
-  name: string;
-  /** Parent name for nested items */
-  parentName?: string;
-  /** Full type signature */
-  signature: string;
-  /** Whether the item is optional (for members) */
-  isOptional?: boolean;
-  /** Raw excerpt tokens for snippet generation */
-  excerptTokens?: ExcerptToken[];
-  /** Nested members (for interfaces, classes, enums) */
-  members?: ParsedApiItem[];
-  /** Original kind from API Extractor */
-  originalKind: string;
-}
-
-/**
- * Excerpt token from API Extractor .api.json
- */
 interface ExcerptToken {
   kind: string;
   text: string;
   canonicalReference?: string;
 }
 
-/**
- * API Extractor .api.json structure (simplified)
- */
-interface ApiJsonFile {
-  metadata: {
-    toolPackage: string;
-    toolVersion: string;
-  };
-  kind: string;
-  name: string;
-  members: ApiJsonMember[];
+interface TokenRange {
+  startIndex: number;
+  endIndex: number;
 }
 
-/**
- * Member in API Extractor .api.json
- */
+interface ApiJsonParameter {
+  parameterName: string;
+  parameterTypeTokenRange: TokenRange;
+  isOptional?: boolean;
+  isRest?: boolean;
+}
+
 interface ApiJsonMember {
   kind: string;
   name: string;
   excerptTokens?: ExcerptToken[];
   members?: ApiJsonMember[];
-  parameters?: Array<{
-    parameterName: string;
-    parameterTypeTokenRange: { startIndex: number; endIndex: number };
-    isOptional?: boolean;
-  }>;
-  returnTypeTokenRange?: { startIndex: number; endIndex: number };
-  typeTokenRange?: { startIndex: number; endIndex: number };
+  parameters?: ApiJsonParameter[];
+  returnTypeTokenRange?: TokenRange;
+  typeTokenRange?: TokenRange;
+  initializerTokenRange?: TokenRange;
   isOptional?: boolean;
   isReadonly?: boolean;
   isStatic?: boolean;
-  releaseTag?: string;
+  isProtected?: boolean;
+  isAbstract?: boolean;
 }
+
+interface ApiJsonFile {
+  metadata: { toolPackage: string; toolVersion: string };
+  kind: string;
+  name: string;
+  members: ApiJsonMember[];
+}
+
+interface ParsedParam {
+  name: string;
+  type: string;
+  isOptional: boolean;
+  isRest: boolean;
+}
+
+type ParsedShape =
+  | { kind: "callable"; params: ParsedParam[]; returnType: string }
+  | { kind: "typed"; type: string; isReadonly: boolean }
+  | { kind: "enumMember"; initializer: string }
+  | { kind: "container" }
+  | { kind: "opaque"; signature: string };
+
+interface ParsedApiItem {
+  key: string;
+  category: ChangeCategory;
+  originalKind: string;
+  name: string;
+  parentName?: string;
+  shape: ParsedShape;
+  /** Raw snippet for diff display */
+  snippet: string;
+  isOptional: boolean;
+}
+
+const CALLABLE_KINDS = new Set([
+  "Function",
+  "Method",
+  "MethodSignature",
+  "Constructor",
+  "ConstructSignature",
+  "CallSignature",
+]);
+
+const TYPED_KINDS = new Set([
+  "Property",
+  "PropertySignature",
+  "Variable",
+  "IndexSignature",
+]);
+
+const CONTAINER_KINDS = new Set([
+  "Interface",
+  "Class",
+  "Enum",
+  "TypeAlias",
+  "Namespace",
+]);
 
 /**
  * Analyzer for comparing API snapshots
  */
 export class ApiDiffAnalyzer {
-  /**
-   * Compare two API snapshots and return list of changes
-   * @param baselinePath - Path to baseline .api.json
-   * @param currentPath - Path to current .api.json
-   * @returns Array of detected changes
-   */
   analyze(baselinePath: string, currentPath: string): ApiChange[] {
     const baselineItems = this.parseApiJson(baselinePath);
     const currentItems = this.parseApiJson(currentPath);
 
     const changes: ApiChange[] = [];
 
-    // Detect removals and modifications
     for (const [key, baselineItem] of baselineItems) {
       const currentItem = currentItems.get(key);
 
       if (!currentItem) {
-        // Item was removed - breaking change
         changes.push(this.createRemovalChange(baselineItem));
-      } else if (baselineItem.signature !== currentItem.signature) {
-        // Item was modified - determine severity
-        const modification = this.createModificationChange(
-          baselineItem,
-          currentItem,
-        );
-        if (modification) {
-          changes.push(modification);
-        }
+        continue;
+      }
+
+      const modification = this.compareItems(baselineItem, currentItem);
+      if (modification) {
+        changes.push(modification);
       }
     }
 
-    // Detect additions
     for (const [key, currentItem] of currentItems) {
       if (!baselineItems.has(key)) {
         changes.push(this.createAdditionChange(currentItem));
@@ -123,16 +135,12 @@ export class ApiDiffAnalyzer {
     return changes;
   }
 
-  /**
-   * Parse .api.json file into a map of API items
-   */
   private parseApiJson(filePath: string): Map<string, ParsedApiItem> {
     const content = fs.readFileSync(filePath, "utf-8");
     const apiJson: ApiJsonFile = JSON.parse(content);
 
     const items = new Map<string, ParsedApiItem>();
 
-    // Process all top-level members (EntryPoint contains the actual exports)
     for (const member of apiJson.members) {
       if (member.kind === "EntryPoint" && member.members) {
         for (const exportedMember of member.members) {
@@ -146,253 +154,419 @@ export class ApiDiffAnalyzer {
     return items;
   }
 
-  /**
-   * Process an API member and add it to the items map
-   */
   private processApiMember(
     member: ApiJsonMember,
     items: Map<string, ParsedApiItem>,
     parentName?: string,
   ): void {
-    const kind = this.mapKind(member.kind);
-    const key = this.buildKey(kind, member.name, parentName);
-    const signature = this.extractSignature(member);
+    const category = this.mapCategory(member.kind);
+    const key = this.buildKey(member.kind, member.name, parentName);
+    const shape = this.parseShape(member);
+    const snippet = this.tokensToText(member.excerptTokens);
 
-    const item: ParsedApiItem = {
+    items.set(key, {
       key,
-      kind,
+      category,
+      originalKind: member.kind,
       name: member.name,
       parentName,
-      signature,
-      isOptional: member.isOptional,
-      excerptTokens: member.excerptTokens,
-      originalKind: member.kind,
-    };
+      shape,
+      snippet,
+      isOptional: Boolean(member.isOptional),
+    });
 
-    items.set(key, item);
-
-    // Process nested members for interfaces, classes, enums
     if (member.members && member.members.length > 0) {
-      for (const nestedMember of member.members) {
-        this.processApiMember(nestedMember, items, member.name);
+      for (const nested of member.members) {
+        this.processApiMember(nested, items, member.name);
       }
     }
   }
 
-  /**
-   * Map API Extractor kind to ChangeCategory
-   */
-  private mapKind(kind: string): ChangeCategory {
-    const kindMap: Record<string, ChangeCategory> = {
-      Function: "function",
-      Interface: "interface",
-      TypeAlias: "type",
-      Class: "class",
-      Enum: "enum",
-      Variable: "variable",
-      Property: "interface", // Interface properties
-      PropertySignature: "interface",
-      MethodSignature: "function",
-      Method: "function",
-      EnumMember: "enum",
-      Constructor: "function",
-    };
-
-    return kindMap[kind] || "export";
-  }
-
-  /**
-   * Build a unique key for an API item
-   */
-  private buildKey(
-    kind: ChangeCategory,
-    name: string,
-    parentName?: string,
-  ): string {
-    return parentName ? `${kind}:${parentName}:${name}` : `${kind}:${name}`;
-  }
-
-  /**
-   * Extract a comparable signature from an API member
-   */
-  private extractSignature(member: ApiJsonMember): string {
-    if (!member.excerptTokens || member.excerptTokens.length === 0) {
-      return member.name;
+  private parseShape(member: ApiJsonMember): ParsedShape {
+    if (CALLABLE_KINDS.has(member.kind)) {
+      return {
+        kind: "callable",
+        params: (member.parameters ?? []).map((p) => ({
+          name: p.parameterName,
+          type: this.normalizeType(
+            this.sliceTokens(member.excerptTokens, p.parameterTypeTokenRange),
+          ),
+          isOptional: Boolean(p.isOptional),
+          isRest: Boolean(p.isRest),
+        })),
+        returnType: member.returnTypeTokenRange
+          ? this.normalizeType(
+              this.sliceTokens(
+                member.excerptTokens,
+                member.returnTypeTokenRange,
+              ),
+            )
+          : "",
+      };
     }
 
-    // Concatenate all excerpt tokens to form the full signature
-    return member.excerptTokens.map((t) => t.text).join("");
-  }
-
-  /**
-   * Extract a code snippet from an API item
-   */
-  private extractSnippet(item: ParsedApiItem): string {
-    if (!item.excerptTokens || item.excerptTokens.length === 0) {
-      return item.signature;
+    if (TYPED_KINDS.has(member.kind)) {
+      return {
+        kind: "typed",
+        type: member.typeTokenRange
+          ? this.normalizeType(
+              this.sliceTokens(member.excerptTokens, member.typeTokenRange),
+            )
+          : this.normalizeType(this.tokensToText(member.excerptTokens)),
+        isReadonly: Boolean(member.isReadonly),
+      };
     }
 
-    return item.excerptTokens.map((t) => t.text).join("");
-  }
+    if (member.kind === "EnumMember") {
+      return {
+        kind: "enumMember",
+        initializer: member.initializerTokenRange
+          ? this.normalizeType(
+              this.sliceTokens(
+                member.excerptTokens,
+                member.initializerTokenRange,
+              ),
+            )
+          : "",
+      };
+    }
 
-  /**
-   * Create a removal change (breaking)
-   */
-  private createRemovalChange(item: ParsedApiItem): ApiChange {
-    const change: Omit<ApiChange, "id"> = {
-      type: ChangeType.BREAKING,
-      severity: ChangeSeverity.MAJOR,
-      category: item.kind,
-      name: item.parentName ? `${item.parentName}.${item.name}` : item.name,
-      description: this.createRemovalDescription(item),
-      beforeSnippet: this.extractSnippet(item),
-      afterSnippet: undefined,
-    };
+    if (member.kind === "TypeAlias") {
+      return {
+        kind: "typed",
+        type: member.typeTokenRange
+          ? this.normalizeType(
+              this.sliceTokens(member.excerptTokens, member.typeTokenRange),
+            )
+          : this.normalizeType(this.tokensToText(member.excerptTokens)),
+        isReadonly: false,
+      };
+    }
 
-    return {
-      ...change,
-      id: this.generateChangeId(change),
-    };
-  }
-
-  /**
-   * Create an addition change (minor)
-   */
-  private createAdditionChange(item: ParsedApiItem): ApiChange {
-    const change: Omit<ApiChange, "id"> = {
-      type: ChangeType.ADDITION,
-      severity: ChangeSeverity.MINOR,
-      category: item.kind,
-      name: item.parentName ? `${item.parentName}.${item.name}` : item.name,
-      description: this.createAdditionDescription(item),
-      beforeSnippet: undefined,
-      afterSnippet: this.extractSnippet(item),
-    };
+    if (CONTAINER_KINDS.has(member.kind)) {
+      return { kind: "container" };
+    }
 
     return {
-      ...change,
-      id: this.generateChangeId(change),
+      kind: "opaque",
+      signature: this.tokensToText(member.excerptTokens),
     };
   }
 
   /**
-   * Create a modification change and determine severity
+   * Compare two items and produce a change if they differ meaningfully.
+   * Returns null when the difference is cosmetic (whitespace, param renames).
    */
-  private createModificationChange(
+  private compareItems(
     baseline: ParsedApiItem,
     current: ParsedApiItem,
   ): ApiChange | null {
-    const { type, severity } = this.determineModificationSeverity(
+    // Optionality flip on the member itself (property/method optional marker)
+    if (baseline.isOptional !== current.isOptional) {
+      const type = baseline.isOptional
+        ? ChangeType.BREAKING
+        : ChangeType.NON_BREAKING;
+      return this.buildModification(baseline, current, type, undefined);
+    }
+
+    // Container bodies are diffed via their members; skip the container itself.
+    if (
+      baseline.shape.kind === "container" &&
+      current.shape.kind === "container"
+    ) {
+      return null;
+    }
+
+    if (
+      baseline.shape.kind === "callable" &&
+      current.shape.kind === "callable"
+    ) {
+      return this.compareCallable(baseline, current);
+    }
+
+    if (baseline.shape.kind === "typed" && current.shape.kind === "typed") {
+      return this.compareTyped(baseline, current);
+    }
+
+    if (
+      baseline.shape.kind === "enumMember" &&
+      current.shape.kind === "enumMember"
+    ) {
+      if (baseline.shape.initializer === current.shape.initializer) {
+        return null;
+      }
+      return this.buildModification(
+        baseline,
+        current,
+        ChangeType.BREAKING,
+        `Enum member value changed: \`${baseline.shape.initializer || "(implicit)"}\` → \`${current.shape.initializer || "(implicit)"}\``,
+      );
+    }
+
+    // Kind mismatch (e.g., became a different shape) — treat as breaking
+    if (baseline.shape.kind !== current.shape.kind) {
+      return this.buildModification(
+        baseline,
+        current,
+        ChangeType.BREAKING,
+        `Declaration kind changed from \`${baseline.originalKind}\` to \`${current.originalKind}\``,
+      );
+    }
+
+    // Opaque fallback: normalized signature compare
+    const a = this.normalizeType(baseline.snippet);
+    const b = this.normalizeType(current.snippet);
+    if (a === b) {
+      return null;
+    }
+    return this.buildModification(
       baseline,
       current,
+      ChangeType.BREAKING,
+      undefined,
     );
+  }
 
-    const change: Omit<ApiChange, "id"> = {
-      type,
+  private compareCallable(
+    baseline: ParsedApiItem,
+    current: ParsedApiItem,
+  ): ApiChange | null {
+    if (
+      baseline.shape.kind !== "callable" ||
+      current.shape.kind !== "callable"
+    ) {
+      return null;
+    }
+
+    const before = baseline.shape;
+    const after = current.shape;
+
+    const notes: string[] = [];
+    let severity: ChangeType | null = null;
+
+    const upgrade = (next: ChangeType, note: string): void => {
+      notes.push(note);
+      if (severity === ChangeType.BREAKING) return;
+      if (next === ChangeType.BREAKING) {
+        severity = ChangeType.BREAKING;
+      } else if (severity === null) {
+        severity = next;
+      }
+    };
+
+    // Return type
+    if (before.returnType !== after.returnType) {
+      upgrade(
+        ChangeType.BREAKING,
+        `Return type changed: \`${before.returnType || "void"}\` → \`${after.returnType || "void"}\``,
+      );
+    }
+
+    // Parameter alignment by position
+    const maxLen = Math.max(before.params.length, after.params.length);
+    for (let i = 0; i < maxLen; i++) {
+      const a = before.params[i];
+      const b = after.params[i];
+
+      if (a && !b) {
+        upgrade(ChangeType.BREAKING, `Parameter \`${a.name}\` was removed`);
+        continue;
+      }
+
+      if (!a && b) {
+        if (b.isOptional || b.isRest) {
+          upgrade(
+            ChangeType.NON_BREAKING,
+            `Optional parameter \`${b.name}\` was added`,
+          );
+        } else {
+          upgrade(
+            ChangeType.BREAKING,
+            `Required parameter \`${b.name}\` was added`,
+          );
+        }
+        continue;
+      }
+
+      if (!a || !b) continue;
+
+      if (a.isOptional && !b.isOptional) {
+        upgrade(
+          ChangeType.BREAKING,
+          `Parameter \`${a.name}\` is no longer optional`,
+        );
+      } else if (!a.isOptional && b.isOptional) {
+        upgrade(
+          ChangeType.NON_BREAKING,
+          `Parameter \`${a.name}\` became optional`,
+        );
+      }
+
+      if (a.isRest !== b.isRest) {
+        upgrade(
+          ChangeType.BREAKING,
+          `Parameter \`${a.name}\` rest-ness changed`,
+        );
+      }
+
+      if (a.type !== b.type) {
+        upgrade(
+          ChangeType.BREAKING,
+          `Parameter \`${a.name}\` type changed: \`${a.type}\` → \`${b.type}\``,
+        );
+      }
+
+      // Parameter rename only (no type/optionality change) is NOT breaking;
+      // TypeScript callers use positional args. We skip the note entirely.
+    }
+
+    if (severity === null) {
+      return null;
+    }
+
+    return this.buildModification(
+      baseline,
+      current,
       severity,
-      category: baseline.kind,
-      name: baseline.parentName
-        ? `${baseline.parentName}.${baseline.name}`
-        : baseline.name,
-      description: this.createModificationDescription(baseline, current, type),
-      beforeSnippet: this.extractSnippet(baseline),
-      afterSnippet: this.extractSnippet(current),
-    };
-
-    return {
-      ...change,
-      id: this.generateChangeId(change),
-    };
+      notes.join("; "),
+    );
   }
 
-  /**
-   * Determine the severity of a modification
-   */
-  private determineModificationSeverity(
+  private compareTyped(
     baseline: ParsedApiItem,
     current: ParsedApiItem,
-  ): { type: ChangeType; severity: ChangeSeverity } {
-    // If an optional member became required, it's breaking
-    if (baseline.isOptional && !current.isOptional) {
-      return { type: ChangeType.BREAKING, severity: ChangeSeverity.MAJOR };
+  ): ApiChange | null {
+    if (baseline.shape.kind !== "typed" || current.shape.kind !== "typed") {
+      return null;
     }
 
-    // If a required member became optional, it's non-breaking
-    if (!baseline.isOptional && current.isOptional) {
-      return { type: ChangeType.NON_BREAKING, severity: ChangeSeverity.MINOR };
+    const before = baseline.shape;
+    const after = current.shape;
+
+    if (before.type === after.type && before.isReadonly === after.isReadonly) {
+      return null;
     }
 
-    // For signature changes, we need to analyze more carefully
-    // For now, treat all signature changes as potentially breaking
-    // A more sophisticated implementation would parse the signatures
-    // and determine if it's widening (safe) or narrowing (breaking)
+    const notes: string[] = [];
+    if (before.type !== after.type) {
+      notes.push(`Type changed: \`${before.type}\` → \`${after.type}\``);
+    }
+    if (before.isReadonly !== after.isReadonly) {
+      notes.push(
+        before.isReadonly
+          ? "Field is no longer readonly"
+          : "Field became readonly",
+      );
+    }
 
-    const baselineSig = baseline.signature.trim();
-    const currentSig = current.signature.trim();
-
-    // Simple heuristic: if the current signature is longer (more types),
-    // it might be widening, otherwise it might be narrowing
-    // This is a simplification - proper analysis would require type parsing
-
-    // Default to breaking for safety
-    return { type: ChangeType.BREAKING, severity: ChangeSeverity.MAJOR };
+    return this.buildModification(
+      baseline,
+      current,
+      ChangeType.BREAKING,
+      notes.join("; "),
+    );
   }
 
-  /**
-   * Create a human-readable description for a removal
-   */
-  private createRemovalDescription(item: ParsedApiItem): string {
-    const kindName = this.getKindDisplayName(item.originalKind);
-    const fullName = item.parentName
-      ? `${item.parentName}.${item.name}`
-      : item.name;
-
-    return `Removed ${kindName} \`${fullName}\``;
-  }
-
-  /**
-   * Create a human-readable description for an addition
-   */
-  private createAdditionDescription(item: ParsedApiItem): string {
-    const kindName = this.getKindDisplayName(item.originalKind);
-    const fullName = item.parentName
-      ? `${item.parentName}.${item.name}`
-      : item.name;
-
-    return `Added ${kindName} \`${fullName}\``;
-  }
-
-  /**
-   * Create a human-readable description for a modification
-   */
-  private createModificationDescription(
+  private buildModification(
     baseline: ParsedApiItem,
     current: ParsedApiItem,
-    changeType: ChangeType,
-  ): string {
-    const kindName = this.getKindDisplayName(baseline.originalKind);
+    type: ChangeType,
+    detail: string | undefined,
+  ): ApiChange {
     const fullName = baseline.parentName
       ? `${baseline.parentName}.${baseline.name}`
       : baseline.name;
+    const kindName = this.kindDisplayName(baseline.originalKind);
+    const verb = this.verbFor(type);
+    const description = detail
+      ? `${verb} ${kindName} \`${fullName}\`: ${detail}`
+      : `${verb} ${kindName} \`${fullName}\``;
 
-    if (baseline.isOptional && !current.isOptional) {
-      return `Changed ${kindName} \`${fullName}\` from optional to required`;
-    }
+    const change: Omit<ApiChange, "id"> = {
+      type,
+      severity:
+        type === ChangeType.BREAKING
+          ? ChangeSeverity.MAJOR
+          : ChangeSeverity.MINOR,
+      category: baseline.category,
+      name: fullName,
+      description,
+      beforeSnippet: baseline.snippet,
+      afterSnippet: current.snippet,
+    };
 
-    if (!baseline.isOptional && current.isOptional) {
-      return `Changed ${kindName} \`${fullName}\` from required to optional`;
-    }
-
-    const changeTypeName =
-      changeType === ChangeType.BREAKING ? "Breaking change" : "Modified";
-    return `${changeTypeName} in ${kindName} \`${fullName}\``;
+    return { ...change, id: this.generateChangeId(change) };
   }
 
-  /**
-   * Get display name for API kind
-   */
-  private getKindDisplayName(kind: string): string {
-    const displayNames: Record<string, string> = {
+  private createRemovalChange(item: ParsedApiItem): ApiChange {
+    const fullName = item.parentName
+      ? `${item.parentName}.${item.name}`
+      : item.name;
+    const change: Omit<ApiChange, "id"> = {
+      type: ChangeType.BREAKING,
+      severity: ChangeSeverity.MAJOR,
+      category: item.category,
+      name: fullName,
+      description: `Removed ${this.kindDisplayName(item.originalKind)} \`${fullName}\``,
+      beforeSnippet: item.snippet,
+      afterSnippet: undefined,
+    };
+    return { ...change, id: this.generateChangeId(change) };
+  }
+
+  private createAdditionChange(item: ParsedApiItem): ApiChange {
+    const fullName = item.parentName
+      ? `${item.parentName}.${item.name}`
+      : item.name;
+    const change: Omit<ApiChange, "id"> = {
+      type: ChangeType.ADDITION,
+      severity: ChangeSeverity.MINOR,
+      category: item.category,
+      name: fullName,
+      description: `Added ${this.kindDisplayName(item.originalKind)} \`${fullName}\``,
+      beforeSnippet: undefined,
+      afterSnippet: item.snippet,
+    };
+    return { ...change, id: this.generateChangeId(change) };
+  }
+
+  private buildKey(kind: string, name: string, parentName?: string): string {
+    const k = this.mapCategory(kind);
+    return parentName ? `${k}:${parentName}:${name}` : `${k}:${name}`;
+  }
+
+  private mapCategory(kind: string): ChangeCategory {
+    switch (kind) {
+      case "Function":
+        return "function";
+      case "Interface":
+        return "interface";
+      case "TypeAlias":
+        return "type";
+      case "Class":
+        return "class";
+      case "Enum":
+      case "EnumMember":
+        return "enum";
+      case "Variable":
+        return "variable";
+      case "Property":
+      case "PropertySignature":
+      case "IndexSignature":
+        return "interface";
+      case "Method":
+      case "MethodSignature":
+      case "Constructor":
+      case "ConstructSignature":
+      case "CallSignature":
+        return "function";
+      default:
+        return "export";
+    }
+  }
+
+  private kindDisplayName(kind: string): string {
+    const map: Record<string, string> = {
       Function: "function",
       Interface: "interface",
       TypeAlias: "type alias",
@@ -405,23 +579,60 @@ export class ApiDiffAnalyzer {
       Method: "method",
       EnumMember: "enum member",
       Constructor: "constructor",
+      ConstructSignature: "construct signature",
+      CallSignature: "call signature",
+      IndexSignature: "index signature",
+      Namespace: "namespace",
     };
+    return map[kind] ?? kind.toLowerCase();
+  }
 
-    return displayNames[kind] || kind.toLowerCase();
+  private verbFor(type: ChangeType): string {
+    switch (type) {
+      case ChangeType.BREAKING:
+        return "Breaking change in";
+      case ChangeType.NON_BREAKING:
+        return "Modified";
+      case ChangeType.ADDITION:
+        return "Added";
+    }
+  }
+
+  private tokensToText(tokens?: ExcerptToken[]): string {
+    if (!tokens || tokens.length === 0) return "";
+    return tokens.map((t) => t.text).join("");
+  }
+
+  private sliceTokens(
+    tokens: ExcerptToken[] | undefined,
+    range: TokenRange,
+  ): string {
+    if (!tokens) return "";
+    return tokens
+      .slice(range.startIndex, range.endIndex)
+      .map((t) => t.text)
+      .join("");
   }
 
   /**
-   * Generate a unique, stable ID for a change
+   * Collapse whitespace and strip trailing punctuation so cosmetic
+   * differences don't show up as breaking changes.
    */
+  private normalizeType(text: string): string {
+    return text
+      .replace(/\s+/g, " ")
+      .replace(/\s*([,;:()<>[\]{}|&])\s*/g, "$1")
+      .trim();
+  }
+
   private generateChangeId(change: Omit<ApiChange, "id">): string {
     const content = [
       change.type,
       change.category,
       change.name,
-      change.beforeSnippet || "",
-      change.afterSnippet || "",
+      change.beforeSnippet ?? "",
+      change.afterSnippet ?? "",
     ].join("|");
-
     return crypto
       .createHash("sha256")
       .update(content)

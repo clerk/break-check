@@ -217,17 +217,32 @@ checking out and rebuilding `main`.
 
 ## Change Detection
 
-snapi currently detects:
+snapi classifies each diff as one of three types.
 
-| Type         | Severity | Examples                                                     |
-| ------------ | -------- | ------------------------------------------------------------ |
-| Breaking     | Major    | Removed exports, removed required members, signature changes |
-| Non-breaking | Minor    | Required members becoming optional                           |
-| Addition     | Minor    | New exports, new members                                     |
+| Type         | Severity | What it covers                                                                                                                                              |
+| ------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Breaking     | Major    | Removed exports or members; required parameter added; optional parameter or property made required; parameter or property type changed; return type changed |
+| Non-breaking | Minor    | Optional parameter added; required parameter or property made optional                                                                                      |
+| Addition     | Minor    | New exports, new interface/class members                                                                                                                    |
 
-The analyzer is conservative for signature modifications. It is useful as a CI
-guardrail, but type-level widening and narrowing should be expanded before this
-is treated as a complete semver oracle.
+The analyzer compares parameters, return types, property types, and enum values
+structurally. The following are deliberately **not** flagged:
+
+- whitespace or formatting differences in declarations
+- parameter renames where the type and optionality are unchanged
+- container-level diffs that are already explained by their member-level diffs
+  (e.g., adding a property to an interface produces one addition, not an
+  addition plus an interface modification)
+
+What snapi does **not** yet do:
+
+- type variance: any parameter, property, or return-type change is treated as
+  breaking, even when the new type is strictly wider. Widening (e.g.,
+  `string` → `string | number` on a return type) is technically non-breaking
+  but is reported as breaking today.
+- generic-parameter changes are detected as text differences only; adding,
+  removing, or constraining a type parameter is not classified.
+- TSDoc-only changes are ignored, which is the intended behavior.
 
 ## Troubleshooting
 
