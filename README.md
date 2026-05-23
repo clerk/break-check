@@ -123,6 +123,13 @@ stderr so stdout remains parseable JSON.
 
 ## GitHub Actions Integration
 
+> **Status: preview.** The composite Action ships from this repo but is not
+> usable yet. It depends on `@clerk/snapi` being available on the npm
+> registry (which the `pnpm dlx` step fetches at runtime) and on a `v1` tag
+> existing in this repo. Neither is true today. The Action becomes usable
+> with the first stable release; until then, copy the workflow from
+> `.github/workflows/api-check.yml` as a starting point.
+
 Use the bundled composite Action. It snapshots the base ref in a temporary
 git worktree, builds the PR, runs `snapi detect`, and posts (or updates) a
 single PR comment.
