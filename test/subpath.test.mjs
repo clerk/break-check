@@ -229,7 +229,7 @@ test("detect flags a removed subpath as breaking", () => {
   }
 });
 
-test("detect treats a newly added subpath as non-breaking", () => {
+test("detect reports a newly added subpath as additions, not breaking", () => {
   const workspace = workspaceDir();
   try {
     const configPath = writeConfig(workspace);
@@ -245,7 +245,7 @@ test("detect treats a newly added subpath as non-breaking", () => {
     assert.equal(baseline.status, 0, baseline.stderr);
 
     writeSubpathOnlyPackage(workspace, {
-      version: "1.0.0",
+      version: "1.1.0",
       surfaces: {
         dts: {
           ".": "export declare const root: number;\n",
@@ -268,6 +268,85 @@ test("detect treats a newly added subpath as non-breaking", () => {
 
     const result = JSON.parse(detect.stdout);
     assert.equal(result.summary.breakingChanges, 0);
+    assert.ok(
+      result.summary.additions >= 1,
+      "expected at least one addition entry for the new subpath",
+    );
+
+    const additions = result.packages[0].changes.filter(
+      (c) => c.type === "addition" && c.subpath === "./new-thing",
+    );
+    assert.ok(
+      additions.length >= 1,
+      "expected the new ./new-thing surface to appear as an addition with the right subpath tag",
+    );
+    assert.equal(
+      result.packages[0].recommendedVersionBump,
+      "minor",
+      "additions in a new subpath should require at least a minor bump",
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("ignoreSubpaths suppresses removals for ignored baseline subpaths", () => {
+  const workspace = workspaceDir();
+  try {
+    // First run: no ignoreSubpaths, baseline contains ./types.
+    const configPath = writeConfig(workspace);
+    writeSubpathOnlyPackage(workspace, {
+      version: "1.0.0",
+      surfaces: {
+        dts: {
+          ".": "export declare const root: number;\n",
+          "./types": "export type Foo = string;\n",
+        },
+      },
+    });
+    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    assert.equal(baseline.status, 0, baseline.stderr);
+
+    // Second run: rewrite config to ignore ./types and drop the subpath
+    // from the package. The baseline still has it. We should NOT see a
+    // "removed" break, because the user opted out of tracking ./types.
+    writeConfig(workspace, { ignoreSubpaths: ["./types"] });
+    writeSubpathOnlyPackage(workspace, {
+      version: "1.0.0",
+      surfaces: {
+        dts: {
+          ".": "export declare const root: number;\n",
+        },
+      },
+    });
+
+    const detect = runSnapi([
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "baseline",
+      "--format",
+      "json",
+      "--no-ai",
+    ]);
+    assert.equal(detect.status, 0, detect.stderr);
+
+    const result = JSON.parse(detect.stdout);
+    assert.equal(
+      result.summary.breakingChanges,
+      0,
+      "ignored baseline subpath should not produce a removal break",
+    );
+
+    const removalForTypes = result.packages[0].changes.find(
+      (c) => c.subpath === "./types",
+    );
+    assert.equal(
+      removalForTypes,
+      undefined,
+      "ignored subpath should not appear in the change list at all",
+    );
   } finally {
     rmSync(workspace, { recursive: true, force: true });
   }

@@ -432,8 +432,16 @@ export class BreakingChangesDetector {
     let previousVersion = "0.0.0";
     let aiReviewedBy: string | undefined;
 
+    // Drop baseline entries whose subpath is now in `ignoreSubpaths`. The
+    // user has opted out of tracking these surfaces, so we must not surface
+    // removal noise for them.
+    const ignored = new Set(this.config.ignoreSubpaths ?? []);
+    const visibleBaselineEntries = baselineEntries.filter(
+      (s) => !ignored.has(s.subpath),
+    );
+
     const baselineBySubpath = new Map<string, ApiSnapshot>(
-      baselineEntries.map((s) => [s.subpath, s]),
+      visibleBaselineEntries.map((s) => [s.subpath, s]),
     );
     const currentEntries: PackageEntry[] = packageInfo.entries;
 
@@ -447,7 +455,9 @@ export class BreakingChangesDetector {
       this.log(`No baseline for ${packageInfo.name}, treating as new package`);
     }
 
-    // 1. Subpaths present in both: diff normally.
+    // 1. Diff every current subpath. A subpath with no baseline diffs against
+    // an empty surface so its public members surface as additions (and feed
+    // into the recommended version bump).
     for (const entry of currentEntries) {
       const currentSnap = currentSnapshots.get(
         snapshotKey(packageInfo.name, entry.subpath),
@@ -455,19 +465,25 @@ export class BreakingChangesDetector {
       if (!currentSnap) continue;
 
       const baselineSnap = baselineBySubpath.get(entry.subpath);
-      if (!baselineSnap) {
-        // New subpath, no baseline to compare; treated as "new", not breaking.
+
+      // Skip the new-subpath addition path when there's no baseline at all
+      // for this package; reporting hundreds of "added" items the first time
+      // snapi runs against a package is just noise.
+      if (!baselineSnap && visibleBaselineEntries.length === 0) {
         continue;
       }
 
       this.log(`Comparing ${packageInfo.name} ${entry.subpath}...`);
       let entryChanges = this.diffAnalyzer.analyze(
-        baselineSnap.apiJsonPath,
+        baselineSnap ? baselineSnap.apiJsonPath : null,
         currentSnap.apiJsonPath,
       );
 
       const ai = this.ensureAiAnalyzer();
-      if (ai && entryChanges.length > 0) {
+      // Skip AI review when this is a brand-new subpath (no baseline to
+      // diff against). The reviewer expects both sides for context, and an
+      // all-additions diff is exactly the case we already short-circuit.
+      if (ai && entryChanges.length > 0 && baselineSnap) {
         const hasNonAdditionChange = entryChanges.some(
           (c) => c.type !== ChangeType.ADDITION,
         );
@@ -488,9 +504,12 @@ export class BreakingChangesDetector {
       allChanges.push(...entryChanges);
     }
 
-    // 2. Subpaths removed from current: synthesize one BREAKING change per removal.
+    // 2. Subpaths removed from current: synthesize one BREAKING change per
+    // removal. Iterating `visibleBaselineEntries` (not the raw baseline list)
+    // means a subpath the user now ignores doesn't get reported as a break
+    // just because it's still in an older baseline.
     const currentSubpaths = new Set(currentEntries.map((e) => e.subpath));
-    for (const baseline of baselineEntries) {
+    for (const baseline of visibleBaselineEntries) {
       if (currentSubpaths.has(baseline.subpath)) continue;
       allChanges.push(this.buildSubpathRemovalChange(baseline.subpath));
     }

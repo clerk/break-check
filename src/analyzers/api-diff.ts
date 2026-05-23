@@ -106,8 +106,16 @@ const CONTAINER_KINDS = new Set([
  * Analyzer for comparing API snapshots
  */
 export class ApiDiffAnalyzer {
-  analyze(baselinePath: string, currentPath: string): ApiChange[] {
-    const baselineItems = this.parseApiJson(baselinePath);
+  /**
+   * Compare a baseline snapshot against a current snapshot. Pass `null` for
+   * the baseline to diff a brand-new surface against an empty one (every
+   * current item becomes an addition).
+   */
+  analyze(baselinePath: string | null, currentPath: string): ApiChange[] {
+    const baselineItems =
+      baselinePath === null
+        ? new Map<string, ParsedApiItem>()
+        : this.parseApiJson(baselinePath);
     const currentItems = this.parseApiJson(currentPath);
 
     const changes: ApiChange[] = [];
