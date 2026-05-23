@@ -39,12 +39,35 @@ export type ChangeCategory =
   | "variable";
 
 /**
+ * Where the AI verdict places a change relative to the rule-based analyzer
+ */
+export type AiAnalysisSource =
+  | "rule-confirmed"
+  | "rule-overridden"
+  | "ai-discovered";
+
+/**
+ * AI-authored analysis attached to an ApiChange
+ */
+export interface AiAnalysis {
+  source: AiAnalysisSource;
+  /** Model's confidence in its verdict, 0..1 */
+  confidence: number;
+  /** Short explanation of why this verdict is correct */
+  rationale: string;
+  /** Migration guidance; only set when the final type is BREAKING */
+  migration?: string;
+  /** Model identifier that produced this verdict */
+  model: string;
+}
+
+/**
  * Represents a single API change detected between versions
  */
 export interface ApiChange {
   /** Unique identifier (hash of change details) */
   id: string;
-  /** Type of change */
+  /** Type of change (authoritative; may be set by the AI reviewer) */
   type: ChangeType;
   /** Severity level */
   severity: ChangeSeverity;
@@ -63,6 +86,10 @@ export interface ApiChange {
     file: string;
     line?: number;
   };
+  /** Original classification from the rule-based analyzer, set only if AI changed `type` */
+  ruleBasedType?: ChangeType;
+  /** Present when the AI analyzer reviewed (or produced) this change */
+  aiAnalysis?: AiAnalysis;
 }
 
 /**

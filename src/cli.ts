@@ -102,6 +102,11 @@ program
   .option("-o, --output <path>", "Output report path")
   .option("--format <format>", "Output format (markdown|json)")
   .option("--fail-on-breaking", "Exit with code 1 if breaking changes found")
+  .option("--no-ai", "Disable the AI reviewer even if ANTHROPIC_API_KEY is set")
+  .option(
+    "--ai-model <model>",
+    "Override the AI model (e.g. claude-opus-4-7). Wins over config.ai.model.",
+  )
   .option("-v, --verbose", "Show verbose output")
   .action(async (options) => {
     try {
@@ -125,7 +130,17 @@ program
       const detector = new BreakingChangesDetector(config, {
         verbose: Boolean(options.verbose),
         configPath,
+        // commander's `--no-ai` produces `options.ai === false`
+        disableAi: options.ai === false,
+        aiModel:
+          typeof options.aiModel === "string" ? options.aiModel : undefined,
       });
+
+      if (detector.aiEnabled) {
+        logInfo(
+          `AI review enabled (model: ${detector.aiStats.model ?? "default"})`,
+        );
+      }
 
       logInfo("Detecting API changes...\n");
       const result = await detector.detect(options.baseline);
@@ -152,6 +167,13 @@ program
       logInfo(`  Breaking changes: ${result.summary.breakingChanges}`);
       logInfo(`  Non-breaking changes: ${result.summary.nonBreakingChanges}`);
       logInfo(`  Additions: ${result.summary.additions}`);
+
+      if (detector.aiEnabled) {
+        const s = detector.aiStats;
+        logInfo(
+          `  AI review: ${s.reviewed} reviewed, ${s.overridden} reclassified, ${s.discovered} discovered`,
+        );
+      }
 
       // Exit with error if breaking changes found and flag is set
       if (options.failOnBreaking && result.hasBreakingChanges) {

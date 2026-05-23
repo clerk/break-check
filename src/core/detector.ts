@@ -6,12 +6,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   CONFIG_FILE_NAME,
+  DEFAULT_AI_MODEL,
   SnapiConfig,
   resolvePackagePaths,
 } from "../config.js";
 import { ApiExtractorRunner, readPackageInfo } from "../utils/api-extractor.js";
 import { ApiDiffAnalyzer } from "../analyzers/api-diff.js";
 import { VersionAnalyzer } from "../analyzers/version.js";
+import { AiChangeAnalyzer } from "../analyzers/ai-analyzer.js";
 import {
   AnalysisResult,
   PackageAnalysis,
@@ -28,6 +30,15 @@ export interface DetectorOptions {
   verbose?: boolean;
   /** Config file path (for resolving relative paths) */
   configPath?: string;
+  /**
+   * Hard-disable the AI analyzer, even when ANTHROPIC_API_KEY is set or
+   * `config.ai.enabled === true`. CLI's `--no-ai` flag wires through here.
+   */
+  disableAi?: boolean;
+  /** Override the AI model. Wins over config.ai.model. */
+  aiModel?: string;
+  /** Inject a pre-built AI analyzer (used by tests). Overrides all other AI config. */
+  aiAnalyzer?: AiChangeAnalyzer;
 }
 
 /**
@@ -37,6 +48,7 @@ export class BreakingChangesDetector {
   private extractor: ApiExtractorRunner;
   private diffAnalyzer: ApiDiffAnalyzer;
   private versionAnalyzer: VersionAnalyzer;
+  private aiAnalyzer: AiChangeAnalyzer | null;
   private verbose: boolean;
   private configPath: string;
   private configDir: string;
@@ -56,6 +68,69 @@ export class BreakingChangesDetector {
     );
     this.diffAnalyzer = new ApiDiffAnalyzer();
     this.versionAnalyzer = new VersionAnalyzer();
+    this.aiAnalyzer = this.maybeCreateAiAnalyzer(options);
+  }
+
+  /**
+   * Whether the AI analyzer is active for this detector instance.
+   */
+  get aiEnabled(): boolean {
+    return this.aiAnalyzer !== null;
+  }
+
+  /**
+   * Summary stats reported by the AI analyzer across all packages so far.
+   */
+  get aiStats(): {
+    enabled: boolean;
+    model: string | null;
+    reviewed: number;
+    overridden: number;
+    discovered: number;
+  } {
+    if (!this.aiAnalyzer) {
+      return {
+        enabled: false,
+        model: null,
+        reviewed: 0,
+        overridden: 0,
+        discovered: 0,
+      };
+    }
+    return {
+      enabled: true,
+      model: this.config.ai?.model ?? DEFAULT_AI_MODEL,
+      reviewed: this.aiAnalyzer.reviewedCount,
+      overridden: this.aiAnalyzer.overriddenCount,
+      discovered: this.aiAnalyzer.discoveredCount,
+    };
+  }
+
+  private maybeCreateAiAnalyzer(
+    options: DetectorOptions,
+  ): AiChangeAnalyzer | null {
+    if (options.aiAnalyzer) return options.aiAnalyzer;
+    if (options.disableAi) return null;
+
+    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const aiCfg = this.config.ai;
+    const enabledOverride = aiCfg?.enabled;
+
+    if (enabledOverride === false) return null;
+    if (enabledOverride === true && !apiKey) {
+      throw new Error(
+        "config.ai.enabled is true but ANTHROPIC_API_KEY is not set in the environment.",
+      );
+    }
+    if (enabledOverride === undefined && !apiKey) return null;
+
+    const model = options.aiModel ?? aiCfg?.model ?? DEFAULT_AI_MODEL;
+    return new AiChangeAnalyzer({
+      apiKey: apiKey as string,
+      model,
+      maxChangesPerCall: aiCfg?.maxChangesPerCall ?? 80,
+      verbose: this.verbose,
+    });
   }
 
   /**
@@ -243,6 +318,15 @@ export class BreakingChangesDetector {
         baselineSnapshot.apiJsonPath,
         currentSnapshot.apiJsonPath,
       );
+
+      if (this.aiAnalyzer) {
+        this.log(`Running AI review for ${packageInfo.name}...`);
+        changes = await this.aiAnalyzer.analyze(changes, {
+          packageName: packageInfo.name,
+          baselineApiJsonPath: baselineSnapshot.apiJsonPath,
+          currentApiJsonPath: currentSnapshot.apiJsonPath,
+        });
+      }
     } else {
       this.log(`No baseline for ${packageInfo.name}, treating as new package`);
     }
