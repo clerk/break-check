@@ -26,16 +26,22 @@ jobs:
           node-version: "24"
           cache: "pnpm"
 
-      - name: Generate baseline from ${{ github.base_ref }}
+      - name: Snapshot baseline from base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
         run: |
-          git switch --detach "origin/${{ github.base_ref }}"
+          git worktree add /tmp/base-checkout "origin/$BASE_REF"
+          # Bring the PR's snapi.config.json over so first-run PRs (where the
+          # base branch doesn't yet have one) can still produce a baseline.
+          # If the base already has a config, cp -n leaves it untouched.
+          cp -n snapi.config.json /tmp/base-checkout/snapi.config.json || true
+          cd /tmp/base-checkout
           pnpm install --frozen-lockfile
           pnpm build
-          node dist/cli.js snapshot --output .api-baseline-main
+          node dist/cli.js snapshot --output "$GITHUB_WORKSPACE/.api-baseline-main"
 
-      - name: Restore PR checkout
+      - name: Install and build PR
         run: |
-          git switch --detach "$GITHUB_SHA"
           pnpm install --frozen-lockfile
           pnpm build
 
