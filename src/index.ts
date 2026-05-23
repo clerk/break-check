@@ -17,7 +17,6 @@ export {
 // Config
 export {
   CONFIG_FILE_NAME,
-  ConfigSchema,
   type SnapiConfig,
   createDefaultConfig,
   findConfigFile,
