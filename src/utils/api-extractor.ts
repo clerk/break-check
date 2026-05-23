@@ -227,6 +227,7 @@ export class ApiExtractorRunner {
         enabled: true,
         reportFileName: `${safePackageName}.api.md`,
         reportFolder: packageOutputDir,
+        reportTempFolder: packageOutputDir,
         includeForgottenExports: true,
       },
       docModel: {

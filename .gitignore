@@ -29,5 +29,7 @@ coverage/
 # Snapi output
 .api-snapshots/
 .api-snapshots-baseline/
+.api-baseline-main/
 report.json
 report.md
+api-report.md

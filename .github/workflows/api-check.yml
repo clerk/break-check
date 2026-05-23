@@ -1,0 +1,85 @@
+name: API Check
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: api-check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  api-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - name: Snapshot baseline from base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git worktree add /tmp/base-checkout "origin/$BASE_REF"
+          # Bring the PR's snapi.config.json over so first-run PRs (where the
+          # base branch doesn't yet have one) can still produce a baseline.
+          # If the base already has a config, cp -n leaves it untouched.
+          cp -n snapi.config.json /tmp/base-checkout/snapi.config.json || true
+          cd /tmp/base-checkout
+          pnpm install --frozen-lockfile
+          pnpm build
+          node dist/cli.js snapshot --output "$GITHUB_WORKSPACE/.api-baseline-main"
+
+      - name: Install and build PR
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm build
+
+      - name: Detect API changes
+        id: detect
+        run: node dist/cli.js detect --baseline .api-baseline-main --output api-report.md
+        continue-on-error: true
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const marker = '<!-- snapi-self-dogfood -->';
+            const report = fs.readFileSync('api-report.md', 'utf-8');
+            const body = `${marker}\n${report}`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find(
+              (c) => c.user.type === 'Bot' && c.body.includes(marker),
+            );
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }
