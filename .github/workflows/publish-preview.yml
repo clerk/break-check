@@ -35,12 +35,7 @@ jobs:
 
       - run: pnpm install --frozen-lockfile
 
-      - name: pnpm check
-        env:
-          # Only pass the AI key on a single Node version so a flaky API call
-          # can't take down the whole matrix and so we don't pay 3x.
-          SNAPI_ANTHROPIC_API_KEY: ${{ matrix.node-version == '24' && secrets.SNAPI_ANTHROPIC_API_KEY || '' }}
-        run: pnpm check
+      - run: pnpm check
 
       - name: Verify changeset is present
         if: github.event_name == 'pull_request' && matrix.node-version == '24'

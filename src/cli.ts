@@ -73,6 +73,10 @@ program
       const detector = new BreakingChangesDetector(config, {
         verbose: Boolean(options.verbose),
         configPath,
+        // Snapshot never invokes the AI reviewer; hard-disable it so a
+        // misconfigured `ai.enabled: true` does not require the API key
+        // here (the baseline step in CI does not pass one).
+        disableAi: true,
       });
 
       console.log("Generating API snapshots...\n");

@@ -1,9 +1,13 @@
 /**
- * End-to-end AI verdict test against the real Anthropic API.
+ * End-to-end AI verdict tests against the real Anthropic API.
  *
- * Skipped when SNAPI_ANTHROPIC_API_KEY is not set in the environment, so the
- * unit-test suite still passes in environments without the key. CI passes the
- * secret through on a single Node version (see .github/workflows/publish-preview.yml).
+ * These tests depend on external network + model behavior, so they are NOT
+ * part of the regular CI matrix. Opt in explicitly by setting BOTH:
+ *   SNAPI_RUN_REAL_AI_TESTS=1
+ *   SNAPI_ANTHROPIC_API_KEY=<key>
+ *
+ * The dedicated `.github/workflows/ai-smoke.yml` workflow sets both and runs
+ * on a schedule / on manual dispatch.
  */
 
 import assert from "node:assert/strict";
@@ -17,7 +21,13 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = join(repoRoot, "dist", "cli.js");
 
-const haveKey = Boolean(process.env.SNAPI_ANTHROPIC_API_KEY);
+const truthy = (v) => v === "1" || v === "true";
+const runRealAiTests =
+  truthy(process.env.SNAPI_RUN_REAL_AI_TESTS ?? "") &&
+  Boolean(process.env.SNAPI_ANTHROPIC_API_KEY);
+const skipReason = runRealAiTests
+  ? false
+  : "real-AI tests require SNAPI_RUN_REAL_AI_TESTS=1 and SNAPI_ANTHROPIC_API_KEY";
 
 function runSnapi(args, cwd) {
   return spawnSync(process.execPath, [cliPath, ...args], {
@@ -92,7 +102,7 @@ function setup({ baseline, current, extraDetectArgs = [] }) {
 
 test(
   "ai-verdict: AI confirms a real breaking parameter-type change",
-  { skip: !haveKey && "SNAPI_ANTHROPIC_API_KEY not set" },
+  { skip: skipReason },
   () => {
     const { result, stderr } = setup({
       baseline: {
@@ -144,7 +154,7 @@ test(
 
 test(
   "ai-verdict: AI is skipped by default when only additions are detected",
-  { skip: !haveKey && "SNAPI_ANTHROPIC_API_KEY not set" },
+  { skip: skipReason },
   () => {
     const { result } = setup({
       baseline: {
@@ -176,7 +186,7 @@ test(
 
 test(
   "ai-verdict: --ai-strict forces AI to run on additions-only diffs",
-  { skip: !haveKey && "SNAPI_ANTHROPIC_API_KEY not set" },
+  { skip: skipReason },
   () => {
     const { result } = setup({
       baseline: {

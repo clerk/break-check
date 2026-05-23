@@ -214,7 +214,8 @@ Output protocol:
 /* --------------------------------------------------------------- analyzer -- */
 
 export class AiChangeAnalyzer {
-  private readonly model: string;
+  /** Resolved model identifier this analyzer will send to the API. */
+  public readonly model: string;
   private readonly maxChangesPerCall: number;
   private readonly timeoutMs: number;
   private readonly verbose: boolean;

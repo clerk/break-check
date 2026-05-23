@@ -54,7 +54,8 @@ export class BreakingChangesDetector {
   private extractor: ApiExtractorRunner;
   private diffAnalyzer: ApiDiffAnalyzer;
   private versionAnalyzer: VersionAnalyzer;
-  private aiAnalyzer: AiChangeAnalyzer | null;
+  private aiAnalyzer: AiChangeAnalyzer | null = null;
+  private aiInitialized = false;
   private aiStrict: boolean;
   private verbose: boolean;
   private configPath: string;
@@ -62,11 +63,11 @@ export class BreakingChangesDetector {
 
   constructor(
     private config: SnapiConfig,
-    options: DetectorOptions = {},
+    private detectorOptions: DetectorOptions = {},
   ) {
-    this.verbose = options.verbose ?? false;
+    this.verbose = detectorOptions.verbose ?? false;
     this.configPath = path.resolve(
-      options.configPath ?? path.join(process.cwd(), CONFIG_FILE_NAME),
+      detectorOptions.configPath ?? path.join(process.cwd(), CONFIG_FILE_NAME),
     );
     this.configDir = path.dirname(this.configPath);
     this.extractor = new ApiExtractorRunner(
@@ -75,8 +76,23 @@ export class BreakingChangesDetector {
     );
     this.diffAnalyzer = new ApiDiffAnalyzer();
     this.versionAnalyzer = new VersionAnalyzer();
-    this.aiAnalyzer = this.maybeCreateAiAnalyzer(options);
-    this.aiStrict = this.resolveStrict(options);
+    this.aiStrict = this.resolveStrict(detectorOptions);
+    // AI analyzer is constructed lazily; see `ensureAiAnalyzer`. This keeps
+    // `snapi snapshot` (which never uses AI) from validating AI config or
+    // failing when SNAPI_ANTHROPIC_API_KEY is missing.
+  }
+
+  /**
+   * Lazily build (or return the cached) AI analyzer. Returns null if AI is
+   * disabled, hard-disabled via options, or no key/env config opts in.
+   * Throws if the user explicitly opted in (config.ai.enabled === true) but
+   * forgot to set the env key.
+   */
+  private ensureAiAnalyzer(): AiChangeAnalyzer | null {
+    if (this.aiInitialized) return this.aiAnalyzer;
+    this.aiInitialized = true;
+    this.aiAnalyzer = this.maybeCreateAiAnalyzer(this.detectorOptions);
+    return this.aiAnalyzer;
   }
 
   private resolveStrict(options: DetectorOptions): boolean {
@@ -92,7 +108,7 @@ export class BreakingChangesDetector {
    * Whether the AI analyzer is active for this detector instance.
    */
   get aiEnabled(): boolean {
-    return this.aiAnalyzer !== null;
+    return this.ensureAiAnalyzer() !== null;
   }
 
   /**
@@ -105,7 +121,8 @@ export class BreakingChangesDetector {
     overridden: number;
     discovered: number;
   } {
-    if (!this.aiAnalyzer) {
+    const ai = this.ensureAiAnalyzer();
+    if (!ai) {
       return {
         enabled: false,
         model: null,
@@ -116,10 +133,10 @@ export class BreakingChangesDetector {
     }
     return {
       enabled: true,
-      model: this.config.ai?.model ?? DEFAULT_AI_MODEL,
-      reviewed: this.aiAnalyzer.reviewedCount,
-      overridden: this.aiAnalyzer.overriddenCount,
-      discovered: this.aiAnalyzer.discoveredCount,
+      model: ai.model,
+      reviewed: ai.reviewedCount,
+      overridden: ai.overriddenCount,
+      discovered: ai.discoveredCount,
     };
   }
 
@@ -337,7 +354,8 @@ export class BreakingChangesDetector {
         currentSnapshot.apiJsonPath,
       );
 
-      if (this.aiAnalyzer) {
+      const ai = this.ensureAiAnalyzer();
+      if (ai) {
         // Skip the call when the rule-based pass only found additions and
         // strict mode is off. Pure-additions diffs rarely have hidden breaks,
         // and the AI call is the only thing here that costs real money.
@@ -346,12 +364,12 @@ export class BreakingChangesDetector {
         );
         if (hasNonAdditionChange || this.aiStrict) {
           this.log(`Running AI review for ${packageInfo.name}...`);
-          changes = await this.aiAnalyzer.analyze(changes, {
+          changes = await ai.analyze(changes, {
             packageName: packageInfo.name,
             baselineApiJsonPath: baselineSnapshot.apiJsonPath,
             currentApiJsonPath: currentSnapshot.apiJsonPath,
           });
-          aiReviewedBy = this.config.ai?.model ?? DEFAULT_AI_MODEL;
+          aiReviewedBy = ai.model;
         } else {
           this.log(
             `Skipping AI review for ${packageInfo.name} (additions only; set SNAPI_AI_STRICT=1 or --ai-strict for full coverage)`,
