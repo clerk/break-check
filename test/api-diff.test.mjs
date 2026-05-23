@@ -53,6 +53,9 @@ function setup({ baseline, current }) {
       "baseline",
       "--format",
       "json",
+      // These tests assert rule-based behavior. Pin --no-ai so the suite stays
+      // deterministic when SNAPI_ANTHROPIC_API_KEY happens to be set.
+      "--no-ai",
     ],
     workspace,
   );
