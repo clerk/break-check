@@ -61,6 +61,13 @@ export const ConfigSchema = z.object({
   /** Output format for reports */
   outputFormat: z.enum(["markdown", "json"]).default("markdown"),
 
+  /**
+   * Subpath exports to skip during discovery. Exact-match against `exports`
+   * map keys (`./internal`, `./types`, etc.). Wildcards in the export map are
+   * always skipped regardless of this setting.
+   */
+  ignoreSubpaths: z.array(z.string()).default([]),
+
   /** Optional AI analyzer configuration. */
   ai: AiConfigSchema.optional(),
 });
@@ -85,6 +92,7 @@ export function createDefaultConfig(): SnapiConfig {
     mainBranch: "main",
     checkVersionBump: true,
     outputFormat: "markdown",
+    ignoreSubpaths: [],
   };
 }
 

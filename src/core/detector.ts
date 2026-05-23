@@ -16,11 +16,16 @@ import { VersionAnalyzer } from "../analyzers/version.js";
 import { AiChangeAnalyzer } from "../analyzers/ai-analyzer.js";
 import {
   AnalysisResult,
-  PackageAnalysis,
+  ApiChange,
   ApiSnapshot,
+  ChangeCategory,
+  ChangeSeverity,
   ChangeType,
+  PackageAnalysis,
+  PackageEntry,
   PackageInfo,
 } from "../types.js";
+import * as crypto from "node:crypto";
 
 /**
  * Options for the detector
@@ -46,6 +51,9 @@ export interface DetectorOptions {
   /** Inject a pre-built AI analyzer (used by tests). Overrides all other AI config. */
   aiAnalyzer?: AiChangeAnalyzer;
 }
+
+const snapshotKey = (packageName: string, subpath: string): string =>
+  `${packageName}#${subpath}`;
 
 /**
  * Orchestrates API breaking changes detection
@@ -77,17 +85,8 @@ export class BreakingChangesDetector {
     this.diffAnalyzer = new ApiDiffAnalyzer();
     this.versionAnalyzer = new VersionAnalyzer();
     this.aiStrict = this.resolveStrict(detectorOptions);
-    // AI analyzer is constructed lazily; see `ensureAiAnalyzer`. This keeps
-    // `snapi snapshot` (which never uses AI) from validating AI config or
-    // failing when SNAPI_ANTHROPIC_API_KEY is missing.
   }
 
-  /**
-   * Lazily build (or return the cached) AI analyzer. Returns null if AI is
-   * disabled, hard-disabled via options, or no key/env config opts in.
-   * Throws if the user explicitly opted in (config.ai.enabled === true) but
-   * forgot to set the env key.
-   */
   private ensureAiAnalyzer(): AiChangeAnalyzer | null {
     if (this.aiInitialized) return this.aiAnalyzer;
     this.aiInitialized = true;
@@ -104,16 +103,10 @@ export class BreakingChangesDetector {
     return this.config.ai?.strict ?? false;
   }
 
-  /**
-   * Whether the AI analyzer is active for this detector instance.
-   */
   get aiEnabled(): boolean {
     return this.ensureAiAnalyzer() !== null;
   }
 
-  /**
-   * Summary stats reported by the AI analyzer across all packages so far.
-   */
   get aiStats(): {
     enabled: boolean;
     model: string | null;
@@ -168,8 +161,8 @@ export class BreakingChangesDetector {
   }
 
   /**
-   * Generate snapshots for all configured packages
-   * @returns Map of package name to snapshot
+   * Generate snapshots for every (package, subpath) entry.
+   * Map keys are `${packageName}#${subpath}`.
    */
   async generateSnapshots(): Promise<Map<string, ApiSnapshot>> {
     const snapshots = new Map<string, ApiSnapshot>();
@@ -177,28 +170,54 @@ export class BreakingChangesDetector {
     const failures: string[] = [];
 
     for (const packagePath of packagePaths) {
-      const packageInfo = readPackageInfo(packagePath);
+      const packageInfo = readPackageInfo(packagePath, {
+        ignoreSubpaths: this.config.ignoreSubpaths,
+      });
 
       if (!packageInfo) {
         failures.push(`${packagePath}: no package.json found`);
         continue;
       }
 
-      if (!packageInfo.typesEntryPoint) {
-        failures.push(`${packageInfo.name}: no TypeScript declarations found`);
+      if (packageInfo.entries.length === 0) {
+        failures.push(
+          `${packageInfo.name}: no TypeScript declarations found (no \`types\`/\`exports\` types resolved)`,
+        );
         continue;
       }
 
-      this.log(`Generating snapshot for ${packageInfo.name}...`);
+      this.log(
+        `Generating snapshot for ${packageInfo.name} (${packageInfo.entries.length} entr${packageInfo.entries.length === 1 ? "y" : "ies"})...`,
+      );
 
-      try {
-        const snapshot = await this.extractor.generateSnapshot(packageInfo);
-        snapshots.set(packageInfo.name, snapshot);
-        this.log(`  ✓ Generated snapshot for ${packageInfo.name}`);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        failures.push(`${packageInfo.name}: ${message}`);
+      const packageSnapshots: ApiSnapshot[] = [];
+      const entryFailures: string[] = [];
+
+      for (const entry of packageInfo.entries) {
+        try {
+          const snapshot = await this.extractor.generateSnapshot(
+            packageInfo,
+            entry,
+          );
+          snapshots.set(snapshotKey(packageInfo.name, entry.subpath), snapshot);
+          packageSnapshots.push(snapshot);
+          this.log(`  ✓ ${packageInfo.name} ${entry.subpath}`);
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          entryFailures.push(
+            `${packageInfo.name} ${entry.subpath}: ${message}`,
+          );
+        }
       }
+
+      // Always write the package-level metadata for whatever entries succeeded;
+      // a partial baseline is still useful for the comparison step.
+      if (packageSnapshots.length > 0) {
+        this.extractor.writePackageMetadata(packageInfo, packageSnapshots);
+      }
+
+      failures.push(...entryFailures);
     }
 
     if (failures.length > 0) {
@@ -213,11 +232,6 @@ export class BreakingChangesDetector {
     return snapshots;
   }
 
-  /**
-   * Run full detection: generate current snapshots, compare to baseline
-   * @param baselineDir - Directory containing baseline snapshots
-   * @returns Complete analysis result
-   */
   async detect(baselineDir: string): Promise<AnalysisResult> {
     const resolvedBaselineDir = this.resolveConfigRelativePath(baselineDir);
 
@@ -225,7 +239,6 @@ export class BreakingChangesDetector {
       throw new Error(`Baseline directory not found: ${resolvedBaselineDir}`);
     }
 
-    // Generate current snapshots
     this.log("Generating current API snapshots...");
     const currentSnapshots = await this.generateSnapshots();
 
@@ -233,29 +246,31 @@ export class BreakingChangesDetector {
       return this.createEmptyResult();
     }
 
-    // Analyze each package
     const packageAnalyses: PackageAnalysis[] = [];
     const packagePaths = resolvePackagePaths(this.config, this.configPath);
 
     for (const packagePath of packagePaths) {
-      const packageInfo = readPackageInfo(packagePath);
+      const packageInfo = readPackageInfo(packagePath, {
+        ignoreSubpaths: this.config.ignoreSubpaths,
+      });
       if (!packageInfo) continue;
 
-      const currentSnapshot = currentSnapshots.get(packageInfo.name);
-      if (!currentSnapshot) continue;
-
-      // Find baseline snapshot
-      const baselineSnapshot = this.findBaselineSnapshot(
+      const baselineEntries = this.readBaselineEntries(
         resolvedBaselineDir,
         packageInfo.name,
       );
 
+      // If neither baseline nor current produced anything for this package,
+      // skip silently (already counted in failures).
+      if (packageInfo.entries.length === 0 && baselineEntries.length === 0) {
+        continue;
+      }
+
       const analysis = await this.analyzePackage(
         packageInfo,
-        baselineSnapshot,
-        currentSnapshot,
+        baselineEntries,
+        currentSnapshots,
       );
-
       packageAnalyses.push(analysis);
     }
 
@@ -263,127 +278,246 @@ export class BreakingChangesDetector {
   }
 
   /**
-   * Find baseline snapshot for a package
+   * Load every baseline entry for a package, supporting both v1 (single
+   * `<safe>.api.json` per directory) and v2 (metadata-driven) layouts.
    */
-  private findBaselineSnapshot(
+  private readBaselineEntries(
     baselineDir: string,
     packageName: string,
-  ): ApiSnapshot | null {
+  ): ApiSnapshot[] {
     const safePackageName = packageName.replace(/^@/, "").replace(/\//g, "__");
-    const apiJsonPath = path.join(
-      baselineDir,
-      safePackageName,
-      `${safePackageName}.api.json`,
-    );
-    const metadataPath = path.join(
-      baselineDir,
-      safePackageName,
-      "snapi.snapshot.json",
-    );
+    const packageDir = path.join(baselineDir, safePackageName);
+    const metadataPath = path.join(packageDir, "snapi.snapshot.json");
 
-    if (!fs.existsSync(apiJsonPath)) {
+    if (!fs.existsSync(packageDir)) {
       this.log(`No baseline found for ${packageName}`);
-      return null;
+      return [];
     }
 
     const metadata = this.readSnapshotMetadata(metadataPath);
 
-    return {
-      packageName,
-      packagePath: metadata?.packagePath ?? "",
-      version: metadata?.version ?? "unknown",
-      timestamp: metadata?.timestamp ?? "",
-      apiJsonPath,
-      apiReportPath: "",
-      metadataPath,
-    };
+    if (metadata && metadata.schemaVersion === 2 && metadata.entries) {
+      return metadata.entries
+        .map((entry) => {
+          const apiJsonPath = path.join(packageDir, entry.apiJsonFile);
+          if (!fs.existsSync(apiJsonPath)) return null;
+          return {
+            packageName,
+            subpath: entry.subpath,
+            packagePath: metadata.packagePath ?? "",
+            version: metadata.version ?? "unknown",
+            timestamp: metadata.timestamp ?? "",
+            apiJsonPath,
+            apiReportPath: entry.apiReportFile
+              ? path.join(packageDir, entry.apiReportFile)
+              : "",
+            metadataPath,
+          } satisfies ApiSnapshot;
+        })
+        .filter((s): s is ApiSnapshot => s !== null);
+    }
+
+    // v1 fallback: single root entry written as `<safe>.api.json`.
+    const legacyApiJsonPath = path.join(
+      packageDir,
+      `${safePackageName}.api.json`,
+    );
+    if (!fs.existsSync(legacyApiJsonPath)) {
+      this.log(`No baseline found for ${packageName}`);
+      return [];
+    }
+
+    return [
+      {
+        packageName,
+        subpath: ".",
+        packagePath: metadata?.packagePath ?? "",
+        version: metadata?.version ?? "unknown",
+        timestamp: metadata?.timestamp ?? "",
+        apiJsonPath: legacyApiJsonPath,
+        apiReportPath: "",
+        metadataPath,
+      },
+    ];
   }
 
-  private readSnapshotMetadata(
-    metadataPath: string,
-  ): { packagePath?: string; version?: string; timestamp?: string } | null {
-    if (!fs.existsSync(metadataPath)) {
-      return null;
-    }
+  private readSnapshotMetadata(metadataPath: string): {
+    schemaVersion?: number;
+    packagePath?: string;
+    version?: string;
+    timestamp?: string;
+    entries?: Array<{
+      subpath: string;
+      apiJsonFile: string;
+      apiReportFile: string | null;
+    }>;
+  } | null {
+    if (!fs.existsSync(metadataPath)) return null;
 
     try {
       const parsed = JSON.parse(fs.readFileSync(metadataPath, "utf-8")) as {
+        schemaVersion?: unknown;
         packagePath?: unknown;
         version?: unknown;
         timestamp?: unknown;
+        entries?: unknown;
       };
 
-      return {
-        packagePath:
-          typeof parsed.packagePath === "string"
-            ? parsed.packagePath
-            : undefined,
-        version:
-          typeof parsed.version === "string" ? parsed.version : undefined,
-        timestamp:
-          typeof parsed.timestamp === "string" ? parsed.timestamp : undefined,
-      };
+      const result: {
+        schemaVersion?: number;
+        packagePath?: string;
+        version?: string;
+        timestamp?: string;
+        entries?: Array<{
+          subpath: string;
+          apiJsonFile: string;
+          apiReportFile: string | null;
+        }>;
+      } = {};
+
+      if (typeof parsed.schemaVersion === "number") {
+        result.schemaVersion = parsed.schemaVersion;
+      }
+      if (typeof parsed.packagePath === "string") {
+        result.packagePath = parsed.packagePath;
+      }
+      if (typeof parsed.version === "string") {
+        result.version = parsed.version;
+      }
+      if (typeof parsed.timestamp === "string") {
+        result.timestamp = parsed.timestamp;
+      }
+      if (Array.isArray(parsed.entries)) {
+        const entries: Array<{
+          subpath: string;
+          apiJsonFile: string;
+          apiReportFile: string | null;
+        }> = [];
+        for (const e of parsed.entries) {
+          if (
+            e &&
+            typeof e === "object" &&
+            typeof (e as Record<string, unknown>).subpath === "string" &&
+            typeof (e as Record<string, unknown>).apiJsonFile === "string"
+          ) {
+            const cast = e as Record<string, unknown>;
+            entries.push({
+              subpath: cast.subpath as string,
+              apiJsonFile: cast.apiJsonFile as string,
+              apiReportFile:
+                typeof cast.apiReportFile === "string"
+                  ? (cast.apiReportFile as string)
+                  : null,
+            });
+          }
+        }
+        result.entries = entries;
+      }
+
+      return result;
     } catch {
       return null;
     }
   }
 
   /**
-   * Analyze a single package
+   * Run per-entry diffs and aggregate them into a single PackageAnalysis.
    */
   private async analyzePackage(
     packageInfo: PackageInfo,
-    baselineSnapshot: ApiSnapshot | null,
-    currentSnapshot: ApiSnapshot,
+    baselineEntries: ApiSnapshot[],
+    currentSnapshots: Map<string, ApiSnapshot>,
   ): Promise<PackageAnalysis> {
-    let changes: ApiChange[] = [];
+    const allChanges: ApiChange[] = [];
     let previousVersion = "0.0.0";
     let aiReviewedBy: string | undefined;
 
-    if (baselineSnapshot) {
-      this.log(`Comparing ${packageInfo.name}...`);
+    // Drop baseline entries whose subpath is now in `ignoreSubpaths`. The
+    // user has opted out of tracking these surfaces, so we must not surface
+    // removal noise for them.
+    const ignored = new Set(this.config.ignoreSubpaths ?? []);
+    const visibleBaselineEntries = baselineEntries.filter(
+      (s) => !ignored.has(s.subpath),
+    );
 
-      // Get previous version from baseline package.json if available
-      previousVersion = baselineSnapshot.version;
-      if (previousVersion === "unknown") {
+    const baselineBySubpath = new Map<string, ApiSnapshot>(
+      visibleBaselineEntries.map((s) => [s.subpath, s]),
+    );
+    const currentEntries: PackageEntry[] = packageInfo.entries;
+
+    if (baselineEntries.length > 0) {
+      // Use the baseline's recorded version, falling back to a heuristic.
+      previousVersion = baselineEntries[0].version;
+      if (!previousVersion || previousVersion === "unknown") {
         previousVersion = this.inferPreviousVersion(packageInfo.version);
-      }
-
-      changes = this.diffAnalyzer.analyze(
-        baselineSnapshot.apiJsonPath,
-        currentSnapshot.apiJsonPath,
-      );
-
-      const ai = this.ensureAiAnalyzer();
-      if (ai) {
-        // Skip the call when the rule-based pass only found additions and
-        // strict mode is off. Pure-additions diffs rarely have hidden breaks,
-        // and the AI call is the only thing here that costs real money.
-        const hasNonAdditionChange = changes.some(
-          (c) => c.type !== ChangeType.ADDITION,
-        );
-        if (hasNonAdditionChange || this.aiStrict) {
-          this.log(`Running AI review for ${packageInfo.name}...`);
-          changes = await ai.analyze(changes, {
-            packageName: packageInfo.name,
-            baselineApiJsonPath: baselineSnapshot.apiJsonPath,
-            currentApiJsonPath: currentSnapshot.apiJsonPath,
-          });
-          aiReviewedBy = ai.model;
-        } else {
-          this.log(
-            `Skipping AI review for ${packageInfo.name} (additions only; set SNAPI_AI_STRICT=1 or --ai-strict for full coverage)`,
-          );
-        }
       }
     } else {
       this.log(`No baseline for ${packageInfo.name}, treating as new package`);
     }
 
-    const hasBreakingChanges = changes.some(
+    // 1. Diff every current subpath. A subpath with no baseline diffs against
+    // an empty surface so its public members surface as additions (and feed
+    // into the recommended version bump).
+    for (const entry of currentEntries) {
+      const currentSnap = currentSnapshots.get(
+        snapshotKey(packageInfo.name, entry.subpath),
+      );
+      if (!currentSnap) continue;
+
+      const baselineSnap = baselineBySubpath.get(entry.subpath);
+
+      // Skip the new-subpath addition path when there's no baseline at all
+      // for this package; reporting hundreds of "added" items the first time
+      // snapi runs against a package is just noise.
+      if (!baselineSnap && visibleBaselineEntries.length === 0) {
+        continue;
+      }
+
+      this.log(`Comparing ${packageInfo.name} ${entry.subpath}...`);
+      let entryChanges = this.diffAnalyzer.analyze(
+        baselineSnap ? baselineSnap.apiJsonPath : null,
+        currentSnap.apiJsonPath,
+      );
+
+      const ai = this.ensureAiAnalyzer();
+      // Skip AI review when this is a brand-new subpath (no baseline to
+      // diff against). The reviewer expects both sides for context, and an
+      // all-additions diff is exactly the case we already short-circuit.
+      if (ai && entryChanges.length > 0 && baselineSnap) {
+        const hasNonAdditionChange = entryChanges.some(
+          (c) => c.type !== ChangeType.ADDITION,
+        );
+        if (hasNonAdditionChange || this.aiStrict) {
+          this.log(
+            `Running AI review for ${packageInfo.name} ${entry.subpath}...`,
+          );
+          entryChanges = await ai.analyze(entryChanges, {
+            packageName: `${packageInfo.name} (${entry.subpath})`,
+            baselineApiJsonPath: baselineSnap.apiJsonPath,
+            currentApiJsonPath: currentSnap.apiJsonPath,
+          });
+          aiReviewedBy = ai.model;
+        }
+      }
+
+      for (const c of entryChanges) c.subpath = entry.subpath;
+      allChanges.push(...entryChanges);
+    }
+
+    // 2. Subpaths removed from current: synthesize one BREAKING change per
+    // removal. Iterating `visibleBaselineEntries` (not the raw baseline list)
+    // means a subpath the user now ignores doesn't get reported as a break
+    // just because it's still in an older baseline.
+    const currentSubpaths = new Set(currentEntries.map((e) => e.subpath));
+    for (const baseline of visibleBaselineEntries) {
+      if (currentSubpaths.has(baseline.subpath)) continue;
+      allChanges.push(this.buildSubpathRemovalChange(baseline.subpath));
+    }
+
+    const hasBreakingChanges = allChanges.some(
       (c) => c.type === ChangeType.BREAKING,
     );
-    const recommendedBump = this.versionAnalyzer.getRecommendedBump(changes);
+    const recommendedBump = this.versionAnalyzer.getRecommendedBump(allChanges);
     const actualBump = this.versionAnalyzer.getActualBump(
       previousVersion,
       packageInfo.version,
@@ -399,7 +533,7 @@ export class BreakingChangesDetector {
         current: packageInfo.version,
         previous: previousVersion,
       },
-      changes,
+      changes: allChanges,
       hasBreakingChanges,
       recommendedVersionBump: recommendedBump,
       actualVersionBump: actualBump ?? undefined,
@@ -408,14 +542,28 @@ export class BreakingChangesDetector {
     };
   }
 
-  /**
-   * Infer a previous version (simple heuristic)
-   */
+  private buildSubpathRemovalChange(subpath: string): ApiChange {
+    const description = `Subpath export \`${subpath}\` was removed`;
+    const idSource = ["subpath-removed", subpath].join("|");
+    return {
+      id: crypto
+        .createHash("sha256")
+        .update(idSource)
+        .digest("hex")
+        .slice(0, 12),
+      type: ChangeType.BREAKING,
+      severity: ChangeSeverity.MAJOR,
+      category: "export" as ChangeCategory,
+      name: subpath,
+      description,
+      subpath,
+    };
+  }
+
   private inferPreviousVersion(currentVersion: string): string {
     const parsed = this.versionAnalyzer.parseSemver(currentVersion);
     if (!parsed) return "0.0.0";
 
-    // Assume patch bump from previous
     if (parsed.patch > 0) {
       return `${parsed.major}.${parsed.minor}.${parsed.patch - 1}`;
     }
@@ -428,9 +576,6 @@ export class BreakingChangesDetector {
     return "0.0.0";
   }
 
-  /**
-   * Build the final analysis result
-   */
   private buildResult(packages: PackageAnalysis[]): AnalysisResult {
     const summary = this.buildSummary(packages);
 
@@ -442,9 +587,6 @@ export class BreakingChangesDetector {
     };
   }
 
-  /**
-   * Build summary statistics
-   */
   private buildSummary(packages: PackageAnalysis[]): AnalysisResult["summary"] {
     let breakingChanges = 0;
     let nonBreakingChanges = 0;
@@ -452,10 +594,7 @@ export class BreakingChangesDetector {
     let packagesWithChanges = 0;
 
     for (const pkg of packages) {
-      if (pkg.changes.length > 0) {
-        packagesWithChanges++;
-      }
-
+      if (pkg.changes.length > 0) packagesWithChanges++;
       for (const change of pkg.changes) {
         switch (change.type) {
           case ChangeType.BREAKING:
@@ -480,9 +619,6 @@ export class BreakingChangesDetector {
     };
   }
 
-  /**
-   * Create an empty result
-   */
   private createEmptyResult(): AnalysisResult {
     return {
       timestamp: new Date().toISOString(),
@@ -498,9 +634,6 @@ export class BreakingChangesDetector {
     };
   }
 
-  /**
-   * Resolve output directory relative to config
-   */
   private resolveOutputDir(dir: string): string {
     return this.resolveConfigRelativePath(dir);
   }
@@ -511,15 +644,9 @@ export class BreakingChangesDetector {
       : path.resolve(this.configDir, targetPath);
   }
 
-  /**
-   * Log a message if verbose mode is enabled
-   */
   private log(message: string): void {
     if (this.verbose) {
       console.log(message);
     }
   }
 }
-
-// Re-export ApiChange for convenience
-import type { ApiChange } from "../types.js";

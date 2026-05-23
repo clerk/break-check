@@ -81,8 +81,13 @@ program
 
       console.log("Generating API snapshots...\n");
       const snapshots = await detector.generateSnapshots();
+      const packageCount = new Set(
+        Array.from(snapshots.values()).map((s) => s.packageName),
+      ).size;
 
-      console.log(`\n✓ Generated ${snapshots.size} snapshot(s)`);
+      console.log(
+        `\n✓ Generated ${snapshots.size} snapshot(s) across ${packageCount} package(s)`,
+      );
       console.log(
         `  Output: ${path.resolve(path.dirname(configPath), config.snapshotDir)}`,
       );

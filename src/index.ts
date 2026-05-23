@@ -14,6 +14,7 @@ export {
   type AnalysisResult,
   type ApiSnapshot,
   type PackageInfo,
+  type PackageEntry,
 } from "./types.js";
 
 // Config
@@ -34,6 +35,7 @@ export {
 export {
   ApiExtractorRunner,
   type ApiExtractorRunnerOptions,
+  type FindEntryPointsOptions,
   readPackageInfo,
 } from "./utils/api-extractor.js";
 

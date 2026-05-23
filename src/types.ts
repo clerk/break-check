@@ -81,6 +81,8 @@ export interface ApiChange {
   beforeSnippet?: string;
   /** Code snippet after the change */
   afterSnippet?: string;
+  /** Subpath export this change belongs to (`.`, `./react`, ...). Set by the orchestrator. */
+  subpath?: string;
   /** Source location of the change */
   location?: {
     file: string;
@@ -147,11 +149,24 @@ export interface AnalysisResult {
 }
 
 /**
- * API snapshot metadata
+ * A single resolved entry point for a package: one subpath in the exports map
+ * with its corresponding `.d.ts` file.
+ */
+export interface PackageEntry {
+  /** Subpath as written in the exports map (`.`, `./react`, `./internal/foo`). */
+  subpath: string;
+  /** Absolute path to the resolved `.d.ts` file for this subpath. */
+  typesEntry: string;
+}
+
+/**
+ * API snapshot metadata. One ApiSnapshot per (package, subpath) tuple.
  */
 export interface ApiSnapshot {
   /** Package name from package.json */
   packageName: string;
+  /** Subpath this snapshot was generated for (`.`, `./react`, ...) */
+  subpath: string;
   /** Path to the package directory */
   packagePath: string;
   /** Package version at time of snapshot */
@@ -162,7 +177,7 @@ export interface ApiSnapshot {
   apiReportPath: string;
   /** Path to the .api.json file */
   apiJsonPath: string;
-  /** Path to snapi metadata for this snapshot */
+  /** Path to snapi metadata for this snapshot's package directory */
   metadataPath: string;
 }
 
@@ -176,6 +191,6 @@ export interface PackageInfo {
   version: string;
   /** Absolute path to the package directory */
   path: string;
-  /** TypeScript entry point (.d.ts file) */
-  typesEntryPoint?: string;
+  /** All resolved entry points (root + subpaths). Empty if the package has no exports map and no detectable root types. */
+  entries: PackageEntry[];
 }
