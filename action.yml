@@ -21,7 +21,7 @@ inputs:
     required: false
     default: "pnpm install --frozen-lockfile && pnpm build"
   snapi-version:
-    description: "Version of @clerk/snapi to fetch with `pnpm dlx`."
+    description: "Version of @clerk/snapi to fetch with `npx`."
     required: false
     default: "latest"
   comment:
@@ -90,7 +90,7 @@ runs:
         (
           cd "$BASE_CHECKOUT"
           bash -c "$SETUP_COMMAND"
-          pnpm dlx "@clerk/snapi@$SNAPI_VERSION" snapshot \
+          npx --yes "@clerk/snapi@$SNAPI_VERSION" snapshot \
             --config "$CONFIG_PATH" \
             --output "$BASELINE_DIR"
         )
@@ -115,12 +115,12 @@ runs:
         REPORT_PATH="$RUNNER_TEMP/snapi-report.md"
         JSON_PATH="$RUNNER_TEMP/snapi-report.json"
 
-        pnpm dlx "@clerk/snapi@$SNAPI_VERSION" detect \
+        npx --yes "@clerk/snapi@$SNAPI_VERSION" detect \
           --config "$CONFIG_PATH" \
           --baseline "$BASELINE_DIR" \
           --output "$REPORT_PATH" || DETECT_EXIT=$?
 
-        pnpm dlx "@clerk/snapi@$SNAPI_VERSION" detect \
+        npx --yes "@clerk/snapi@$SNAPI_VERSION" detect \
           --config "$CONFIG_PATH" \
           --baseline "$BASELINE_DIR" \
           --format json > "$JSON_PATH" || true

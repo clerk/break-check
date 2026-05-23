@@ -125,7 +125,7 @@ stderr so stdout remains parseable JSON.
 
 > **Status: preview.** The composite Action ships from this repo but is not
 > usable yet. It depends on `@clerk/snapi` being available on the npm
-> registry (which the `pnpm dlx` step fetches at runtime) and on a `v1` tag
+> registry (which the `npx` step fetches at runtime) and on a `v1` tag
 > existing in this repo. Neither is true today. The Action becomes usable
 > with the first stable release; until then, copy the workflow from
 > `.github/workflows/api-check.yml` as a starting point.
@@ -171,7 +171,7 @@ jobs:
 | `config-path`      | `snapi.config.json`                            | Path to the config file, relative to the repo root.                                                |
 | `base-ref`         | `${{ github.base_ref }}`                       | Git ref to snapshot as the baseline.                                                               |
 | `setup-command`    | `pnpm install --frozen-lockfile && pnpm build` | Shell command run inside both the base checkout and the current checkout to produce `.d.ts` files. |
-| `snapi-version`    | `latest`                                       | npm version of `@clerk/snapi` to fetch with `pnpm dlx`.                                            |
+| `snapi-version`    | `latest`                                       | npm version of `@clerk/snapi` to fetch with `npx`.                                                 |
 | `comment`          | `true`                                         | Post or update a PR comment with the report.                                                       |
 | `fail-on-breaking` | `false`                                        | Fail the workflow when breaking changes are detected.                                              |
 | `github-token`     | `${{ github.token }}`                          | Token used to read/write PR comments.                                                              |
