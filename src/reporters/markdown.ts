@@ -143,41 +143,79 @@ export class MarkdownReporter {
     }
     lines.push("");
 
-    // Group changes by type
-    const breakingChanges = pkg.changes.filter(
-      (c) => c.type === ChangeType.BREAKING,
-    );
-    const nonBreakingChanges = pkg.changes.filter(
+    // Group changes by subpath. A package using only the root export emits
+    // no subpath subheader to preserve the original report shape.
+    const subpathGroups = new Map<string, ApiChange[]>();
+    for (const change of pkg.changes) {
+      const key = change.subpath ?? ".";
+      const bucket = subpathGroups.get(key);
+      if (bucket) bucket.push(change);
+      else subpathGroups.set(key, [change]);
+    }
+
+    const orderedSubpaths = Array.from(subpathGroups.keys()).sort((a, b) => {
+      if (a === b) return 0;
+      if (a === ".") return -1;
+      if (b === ".") return 1;
+      return a.localeCompare(b);
+    });
+
+    const onlyRoot = orderedSubpaths.length === 1 && orderedSubpaths[0] === ".";
+
+    for (const subpath of orderedSubpaths) {
+      const changes = subpathGroups.get(subpath) ?? [];
+      if (changes.length === 0) continue;
+
+      if (!onlyRoot) {
+        lines.push(`### Subpath \`${subpath}\`\n`);
+      }
+
+      lines.push(this.generateGroupedSections(changes, onlyRoot ? 3 : 4));
+    }
+
+    return lines.join("\n");
+  }
+
+  /**
+   * Render breaking / non-breaking / additions sections for a single bucket
+   * of changes (used per subpath group).
+   */
+  private generateGroupedSections(
+    changes: ApiChange[],
+    headingLevel: number,
+  ): string {
+    const lines: string[] = [];
+
+    const breaking = changes.filter((c) => c.type === ChangeType.BREAKING);
+    const nonBreaking = changes.filter(
       (c) => c.type === ChangeType.NON_BREAKING,
     );
-    const additions = pkg.changes.filter((c) => c.type === ChangeType.ADDITION);
+    const additions = changes.filter((c) => c.type === ChangeType.ADDITION);
 
-    // Breaking changes
-    if (breakingChanges.length > 0) {
+    if (breaking.length > 0) {
       lines.push(
         this.generateChangeSection(
           `${this.getTypeBadge(ChangeType.BREAKING)} Breaking Changes`,
-          breakingChanges,
+          breaking,
+          headingLevel,
         ),
       );
     }
-
-    // Non-breaking changes
-    if (nonBreakingChanges.length > 0) {
+    if (nonBreaking.length > 0) {
       lines.push(
         this.generateChangeSection(
           `${this.getTypeBadge(ChangeType.NON_BREAKING)} Non-breaking Changes`,
-          nonBreakingChanges,
+          nonBreaking,
+          headingLevel,
         ),
       );
     }
-
-    // Additions
     if (additions.length > 0) {
       lines.push(
         this.generateChangeSection(
           `${this.getTypeBadge(ChangeType.ADDITION)} Additions`,
           additions,
+          headingLevel,
         ),
       );
     }
@@ -188,10 +226,15 @@ export class MarkdownReporter {
   /**
    * Generate a section for a group of changes
    */
-  private generateChangeSection(title: string, changes: ApiChange[]): string {
+  private generateChangeSection(
+    title: string,
+    changes: ApiChange[],
+    headingLevel: number = 3,
+  ): string {
     const lines: string[] = [];
 
-    lines.push(`### ${title} (${changes.length})\n`);
+    const hashes = "#".repeat(headingLevel);
+    lines.push(`${hashes} ${title} (${changes.length})\n`);
 
     // Use collapsible section if too many changes
     const shouldCollapse = changes.length > this.collapseThreshold;
@@ -204,7 +247,7 @@ export class MarkdownReporter {
     }
 
     for (const change of changes) {
-      lines.push(this.formatChange(change));
+      lines.push(this.formatChange(change, headingLevel + 1));
     }
 
     if (shouldCollapse) {
@@ -217,13 +260,14 @@ export class MarkdownReporter {
   /**
    * Format a single change with before/after diff
    */
-  private formatChange(change: ApiChange): string {
+  private formatChange(change: ApiChange, headingLevel: number = 4): string {
     const lines: string[] = [];
 
     // Change title
     const action = this.getChangeAction(change.type);
     const tag = this.aiHeadingTag(change);
-    lines.push(`#### ${action}: \`${change.name}\`${tag}\n`);
+    const hashes = "#".repeat(headingLevel);
+    lines.push(`${hashes} ${action}: \`${change.name}\`${tag}\n`);
 
     // Code diff
     if (change.beforeSnippet || change.afterSnippet) {
