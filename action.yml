@@ -1,0 +1,179 @@
+name: "snapi"
+description: "Detect API breaking changes in TypeScript packages on every PR."
+author: "Clerk"
+branding:
+  icon: "git-pull-request"
+  color: "purple"
+
+inputs:
+  config-path:
+    description: "Path to snapi.config.json, relative to the repository root."
+    required: false
+    default: "snapi.config.json"
+  base-ref:
+    description: "Git ref to compare against. Defaults to the pull request base."
+    required: false
+    default: ${{ github.base_ref }}
+  setup-command:
+    description: |
+      Shell command snapi runs inside both the base-ref checkout and the
+      current checkout to install dependencies and build .d.ts files.
+    required: false
+    default: "pnpm install --frozen-lockfile && pnpm build"
+  snapi-version:
+    description: "Version of @clerk/snapi to fetch with `npx`."
+    required: false
+    default: "latest"
+  comment:
+    description: "Post (or update) a PR comment with the report."
+    required: false
+    default: "true"
+  fail-on-breaking:
+    description: "Fail the workflow when breaking changes are detected."
+    required: false
+    default: "false"
+  github-token:
+    description: "Token used to read existing comments and post the report."
+    required: false
+    default: ${{ github.token }}
+
+outputs:
+  has-breaking-changes:
+    description: "true if snapi detected at least one breaking change."
+    value: ${{ steps.detect.outputs.has-breaking-changes }}
+  report-path:
+    description: "Path to the generated markdown report."
+    value: ${{ steps.detect.outputs.report-path }}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Validate runtime context
+      shell: bash
+      run: |
+        if [ -z "${BASE_REF:-}" ]; then
+          echo "::error::base-ref is empty. Run this action on pull_request events, or pass base-ref explicitly."
+          exit 1
+        fi
+        if [ ! -f "$CONFIG_PATH" ]; then
+          echo "::error::config-path '$CONFIG_PATH' does not exist in the current checkout."
+          exit 1
+        fi
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
+        CONFIG_PATH: ${{ inputs.config-path }}
+
+    - name: Snapshot baseline from ${{ inputs.base-ref }}
+      shell: bash
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
+        CONFIG_PATH: ${{ inputs.config-path }}
+        SETUP_COMMAND: ${{ inputs.setup-command }}
+        SNAPI_VERSION: ${{ inputs.snapi-version }}
+      run: |
+        set -euo pipefail
+        BASELINE_DIR="$RUNNER_TEMP/snapi-baseline"
+        BASE_CHECKOUT="$RUNNER_TEMP/snapi-base-checkout"
+        rm -rf "$BASELINE_DIR" "$BASE_CHECKOUT"
+
+        git fetch --no-tags --depth=1 origin "$BASE_REF" || true
+        git worktree add "$BASE_CHECKOUT" "origin/$BASE_REF"
+
+        # If the base ref doesn't have a snapi config yet (e.g. the PR is the
+        # one introducing snapi), seed it from the current checkout so the
+        # first run still produces a usable baseline.
+        if [ ! -f "$BASE_CHECKOUT/$CONFIG_PATH" ]; then
+          mkdir -p "$BASE_CHECKOUT/$(dirname "$CONFIG_PATH")"
+          cp "$CONFIG_PATH" "$BASE_CHECKOUT/$CONFIG_PATH"
+        fi
+
+        (
+          cd "$BASE_CHECKOUT"
+          bash -c "$SETUP_COMMAND"
+          npx --yes "@clerk/snapi@$SNAPI_VERSION" snapshot \
+            --config "$CONFIG_PATH" \
+            --output "$BASELINE_DIR"
+        )
+
+        echo "BASELINE_DIR=$BASELINE_DIR" >> "$GITHUB_ENV"
+
+    - name: Build current checkout
+      shell: bash
+      env:
+        SETUP_COMMAND: ${{ inputs.setup-command }}
+      run: bash -c "$SETUP_COMMAND"
+
+    - name: Detect API changes
+      id: detect
+      shell: bash
+      env:
+        CONFIG_PATH: ${{ inputs.config-path }}
+        SNAPI_VERSION: ${{ inputs.snapi-version }}
+        FAIL_ON_BREAKING: ${{ inputs.fail-on-breaking }}
+      run: |
+        set -euo pipefail
+        REPORT_PATH="$RUNNER_TEMP/snapi-report.md"
+        JSON_PATH="$RUNNER_TEMP/snapi-report.json"
+
+        npx --yes "@clerk/snapi@$SNAPI_VERSION" detect \
+          --config "$CONFIG_PATH" \
+          --baseline "$BASELINE_DIR" \
+          --output "$REPORT_PATH" || DETECT_EXIT=$?
+
+        npx --yes "@clerk/snapi@$SNAPI_VERSION" detect \
+          --config "$CONFIG_PATH" \
+          --baseline "$BASELINE_DIR" \
+          --format json > "$JSON_PATH" || true
+
+        HAS_BREAKING=$(node -e "
+          const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf-8'));
+          process.stdout.write(r.hasBreakingChanges ? 'true' : 'false');
+        " "$JSON_PATH")
+
+        echo "has-breaking-changes=$HAS_BREAKING" >> "$GITHUB_OUTPUT"
+        echo "report-path=$REPORT_PATH" >> "$GITHUB_OUTPUT"
+
+        if [ "$FAIL_ON_BREAKING" = "true" ] && [ "$HAS_BREAKING" = "true" ]; then
+          echo "::error::Breaking API changes detected."
+          exit 1
+        fi
+
+    - name: Comment on PR
+      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      uses: actions/github-script@v7
+      with:
+        github-token: ${{ inputs.github-token }}
+        script: |
+          const fs = require('fs');
+          const reportPath = '${{ steps.detect.outputs.report-path }}';
+          if (!fs.existsSync(reportPath)) {
+            core.warning(`snapi report not found at ${reportPath}; skipping comment.`);
+            return;
+          }
+          const marker = '<!-- snapi-action -->';
+          const body = `${marker}\n${fs.readFileSync(reportPath, 'utf-8')}`;
+
+          const { data: comments } = await github.rest.issues.listComments({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            issue_number: context.issue.number,
+          });
+          const existing = comments.find(
+            (c) => c.user.type === 'Bot' && c.body && c.body.includes(marker),
+          );
+
+          if (existing) {
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: existing.id,
+              body,
+            });
+          } else {
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body,
+            });
+          }

@@ -123,20 +123,29 @@ stderr so stdout remains parseable JSON.
 
 ## GitHub Actions Integration
 
+> **Status: preview.** The composite Action ships from this repo but is not
+> usable yet. It depends on `@clerk/snapi` being available on the npm
+> registry (which the `npx` step fetches at runtime) and on a `v1` tag
+> existing in this repo. Neither is true today. The Action becomes usable
+> with the first stable release; until then, copy the workflow from
+> `.github/workflows/api-check.yml` as a starting point.
+
+Use the bundled composite Action. It snapshots the base ref in a temporary
+git worktree, builds the PR, runs `snapi detect`, and posts (or updates) a
+single PR comment.
+
 ```yaml
-name: API Breaking Changes
+name: API Check
 
 on:
   pull_request:
-    paths:
-      - "packages/**"
 
 permissions:
   contents: read
   pull-requests: write
 
 jobs:
-  check-api:
+  api-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -144,76 +153,50 @@ jobs:
           fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
           cache: "pnpm"
 
-      - run: pnpm install --frozen-lockfile
-
-      - name: Generate baseline
-        run: |
-          git switch --detach origin/main
-          pnpm install --frozen-lockfile
-          pnpm build
-          pnpm snapi snapshot --output .api-snapshots-baseline
-
-      - name: Restore PR checkout
-        run: |
-          git switch --detach "$GITHUB_SHA"
-          pnpm install --frozen-lockfile
-          pnpm build
-
-      - name: Detect API changes
-        id: detect
-        run: pnpm snapi detect --baseline .api-snapshots-baseline --output report.md --fail-on-breaking
-        continue-on-error: true
-
-      - name: Comment on PR
-        uses: actions/github-script@v7
+      - uses: clerk/snapi@v1
         with:
-          script: |
-            const fs = require('fs');
-            if (!fs.existsSync('report.md')) return;
-            const report = fs.readFileSync('report.md', 'utf8');
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-
-            const botComment = comments.find(c =>
-              c.body.includes('API Changes Report')
-            );
-
-            if (botComment) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body: report,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: report,
-              });
-            }
-
-      - name: Fail on breaking changes
-        if: steps.detect.outcome == 'failure'
-        run: exit 1
+          fail-on-breaking: true
 ```
+
+### Action inputs
+
+| Input              | Default                                        | Description                                                                                        |
+| ------------------ | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `config-path`      | `snapi.config.json`                            | Path to the config file, relative to the repo root.                                                |
+| `base-ref`         | `${{ github.base_ref }}`                       | Git ref to snapshot as the baseline.                                                               |
+| `setup-command`    | `pnpm install --frozen-lockfile && pnpm build` | Shell command run inside both the base checkout and the current checkout to produce `.d.ts` files. |
+| `snapi-version`    | `latest`                                       | npm version of `@clerk/snapi` to fetch with `npx`.                                                 |
+| `comment`          | `true`                                         | Post or update a PR comment with the report.                                                       |
+| `fail-on-breaking` | `false`                                        | Fail the workflow when breaking changes are detected.                                              |
+| `github-token`     | `${{ github.token }}`                          | Token used to read/write PR comments.                                                              |
+
+### Action outputs
+
+| Output                 | Description                                              |
+| ---------------------- | -------------------------------------------------------- |
+| `has-breaking-changes` | `"true"` if snapi detected at least one breaking change. |
+| `report-path`          | Filesystem path to the generated markdown report.        |
+
+### When the base ref doesn't yet have a config
+
+On the first PR that introduces snapi, the base ref won't contain a
+`snapi.config.json` and the snapshot would otherwise fail. The Action copies
+the PR's config into the base checkout in that case so the first run still
+produces a usable baseline. Subsequent runs always use the base ref's own
+config.
+
+### Larger monorepos
 
 For larger monorepos, generate baseline snapshots on `main` and upload them as
 artifacts. PR checks can then download the latest baseline artifact instead of
-checking out and rebuilding `main`.
+checking out and rebuilding `main`. The Action does not (yet) cover this
+pattern out of the box; fall back to the CLI directly when you need it.
 
 ## Change Detection
 
