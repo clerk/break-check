@@ -37,6 +37,12 @@ export interface DetectorOptions {
   disableAi?: boolean;
   /** Override the AI model. Wins over config.ai.model. */
   aiModel?: string;
+  /**
+   * Force-enable (true) or force-disable (false) strict mode. Strict mode
+   * runs the AI reviewer even for pure-additions diffs. When undefined,
+   * `SNAPI_AI_STRICT` env var and `config.ai.strict` are consulted.
+   */
+  aiStrict?: boolean;
   /** Inject a pre-built AI analyzer (used by tests). Overrides all other AI config. */
   aiAnalyzer?: AiChangeAnalyzer;
 }
@@ -49,6 +55,7 @@ export class BreakingChangesDetector {
   private diffAnalyzer: ApiDiffAnalyzer;
   private versionAnalyzer: VersionAnalyzer;
   private aiAnalyzer: AiChangeAnalyzer | null;
+  private aiStrict: boolean;
   private verbose: boolean;
   private configPath: string;
   private configDir: string;
@@ -69,6 +76,16 @@ export class BreakingChangesDetector {
     this.diffAnalyzer = new ApiDiffAnalyzer();
     this.versionAnalyzer = new VersionAnalyzer();
     this.aiAnalyzer = this.maybeCreateAiAnalyzer(options);
+    this.aiStrict = this.resolveStrict(options);
+  }
+
+  private resolveStrict(options: DetectorOptions): boolean {
+    if (typeof options.aiStrict === "boolean") return options.aiStrict;
+    const envFlag = process.env.SNAPI_AI_STRICT;
+    if (envFlag && envFlag !== "0" && envFlag.toLowerCase() !== "false") {
+      return true;
+    }
+    return this.config.ai?.strict ?? false;
   }
 
   /**
@@ -321,13 +338,25 @@ export class BreakingChangesDetector {
       );
 
       if (this.aiAnalyzer) {
-        this.log(`Running AI review for ${packageInfo.name}...`);
-        changes = await this.aiAnalyzer.analyze(changes, {
-          packageName: packageInfo.name,
-          baselineApiJsonPath: baselineSnapshot.apiJsonPath,
-          currentApiJsonPath: currentSnapshot.apiJsonPath,
-        });
-        aiReviewedBy = this.config.ai?.model ?? DEFAULT_AI_MODEL;
+        // Skip the call when the rule-based pass only found additions and
+        // strict mode is off. Pure-additions diffs rarely have hidden breaks,
+        // and the AI call is the only thing here that costs real money.
+        const hasNonAdditionChange = changes.some(
+          (c) => c.type !== ChangeType.ADDITION,
+        );
+        if (hasNonAdditionChange || this.aiStrict) {
+          this.log(`Running AI review for ${packageInfo.name}...`);
+          changes = await this.aiAnalyzer.analyze(changes, {
+            packageName: packageInfo.name,
+            baselineApiJsonPath: baselineSnapshot.apiJsonPath,
+            currentApiJsonPath: currentSnapshot.apiJsonPath,
+          });
+          aiReviewedBy = this.config.ai?.model ?? DEFAULT_AI_MODEL;
+        } else {
+          this.log(
+            `Skipping AI review for ${packageInfo.name} (additions only; set SNAPI_AI_STRICT=1 or --ai-strict for full coverage)`,
+          );
+        }
       }
     } else {
       this.log(`No baseline for ${packageInfo.name}, treating as new package`);

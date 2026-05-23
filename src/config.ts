@@ -32,6 +32,14 @@ export const AiConfigSchema = z.object({
 
   /** Maximum rule-based changes batched into a single AI call per package. */
   maxChangesPerCall: z.number().int().positive().default(80),
+
+  /**
+   * When true, also invoke the AI reviewer for diffs that the rule-based pass
+   * classified as pure additions. Useful for paranoid scans; costs an extra
+   * model call per such package. May also be enabled via `SNAPI_AI_STRICT=1`
+   * or `--ai-strict`.
+   */
+  strict: z.boolean().default(false),
 });
 
 /**

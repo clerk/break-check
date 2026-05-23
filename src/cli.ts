@@ -110,6 +110,10 @@ program
     "--ai-model <model>",
     "Override the AI model (e.g. claude-opus-4-7). Wins over config.ai.model.",
   )
+  .option(
+    "--ai-strict",
+    "Run the AI reviewer even when only additions are detected (equivalent to SNAPI_AI_STRICT=1).",
+  )
   .option("-v, --verbose", "Show verbose output")
   .action(async (options) => {
     try {
@@ -137,6 +141,8 @@ program
         disableAi: options.ai === false,
         aiModel:
           typeof options.aiModel === "string" ? options.aiModel : undefined,
+        aiStrict:
+          typeof options.aiStrict === "boolean" ? options.aiStrict : undefined,
       });
 
       if (detector.aiEnabled) {

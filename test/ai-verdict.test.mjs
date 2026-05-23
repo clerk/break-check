@@ -39,7 +39,7 @@ function writePackage(pkgDir, { version, dts }) {
   writeFileSync(join(pkgDir, "dist", "index.d.ts"), dts);
 }
 
-function setup({ baseline, current }) {
+function setup({ baseline, current, extraDetectArgs = [] }) {
   const workspace = mkdtempSync(join(tmpdir(), "snapi-ai-verdict-"));
   const pkgDir = join(workspace, "packages", "pkg");
   mkdirSync(join(pkgDir, "dist"), { recursive: true });
@@ -76,6 +76,7 @@ function setup({ baseline, current }) {
       "baseline",
       "--format",
       "json",
+      ...extraDetectArgs,
     ],
     workspace,
   );
@@ -138,5 +139,63 @@ test(
       "expected migration guidance for a confirmed breaking change",
     );
     assert.equal(change.aiAnalysis.model, "claude-sonnet-4-6");
+  },
+);
+
+test(
+  "ai-verdict: AI is skipped by default when only additions are detected",
+  { skip: !haveKey && "SNAPI_ANTHROPIC_API_KEY not set" },
+  () => {
+    const { result } = setup({
+      baseline: {
+        version: "1.0.0",
+        dts: "export declare function existing(): void;\n",
+      },
+      current: {
+        version: "1.1.0",
+        dts: "export declare function existing(): void;\nexport declare function added(): void;\n",
+      },
+    });
+
+    const pkg = result.packages[0];
+    assert.ok(pkg, "expected a package analysis");
+    assert.equal(
+      pkg.aiReviewedBy,
+      undefined,
+      "AI should not run when only additions are detected",
+    );
+    for (const c of pkg.changes) {
+      assert.equal(
+        c.aiAnalysis,
+        undefined,
+        `change ${c.name} should not carry aiAnalysis`,
+      );
+    }
+  },
+);
+
+test(
+  "ai-verdict: --ai-strict forces AI to run on additions-only diffs",
+  { skip: !haveKey && "SNAPI_ANTHROPIC_API_KEY not set" },
+  () => {
+    const { result } = setup({
+      baseline: {
+        version: "1.0.0",
+        dts: "export declare function existing(): void;\n",
+      },
+      current: {
+        version: "1.1.0",
+        dts: "export declare function existing(): void;\nexport declare function added(): void;\n",
+      },
+      extraDetectArgs: ["--ai-strict"],
+    });
+
+    const pkg = result.packages[0];
+    assert.ok(pkg, "expected a package analysis");
+    assert.equal(
+      pkg.aiReviewedBy,
+      "claude-sonnet-4-6",
+      "--ai-strict should have caused AI to run",
+    );
   },
 );
