@@ -117,6 +117,8 @@ export interface PackageAnalysis {
   actualVersionBump?: ChangeSeverity;
   /** Whether the actual bump satisfies the recommended bump */
   isValidBump: boolean;
+  /** Model identifier when AI review ran for this package; absent otherwise. */
+  aiReviewedBy?: string;
 }
 
 /**

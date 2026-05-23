@@ -304,6 +304,7 @@ export class BreakingChangesDetector {
   ): Promise<PackageAnalysis> {
     let changes: ApiChange[] = [];
     let previousVersion = "0.0.0";
+    let aiReviewedBy: string | undefined;
 
     if (baselineSnapshot) {
       this.log(`Comparing ${packageInfo.name}...`);
@@ -326,6 +327,7 @@ export class BreakingChangesDetector {
           baselineApiJsonPath: baselineSnapshot.apiJsonPath,
           currentApiJsonPath: currentSnapshot.apiJsonPath,
         });
+        aiReviewedBy = this.config.ai?.model ?? DEFAULT_AI_MODEL;
       }
     } else {
       this.log(`No baseline for ${packageInfo.name}, treating as new package`);
@@ -355,6 +357,7 @@ export class BreakingChangesDetector {
       recommendedVersionBump: recommendedBump,
       actualVersionBump: actualBump ?? undefined,
       isValidBump,
+      aiReviewedBy,
     };
   }
 

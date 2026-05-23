@@ -45,8 +45,9 @@ export class MarkdownReporter {
     // Summary
     sections.push(this.generateSummary(result));
 
-    if (this.hasAnyAiAnalysis(result)) {
-      sections.push("> 🤖 This report was reviewed by an AI model.\n");
+    const aiModel = this.firstAiModel(result);
+    if (aiModel) {
+      sections.push(`> 🤖 This report was reviewed by \`${aiModel}\`.\n`);
     }
 
     // Package sections
@@ -275,8 +276,14 @@ export class MarkdownReporter {
     return "";
   }
 
-  private hasAnyAiAnalysis(result: AnalysisResult): boolean {
-    return result.packages.some((p) => p.changes.some((c) => c.aiAnalysis));
+  private firstAiModel(result: AnalysisResult): string | null {
+    for (const pkg of result.packages) {
+      if (pkg.aiReviewedBy) return pkg.aiReviewedBy;
+      for (const change of pkg.changes) {
+        if (change.aiAnalysis) return change.aiAnalysis.model;
+      }
+    }
+    return null;
   }
 
   /**
