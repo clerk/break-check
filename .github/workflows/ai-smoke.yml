@@ -1,0 +1,43 @@
+name: AI Smoke
+
+# Runs the AI-verdict tests that talk to the real Anthropic API. Kept out of
+# the required-checks matrix (publish-preview.yml) so a flaky model call or
+# Anthropic outage cannot block PRs. Triggers:
+#   - workflow_dispatch (run manually from the Actions tab)
+#   - nightly schedule (catches regressions in main against the live API)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 8 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ai-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ai-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: pnpm test (AI tests enabled)
+        env:
+          SNAPI_ANTHROPIC_API_KEY: ${{ secrets.SNAPI_ANTHROPIC_API_KEY }}
+          SNAPI_RUN_REAL_AI_TESTS: "1"
+        run: pnpm test

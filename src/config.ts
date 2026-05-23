@@ -12,6 +12,37 @@ import { z } from "zod";
 export const CONFIG_FILE_NAME = "snapi.config.json";
 
 /**
+ * Default model used by the AI analyzer when no override is configured.
+ */
+export const DEFAULT_AI_MODEL = "claude-sonnet-4-6";
+
+/**
+ * Zod schema for the AI analyzer block
+ */
+export const AiConfigSchema = z.object({
+  /**
+   * When true: AI runs (errors if SNAPI_ANTHROPIC_API_KEY is missing).
+   * When false: AI never runs even if the key is set.
+   * When unset (default): AI runs iff SNAPI_ANTHROPIC_API_KEY is in the environment.
+   */
+  enabled: z.boolean().optional(),
+
+  /** Model identifier (Anthropic API). */
+  model: z.string().default(DEFAULT_AI_MODEL),
+
+  /** Maximum rule-based changes batched into a single AI call per package. */
+  maxChangesPerCall: z.number().int().positive().default(80),
+
+  /**
+   * When true, also invoke the AI reviewer for diffs that the rule-based pass
+   * classified as pure additions. Useful for paranoid scans; costs an extra
+   * model call per such package. May also be enabled via `SNAPI_AI_STRICT=1`
+   * or `--ai-strict`.
+   */
+  strict: z.boolean().default(false),
+});
+
+/**
  * Zod schema for snapi configuration
  */
 export const ConfigSchema = z.object({
@@ -29,7 +60,15 @@ export const ConfigSchema = z.object({
 
   /** Output format for reports */
   outputFormat: z.enum(["markdown", "json"]).default("markdown"),
+
+  /** Optional AI analyzer configuration. */
+  ai: AiConfigSchema.optional(),
 });
+
+/**
+ * Resolved AI configuration type
+ */
+export type AiConfig = z.infer<typeof AiConfigSchema>;
 
 /**
  * Snapi configuration type

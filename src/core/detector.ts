@@ -6,12 +6,14 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   CONFIG_FILE_NAME,
+  DEFAULT_AI_MODEL,
   SnapiConfig,
   resolvePackagePaths,
 } from "../config.js";
 import { ApiExtractorRunner, readPackageInfo } from "../utils/api-extractor.js";
 import { ApiDiffAnalyzer } from "../analyzers/api-diff.js";
 import { VersionAnalyzer } from "../analyzers/version.js";
+import { AiChangeAnalyzer } from "../analyzers/ai-analyzer.js";
 import {
   AnalysisResult,
   PackageAnalysis,
@@ -28,6 +30,21 @@ export interface DetectorOptions {
   verbose?: boolean;
   /** Config file path (for resolving relative paths) */
   configPath?: string;
+  /**
+   * Hard-disable the AI analyzer, even when SNAPI_ANTHROPIC_API_KEY is set or
+   * `config.ai.enabled === true`. CLI's `--no-ai` flag wires through here.
+   */
+  disableAi?: boolean;
+  /** Override the AI model. Wins over config.ai.model. */
+  aiModel?: string;
+  /**
+   * Force-enable (true) or force-disable (false) strict mode. Strict mode
+   * runs the AI reviewer even for pure-additions diffs. When undefined,
+   * `SNAPI_AI_STRICT` env var and `config.ai.strict` are consulted.
+   */
+  aiStrict?: boolean;
+  /** Inject a pre-built AI analyzer (used by tests). Overrides all other AI config. */
+  aiAnalyzer?: AiChangeAnalyzer;
 }
 
 /**
@@ -37,17 +54,20 @@ export class BreakingChangesDetector {
   private extractor: ApiExtractorRunner;
   private diffAnalyzer: ApiDiffAnalyzer;
   private versionAnalyzer: VersionAnalyzer;
+  private aiAnalyzer: AiChangeAnalyzer | null = null;
+  private aiInitialized = false;
+  private aiStrict: boolean;
   private verbose: boolean;
   private configPath: string;
   private configDir: string;
 
   constructor(
     private config: SnapiConfig,
-    options: DetectorOptions = {},
+    private detectorOptions: DetectorOptions = {},
   ) {
-    this.verbose = options.verbose ?? false;
+    this.verbose = detectorOptions.verbose ?? false;
     this.configPath = path.resolve(
-      options.configPath ?? path.join(process.cwd(), CONFIG_FILE_NAME),
+      detectorOptions.configPath ?? path.join(process.cwd(), CONFIG_FILE_NAME),
     );
     this.configDir = path.dirname(this.configPath);
     this.extractor = new ApiExtractorRunner(
@@ -56,6 +76,95 @@ export class BreakingChangesDetector {
     );
     this.diffAnalyzer = new ApiDiffAnalyzer();
     this.versionAnalyzer = new VersionAnalyzer();
+    this.aiStrict = this.resolveStrict(detectorOptions);
+    // AI analyzer is constructed lazily; see `ensureAiAnalyzer`. This keeps
+    // `snapi snapshot` (which never uses AI) from validating AI config or
+    // failing when SNAPI_ANTHROPIC_API_KEY is missing.
+  }
+
+  /**
+   * Lazily build (or return the cached) AI analyzer. Returns null if AI is
+   * disabled, hard-disabled via options, or no key/env config opts in.
+   * Throws if the user explicitly opted in (config.ai.enabled === true) but
+   * forgot to set the env key.
+   */
+  private ensureAiAnalyzer(): AiChangeAnalyzer | null {
+    if (this.aiInitialized) return this.aiAnalyzer;
+    this.aiInitialized = true;
+    this.aiAnalyzer = this.maybeCreateAiAnalyzer(this.detectorOptions);
+    return this.aiAnalyzer;
+  }
+
+  private resolveStrict(options: DetectorOptions): boolean {
+    if (typeof options.aiStrict === "boolean") return options.aiStrict;
+    const envFlag = process.env.SNAPI_AI_STRICT;
+    if (envFlag && envFlag !== "0" && envFlag.toLowerCase() !== "false") {
+      return true;
+    }
+    return this.config.ai?.strict ?? false;
+  }
+
+  /**
+   * Whether the AI analyzer is active for this detector instance.
+   */
+  get aiEnabled(): boolean {
+    return this.ensureAiAnalyzer() !== null;
+  }
+
+  /**
+   * Summary stats reported by the AI analyzer across all packages so far.
+   */
+  get aiStats(): {
+    enabled: boolean;
+    model: string | null;
+    reviewed: number;
+    overridden: number;
+    discovered: number;
+  } {
+    const ai = this.ensureAiAnalyzer();
+    if (!ai) {
+      return {
+        enabled: false,
+        model: null,
+        reviewed: 0,
+        overridden: 0,
+        discovered: 0,
+      };
+    }
+    return {
+      enabled: true,
+      model: ai.model,
+      reviewed: ai.reviewedCount,
+      overridden: ai.overriddenCount,
+      discovered: ai.discoveredCount,
+    };
+  }
+
+  private maybeCreateAiAnalyzer(
+    options: DetectorOptions,
+  ): AiChangeAnalyzer | null {
+    if (options.aiAnalyzer) return options.aiAnalyzer;
+    if (options.disableAi) return null;
+
+    const apiKey = process.env.SNAPI_ANTHROPIC_API_KEY;
+    const aiCfg = this.config.ai;
+    const enabledOverride = aiCfg?.enabled;
+
+    if (enabledOverride === false) return null;
+    if (enabledOverride === true && !apiKey) {
+      throw new Error(
+        "config.ai.enabled is true but SNAPI_ANTHROPIC_API_KEY is not set in the environment.",
+      );
+    }
+    if (enabledOverride === undefined && !apiKey) return null;
+
+    const model = options.aiModel ?? aiCfg?.model ?? DEFAULT_AI_MODEL;
+    return new AiChangeAnalyzer({
+      apiKey: apiKey as string,
+      model,
+      maxChangesPerCall: aiCfg?.maxChangesPerCall ?? 80,
+      verbose: this.verbose,
+    });
   }
 
   /**
@@ -229,6 +338,7 @@ export class BreakingChangesDetector {
   ): Promise<PackageAnalysis> {
     let changes: ApiChange[] = [];
     let previousVersion = "0.0.0";
+    let aiReviewedBy: string | undefined;
 
     if (baselineSnapshot) {
       this.log(`Comparing ${packageInfo.name}...`);
@@ -243,6 +353,29 @@ export class BreakingChangesDetector {
         baselineSnapshot.apiJsonPath,
         currentSnapshot.apiJsonPath,
       );
+
+      const ai = this.ensureAiAnalyzer();
+      if (ai) {
+        // Skip the call when the rule-based pass only found additions and
+        // strict mode is off. Pure-additions diffs rarely have hidden breaks,
+        // and the AI call is the only thing here that costs real money.
+        const hasNonAdditionChange = changes.some(
+          (c) => c.type !== ChangeType.ADDITION,
+        );
+        if (hasNonAdditionChange || this.aiStrict) {
+          this.log(`Running AI review for ${packageInfo.name}...`);
+          changes = await ai.analyze(changes, {
+            packageName: packageInfo.name,
+            baselineApiJsonPath: baselineSnapshot.apiJsonPath,
+            currentApiJsonPath: currentSnapshot.apiJsonPath,
+          });
+          aiReviewedBy = ai.model;
+        } else {
+          this.log(
+            `Skipping AI review for ${packageInfo.name} (additions only; set SNAPI_AI_STRICT=1 or --ai-strict for full coverage)`,
+          );
+        }
+      }
     } else {
       this.log(`No baseline for ${packageInfo.name}, treating as new package`);
     }
@@ -271,6 +404,7 @@ export class BreakingChangesDetector {
       recommendedVersionBump: recommendedBump,
       actualVersionBump: actualBump ?? undefined,
       isValidBump,
+      aiReviewedBy,
     };
   }
 

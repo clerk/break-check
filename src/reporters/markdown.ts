@@ -45,6 +45,11 @@ export class MarkdownReporter {
     // Summary
     sections.push(this.generateSummary(result));
 
+    const aiModel = this.firstAiModel(result);
+    if (aiModel) {
+      sections.push(`> 🤖 This report was reviewed by \`${aiModel}\`.\n`);
+    }
+
     // Package sections
     const packagesWithChanges = result.packages.filter(
       (p) => p.changes.length > 0,
@@ -217,7 +222,8 @@ export class MarkdownReporter {
 
     // Change title
     const action = this.getChangeAction(change.type);
-    lines.push(`#### ${action}: \`${change.name}\`\n`);
+    const tag = this.aiHeadingTag(change);
+    lines.push(`#### ${action}: \`${change.name}\`${tag}\n`);
 
     // Code diff
     if (change.beforeSnippet || change.afterSnippet) {
@@ -245,7 +251,39 @@ export class MarkdownReporter {
     // Description
     lines.push(`> ${change.description}\n`);
 
+    if (change.aiAnalysis) {
+      const confidence = Math.round(change.aiAnalysis.confidence * 100);
+      lines.push(
+        `> 🤖 **AI review** (confidence: ${confidence}%): ${change.aiAnalysis.rationale}\n`,
+      );
+      if (change.aiAnalysis.migration) {
+        lines.push(`> **Migration:** ${change.aiAnalysis.migration}\n`);
+      }
+    }
+
     return lines.join("\n");
+  }
+
+  private aiHeadingTag(change: ApiChange): string {
+    const ai = change.aiAnalysis;
+    if (!ai) return "";
+    if (ai.source === "rule-overridden" && change.ruleBasedType) {
+      return ` _(reclassified from ${change.ruleBasedType})_`;
+    }
+    if (ai.source === "ai-discovered") {
+      return ` _(detected by AI)_`;
+    }
+    return "";
+  }
+
+  private firstAiModel(result: AnalysisResult): string | null {
+    for (const pkg of result.packages) {
+      if (pkg.aiReviewedBy) return pkg.aiReviewedBy;
+      for (const change of pkg.changes) {
+        if (change.aiAnalysis) return change.aiAnalysis.model;
+      }
+    }
+    return null;
   }
 
   /**

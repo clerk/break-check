@@ -57,6 +57,7 @@
     "node": ">=22.13"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "0.97.1",
     "@microsoft/api-extractor": "7.58.7",
     "commander": "14.0.3",
     "zod": "4.4.3"

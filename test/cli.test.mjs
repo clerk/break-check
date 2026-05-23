@@ -92,6 +92,9 @@ test("detect resolves relative baseline paths from the config directory", () => 
       "baseline",
       "--format",
       "json",
+      // Pin --no-ai: this test asserts rule-based behavior and must stay
+      // deterministic when SNAPI_ANTHROPIC_API_KEY is set.
+      "--no-ai",
       "--fail-on-breaking",
     ]);
 

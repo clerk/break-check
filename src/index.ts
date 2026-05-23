@@ -8,6 +8,8 @@ export {
   ChangeSeverity,
   type ChangeCategory,
   type ApiChange,
+  type AiAnalysis,
+  type AiAnalysisSource,
   type PackageAnalysis,
   type AnalysisResult,
   type ApiSnapshot,
@@ -17,7 +19,9 @@ export {
 // Config
 export {
   CONFIG_FILE_NAME,
+  DEFAULT_AI_MODEL,
   type SnapiConfig,
+  type AiConfig,
   createDefaultConfig,
   findConfigFile,
   loadConfig,
@@ -42,6 +46,13 @@ export {
 // Analyzers
 export { ApiDiffAnalyzer } from "./analyzers/api-diff.js";
 export { VersionAnalyzer } from "./analyzers/version.js";
+export {
+  AiChangeAnalyzer,
+  type AiAnalyzerOptions,
+  type AiPackageContext,
+  type AiVerdict,
+  type AiClient,
+} from "./analyzers/ai-analyzer.js";
 
 // Reporters
 export {
