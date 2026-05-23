@@ -21,9 +21,9 @@ export const DEFAULT_AI_MODEL = "claude-sonnet-4-6";
  */
 export const AiConfigSchema = z.object({
   /**
-   * When true: AI runs (errors if ANTHROPIC_API_KEY is missing).
+   * When true: AI runs (errors if SNAPI_ANTHROPIC_API_KEY is missing).
    * When false: AI never runs even if the key is set.
-   * When unset (default): AI runs iff ANTHROPIC_API_KEY is in the environment.
+   * When unset (default): AI runs iff SNAPI_ANTHROPIC_API_KEY is in the environment.
    */
   enabled: z.boolean().optional(),
 

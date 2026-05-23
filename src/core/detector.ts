@@ -31,7 +31,7 @@ export interface DetectorOptions {
   /** Config file path (for resolving relative paths) */
   configPath?: string;
   /**
-   * Hard-disable the AI analyzer, even when ANTHROPIC_API_KEY is set or
+   * Hard-disable the AI analyzer, even when SNAPI_ANTHROPIC_API_KEY is set or
    * `config.ai.enabled === true`. CLI's `--no-ai` flag wires through here.
    */
   disableAi?: boolean;
@@ -112,14 +112,14 @@ export class BreakingChangesDetector {
     if (options.aiAnalyzer) return options.aiAnalyzer;
     if (options.disableAi) return null;
 
-    const apiKey = process.env.ANTHROPIC_API_KEY;
+    const apiKey = process.env.SNAPI_ANTHROPIC_API_KEY;
     const aiCfg = this.config.ai;
     const enabledOverride = aiCfg?.enabled;
 
     if (enabledOverride === false) return null;
     if (enabledOverride === true && !apiKey) {
       throw new Error(
-        "config.ai.enabled is true but ANTHROPIC_API_KEY is not set in the environment.",
+        "config.ai.enabled is true but SNAPI_ANTHROPIC_API_KEY is not set in the environment.",
       );
     }
     if (enabledOverride === undefined && !apiKey) return null;

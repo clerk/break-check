@@ -278,6 +278,12 @@ export class AiChangeAnalyzer {
     const reviewable = changes.filter((c) => c.type !== ChangeType.ADDITION);
     const passThrough = changes.filter((c) => c.type === ChangeType.ADDITION);
 
+    // Keys that the rule-based pass already accounts for. Used both to brief
+    // the model (so its "missed" scan can ignore them) and to defensively
+    // de-dup if the model reports one anyway.
+    const knownKeys = new Set(changes.map((c) => `${c.category}:${c.name}`));
+    const knownSummary = formatKnownSummary(changes);
+
     const chunks: ApiChange[][] = [];
     if (reviewable.length === 0) {
       chunks.push([]);
@@ -298,6 +304,7 @@ export class AiChangeAnalyzer {
         surface,
         ctx,
         includeMissedScan,
+        knownSummary,
       );
       if (!verdict) {
         // Hard fail-soft for this chunk; the affected changes will keep their
@@ -338,6 +345,9 @@ export class AiChangeAnalyzer {
     }
 
     for (const m of missedAggregate) {
+      // Defensive de-dup: ignore "missed" entries that duplicate something
+      // the rule-based pass already produced (matched by category + name).
+      if (knownKeys.has(`${m.category}:${m.name}`)) continue;
       const aiAnalysis: AiAnalysis = {
         source: "ai-discovered",
         confidence: clamp01(m.confidence),
@@ -356,7 +366,6 @@ export class AiChangeAnalyzer {
         aiAnalysis,
       };
       const id = generateChangeId(partial);
-      // Skip if it collides with an existing change id (defensive de-dup).
       if (enriched.some((c) => c.id === id)) continue;
       this.discoveredCount += 1;
       enriched.push({ ...partial, id });
@@ -373,6 +382,7 @@ export class AiChangeAnalyzer {
     surface: string,
     ctx: AiPackageContext,
     includeMissedScan: boolean,
+    knownSummary: string,
   ): Promise<AiVerdict | null> {
     const ruleListPayload = chunk.map((c) => ({
       id: c.id,
@@ -392,8 +402,13 @@ export class AiChangeAnalyzer {
       JSON.stringify(ruleListPayload, null, 2),
       "```",
       "",
+      "All changes the rule-based pass already produced (do NOT re-report any of these under `missed`):",
+      "```",
+      knownSummary || "(none)",
+      "```",
+      "",
       includeMissedScan
-        ? "Also scan the API surface block above for any consumer-observable breaking changes the rule-based list did NOT include, and report them under `missed`. Do not include changes that are already in the rule-based list."
+        ? "Scan the API surface block above for any consumer-observable breaking changes that are NOT in the list above, and report them under `missed`. Be conservative: omit anything you are unsure about."
         : "Do not populate `missed` in this call; return an empty `missed` array.",
       "",
       `Return exactly ${chunk.length} verdict object(s), one per supplied id.`,
@@ -623,6 +638,13 @@ function parseVerdict(input: unknown): AiVerdict | null {
   }
 
   return { verdicts: verdictItems, missed: missedItems };
+}
+
+function formatKnownSummary(changes: ApiChange[]): string {
+  return changes
+    .map((c) => `- [${c.type}] ${c.category} ${c.name}`)
+    .sort()
+    .join("\n");
 }
 
 function severityForType(type: ChangeType): ChangeSeverity {

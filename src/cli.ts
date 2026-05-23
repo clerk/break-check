@@ -102,7 +102,10 @@ program
   .option("-o, --output <path>", "Output report path")
   .option("--format <format>", "Output format (markdown|json)")
   .option("--fail-on-breaking", "Exit with code 1 if breaking changes found")
-  .option("--no-ai", "Disable the AI reviewer even if ANTHROPIC_API_KEY is set")
+  .option(
+    "--no-ai",
+    "Disable the AI reviewer even if SNAPI_ANTHROPIC_API_KEY is set",
+  )
   .option(
     "--ai-model <model>",
     "Override the AI model (e.g. claude-opus-4-7). Wins over config.ai.model.",

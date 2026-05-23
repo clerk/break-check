@@ -49,7 +49,7 @@ jobs:
       - name: Detect API changes
         id: detect
         env:
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          SNAPI_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: node dist/cli.js detect --baseline .api-baseline-main --output api-report.md
         continue-on-error: true
 
