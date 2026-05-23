@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "description": "Snapi CLI",
   "type": "module",
-  "packageManager": "pnpm@10.33.0+sha512.10568bb4a6afb58c9eb3630da90cc9516417abebd3fabbe6739f0ae795728da1491e9db5a544c76ad8eb7570f5c4bb3d6c637b2cb41bfdcdb47fa823c8649319",
+  "packageManager": "pnpm@11.2.2+sha512.36e6621fad506178936455e70247b8808ef4ec25797a9f437a93281a020484e2607f6a469a22e982987c3dbb8866e3071514ab10a4a1749e06edcd1ec118436f",
   "bin": {
     "snapi": "./dist/cli.js"
   },
@@ -54,18 +54,11 @@
     "typescript": "5.9.3"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.13"
   },
   "dependencies": {
     "@microsoft/api-extractor": "7.55.2",
     "commander": "14.0.2",
     "zod": "3.24.2"
-  },
-  "pnpm": {
-    "overrides": {
-      "ajv@<8.18.0": ">=8.18.0",
-      "lodash@<4.18.0": ">=4.18.0",
-      "minimatch@<10.2.3": ">=10.2.3"
-    }
   }
 }
