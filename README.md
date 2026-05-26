@@ -105,6 +105,9 @@ Options:
   -o, --output <path>     Output report path
   --format <format>       Output format: markdown|json
   --fail-on-breaking      Exit with code 1 if breaking changes found
+  --no-ai                 Disable the AI reviewer even if SNAPI_ANTHROPIC_API_KEY is set
+  --ai-model <model>      Override the AI model (e.g. claude-opus-4-7)
+  --ai-strict             Run the AI reviewer even when only additions are detected
   -v, --verbose           Show verbose output
 ```
 
@@ -120,6 +123,70 @@ stderr so stdout remains parseable JSON.
 | `mainBranch`       | string   | `main`           | Base branch name for repo-specific workflows |
 | `checkVersionBump` | boolean  | `true`           | Mark insufficient version bumps in reports   |
 | `outputFormat`     | string   | `markdown`       | Default report format                        |
+| `ignoreSubpaths`   | string[] | `[]`             | Subpath exports to skip during discovery     |
+| `ai`               | object   | unset            | AI reviewer options (see below)              |
+
+### AI reviewer config
+
+| Field               | Type    | Default             | Description                                                                  |
+| ------------------- | ------- | ------------------- | ---------------------------------------------------------------------------- |
+| `enabled`           | boolean | unset               | Force-enable or force-disable. Unset: runs iff `SNAPI_ANTHROPIC_API_KEY` set |
+| `model`             | string  | `claude-sonnet-4-6` | Anthropic model identifier                                                   |
+| `maxChangesPerCall` | number  | `80`                | Maximum rule-based changes batched into a single AI call                     |
+| `strict`            | boolean | `false`             | Run the reviewer even when only additions are detected                       |
+
+## AI Review
+
+snapi can optionally route the rule-based diff through Claude for a second
+opinion. The reviewer confirms or overrides each rule-based classification,
+adds a one-sentence migration hint per breaking change, and scans the full
+API surface for breaks the rule-based pass missed (e.g., type variance,
+discriminated-union changes, structural-equivalence cases the rule pass treats
+as breaking but aren't).
+
+Enable it by exporting an API key:
+
+```bash
+export SNAPI_ANTHROPIC_API_KEY=sk-ant-...
+npx snapi detect --baseline .api-snapshots-baseline --fail-on-breaking
+```
+
+The reviewer is fail-soft: if the API is unreachable, the key is missing while
+`ai.enabled` is unset, or the model returns a malformed response, snapi falls
+back to the rule-based result and exits the same way it would without AI.
+
+### Picking a model
+
+- **`claude-sonnet-4-6`** (default): the right balance for CI. Reliable
+  tool-use output, cheap enough to run on every PR.
+- **`claude-opus-4-7`**: better at the open-ended "what did the rule-based
+  pass miss?" scan on large or variance-heavy API surfaces. Worth opting into
+  for high-stakes releases.
+
+Override per-invocation with `--ai-model claude-opus-4-7`, set
+`SNAPI_AI_MODEL` in the environment (handy for CI, where you might want
+Opus on release workflows and Sonnet on PRs without editing config), or
+set it permanently in `snapi.config.json`:
+
+```json
+{
+  "ai": {
+    "model": "claude-opus-4-7",
+    "strict": false
+  }
+}
+```
+
+Priority is `--ai-model` > `SNAPI_AI_MODEL` > `ai.model` in config >
+`claude-sonnet-4-6`.
+
+### Environment variables
+
+| Variable                  | Effect                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| `SNAPI_ANTHROPIC_API_KEY` | Anthropic API key. Required to enable the reviewer (unless `ai.enabled` is `false`). |
+| `SNAPI_AI_MODEL`          | Override the model. Equivalent to `--ai-model`; loses to the flag, wins over config. |
+| `SNAPI_AI_STRICT`         | Set to `1` (or any truthy value) to run the reviewer even on pure-additions diffs.   |
 
 ## GitHub Actions Integration
 

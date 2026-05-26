@@ -27,8 +27,8 @@ export const AiConfigSchema = z.object({
    */
   enabled: z.boolean().optional(),
 
-  /** Model identifier (Anthropic API). */
-  model: z.string().default(DEFAULT_AI_MODEL),
+  /** Model identifier (Anthropic API). Defaults to DEFAULT_AI_MODEL when neither config nor SNAPI_AI_MODEL is set. */
+  model: z.string().optional(),
 
   /** Maximum rule-based changes batched into a single AI call per package. */
   maxChangesPerCall: z.number().int().positive().default(80),
