@@ -83,6 +83,11 @@ export interface DetectorOptions {
   aiStrict?: boolean;
   /** Inject a pre-built AI analyzer (used by tests). Overrides all other AI config. */
   aiAnalyzer?: AiChangeAnalyzer;
+  /**
+   * Suppress all non-error console output, including progress logs from
+   * sub-analyzers. Errors are still written to stderr.
+   */
+  silent?: boolean;
 }
 
 const snapshotKey = (packageName: string, subpath: string): string =>

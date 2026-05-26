@@ -104,11 +104,26 @@ export function createDefaultConfig(): BreakCheckConfig {
 }
 
 /**
+ * Options for {@link findConfigFile}.
+ */
+export interface FindConfigFileOptions {
+  /**
+   * When true, only check `startDir` and do not walk up parents.
+   * @default false
+   */
+  noWalk?: boolean;
+}
+
+/**
  * Find the config file by walking up the directory tree
  * @param startDir - Directory to start searching from (defaults to cwd)
+ * @param options - Additional search options
  * @returns Path to config file or null if not found
  */
-export function findConfigFile(startDir?: string): string | null {
+export function findConfigFile(
+  startDir?: string,
+  options?: FindConfigFileOptions,
+): string | null {
   let currentDir = startDir ?? process.cwd();
   const root = path.parse(currentDir).root;
 
@@ -125,6 +140,10 @@ export function findConfigFile(startDir?: string): string | null {
     return null;
   };
 
+  if (options?.noWalk) {
+    return findIn(currentDir);
+  }
+
   while (currentDir !== root) {
     const found = findIn(currentDir);
     if (found) return found;
@@ -136,13 +155,17 @@ export function findConfigFile(startDir?: string): string | null {
 }
 
 /**
- * Load and validate configuration from a file
- * @param configPath - Path to config file (optional, will search if not provided)
+ * Load and validate configuration from a file.
+ *
+ * As of v0.1, `configPath` is required. Call {@link findConfigFile} first
+ * if you need to resolve the path automatically.
+ *
+ * @param configPath - Path to config file
  * @returns Validated configuration object
  * @throws Error if config file not found or invalid
  */
-export function loadConfig(configPath?: string): BreakCheckConfig {
-  let resolvedPath = configPath ?? findConfigFile();
+export function loadConfig(configPath: string): BreakCheckConfig {
+  let resolvedPath = configPath;
 
   // Legacy fallback: a caller that passed (or defaulted to)
   // break-check.config.json but only has the pre-rename snapi.config.json
@@ -164,12 +187,6 @@ export function loadConfig(configPath?: string): BreakCheckConfig {
       );
       resolvedPath = legacyPath;
     }
-  }
-
-  if (!resolvedPath) {
-    throw new Error(
-      `Config file not found. Run 'break-check init' to create ${CONFIG_FILE_NAME}`,
-    );
   }
 
   if (!fs.existsSync(resolvedPath)) {
@@ -214,14 +231,6 @@ export function writeConfig(
 }
 
 /**
- * Get the directory containing the config file
- * Useful for resolving relative package paths
- */
-export function getConfigDir(configPath: string): string {
-  return path.dirname(path.resolve(configPath));
-}
-
-/**
  * Resolve package paths relative to config file location
  * @param config - Configuration object
  * @param configPath - Path to the config file
@@ -231,6 +240,6 @@ export function resolvePackagePaths(
   config: BreakCheckConfig,
   configPath: string,
 ): string[] {
-  const configDir = getConfigDir(configPath);
+  const configDir = path.dirname(path.resolve(configPath));
   return config.packages.map((pkg) => path.resolve(configDir, pkg));
 }

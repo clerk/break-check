@@ -24,11 +24,11 @@ export {
   DEFAULT_AI_MODEL,
   type BreakCheckConfig,
   type AiConfig,
+  type FindConfigFileOptions,
   createDefaultConfig,
   findConfigFile,
   loadConfig,
   writeConfig,
-  getConfigDir,
   resolvePackagePaths,
 } from "./config.js";
 

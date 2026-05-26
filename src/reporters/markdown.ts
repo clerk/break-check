@@ -152,9 +152,12 @@ export class MarkdownReporter {
   }
 
   /**
-   * Generate JSON output (alternative format)
+   * Serialize the analysis result to a JSON string.
+   *
+   * Renamed from `generateJson` in v0.1 to align with the rest of the
+   * reporter surface.
    */
-  generateJson(result: AnalysisResult): string {
+  toJson(result: AnalysisResult): string {
     return JSON.stringify(result, null, 2);
   }
 

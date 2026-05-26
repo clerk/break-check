@@ -198,9 +198,7 @@ program
       // Generate report
       const reporter = new MarkdownReporter();
       const report =
-        format === "json"
-          ? reporter.generateJson(result)
-          : reporter.generate(result);
+        format === "json" ? reporter.toJson(result) : reporter.generate(result);
 
       // Output report
       if (options.output) {
