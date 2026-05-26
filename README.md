@@ -128,12 +128,12 @@ stderr so stdout remains parseable JSON.
 
 ### AI reviewer config
 
-| Field               | Type    | Default              | Description                                                                  |
-| ------------------- | ------- | -------------------- | ---------------------------------------------------------------------------- |
-| `enabled`           | boolean | unset                | Force-enable or force-disable. Unset: runs iff `SNAPI_ANTHROPIC_API_KEY` set |
-| `model`             | string  | `claude-sonnet-4-6`  | Anthropic model identifier                                                   |
-| `maxChangesPerCall` | number  | `80`                 | Maximum rule-based changes batched into a single AI call                     |
-| `strict`            | boolean | `false`              | Run the reviewer even when only additions are detected                       |
+| Field               | Type    | Default             | Description                                                                  |
+| ------------------- | ------- | ------------------- | ---------------------------------------------------------------------------- |
+| `enabled`           | boolean | unset               | Force-enable or force-disable. Unset: runs iff `SNAPI_ANTHROPIC_API_KEY` set |
+| `model`             | string  | `claude-sonnet-4-6` | Anthropic model identifier                                                   |
+| `maxChangesPerCall` | number  | `80`                | Maximum rule-based changes batched into a single AI call                     |
+| `strict`            | boolean | `false`             | Run the reviewer even when only additions are detected                       |
 
 ## AI Review
 
@@ -182,11 +182,11 @@ Priority is `--ai-model` > `SNAPI_AI_MODEL` > `ai.model` in config >
 
 ### Environment variables
 
-| Variable                  | Effect                                                                                   |
-| ------------------------- | ---------------------------------------------------------------------------------------- |
-| `SNAPI_ANTHROPIC_API_KEY` | Anthropic API key. Required to enable the reviewer (unless `ai.enabled` is `false`).     |
-| `SNAPI_AI_MODEL`          | Override the model. Equivalent to `--ai-model`; loses to the flag, wins over config.     |
-| `SNAPI_AI_STRICT`         | Set to `1` (or any truthy value) to run the reviewer even on pure-additions diffs.       |
+| Variable                  | Effect                                                                               |
+| ------------------------- | ------------------------------------------------------------------------------------ |
+| `SNAPI_ANTHROPIC_API_KEY` | Anthropic API key. Required to enable the reviewer (unless `ai.enabled` is `false`). |
+| `SNAPI_AI_MODEL`          | Override the model. Equivalent to `--ai-model`; loses to the flag, wins over config. |
+| `SNAPI_AI_STRICT`         | Set to `1` (or any truthy value) to run the reviewer even on pure-additions diffs.   |
 
 ## GitHub Actions Integration
 
