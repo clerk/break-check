@@ -117,7 +117,7 @@ program
   )
   .option(
     "--ai-model <model>",
-    "Override the AI model (e.g. claude-opus-4-7). Wins over config.ai.model.",
+    "Override the AI model (e.g. claude-opus-4-7). Wins over SNAPI_AI_MODEL and config.ai.model.",
   )
   .option(
     "--ai-strict",

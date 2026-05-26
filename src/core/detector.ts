@@ -40,7 +40,10 @@ export interface DetectorOptions {
    * `config.ai.enabled === true`. CLI's `--no-ai` flag wires through here.
    */
   disableAi?: boolean;
-  /** Override the AI model. Wins over config.ai.model. */
+  /**
+   * Override the AI model. Highest priority. When undefined,
+   * `SNAPI_AI_MODEL` env var and `config.ai.model` are consulted.
+   */
   aiModel?: string;
   /**
    * Force-enable (true) or force-disable (false) strict mode. Strict mode
@@ -151,7 +154,11 @@ export class BreakingChangesDetector {
     }
     if (enabledOverride === undefined && !apiKey) return null;
 
-    const model = options.aiModel ?? aiCfg?.model ?? DEFAULT_AI_MODEL;
+    const model =
+      options.aiModel ??
+      process.env.SNAPI_AI_MODEL ??
+      aiCfg?.model ??
+      DEFAULT_AI_MODEL;
     return new AiChangeAnalyzer({
       apiKey: apiKey as string,
       model,
