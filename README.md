@@ -294,6 +294,44 @@ What snapi does **not** yet do:
   removing, or constraining a type parameter is not classified.
 - TSDoc-only changes are ignored, which is the intended behavior.
 
+## Roadmap
+
+Near-term, in rough priority order:
+
+- **First stable release.** Publish `@clerk/snapi` to npm and cut a `v1`
+  tag so the bundled GitHub Action becomes usable without copying the
+  workflow by hand.
+- **Type variance awareness.** Stop classifying strictly-widening type
+  changes as breaking. Return type `string` → `string | number`, parameter
+  type `string` → `unknown`, and similar should be non-breaking; only
+  narrowing should be.
+- **Generic-parameter analysis.** Today generics are detected as text
+  diffs only. Classify adding, removing, reordering, or constraining
+  type parameters with the same rigor as regular parameters.
+- **Action support for monorepo baselines.** Add a first-class path
+  in the composite Action for downloading the latest baseline artifact
+  uploaded from `main`, instead of checking out and rebuilding the base
+  ref on every PR.
+- **Structural-equivalence pass for unions and discriminated unions.**
+  The rule-based diff currently flags reorderings and equivalent
+  rewrites as breaking; the AI reviewer can catch these but we want
+  the rule pass to handle the obvious cases on its own.
+- **Richer report output.** Group changes by package and by entrypoint
+  in the markdown report, and include a stable JSON schema version so
+  downstream tooling can depend on the output shape.
+
+Longer-term ideas (less committed):
+
+- A `snapi explain <symbol>` command that prints the before/after rollup
+  for a single export, for use during code review.
+- Per-package severity overrides in `snapi.config.json` (e.g. treat
+  internal packages as non-breaking by default).
+- Pluggable analyzers so consumers can add project-specific rules
+  (deprecation policies, naming conventions) without forking.
+
+If you want to pick one up, open an issue first so we can align on
+scope before you start.
+
 ## Troubleshooting
 
 ### No TypeScript declarations found
