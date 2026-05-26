@@ -8,6 +8,7 @@ dist/
 .idea/
 .vscode/
 .claude/
+.worktrees/
 *.swp
 *.swo
 

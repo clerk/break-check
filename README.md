@@ -10,7 +10,7 @@ by the expected version bump.
 
 ## Requirements
 
-- Node.js 20 or newer
+- Node.js 22.13 or newer
 - Packages must be built before snapshotting so their declaration files exist
 - Each configured package must expose a declaration entrypoint through
   `types`, `typings`, root `exports["."].types`, `main` plus matching `.d.ts`,
