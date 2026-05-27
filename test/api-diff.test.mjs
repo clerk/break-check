@@ -300,6 +300,43 @@ test("adding a new exported function is an addition", () => {
   assert.equal(counts(result).breaking, 0);
 });
 
+test("type alias description summarizes large type literals", () => {
+  // Build a 200-key object type. Without summarization, the description
+  // would include both copies of this literal (~10KB+) and push the
+  // generated PR comment past GitHub's 65KB limit.
+  const baselineKeys = Array.from(
+    { length: 200 },
+    (_, i) => `key${i}: string;`,
+  ).join(" ");
+  const currentKeys = Array.from(
+    { length: 201 },
+    (_, i) => `key${i}: string;`,
+  ).join(" ");
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: `export type Big = { ${baselineKeys} };\n`,
+    },
+    current: {
+      version: "2.0.0",
+      dts: `export type Big = { ${currentKeys} };\n`,
+    },
+  });
+
+  assert.equal(counts(result).breaking, 1);
+  const ch = changesFor(result)[0];
+  assert.match(ch.description, /Type changed/);
+  // Description must remain compact; the diff snippet shows the full bodies.
+  assert.ok(
+    ch.description.length < 500,
+    `description should be summarized, got ${ch.description.length} chars`,
+  );
+  assert.ok(
+    ch.description.includes("…"),
+    "expected ellipsis marking a truncated type literal",
+  );
+});
+
 test("changing a property type is breaking", () => {
   const result = setup({
     baseline: {

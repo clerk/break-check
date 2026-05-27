@@ -357,6 +357,52 @@ test("ai-analyzer: ADDITION changes pass through without a verdict needed", asyn
   }
 });
 
+test("ai-analyzer: coerces bogus ADDITION verdict on an in-place change to NON_BREAKING", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const change = ruleBasedBreakingChange();
+  const warnings = [];
+  const { client } = stubClient({
+    verdicts: [
+      {
+        id: change.id,
+        type: ChangeType.ADDITION,
+        confidence: 0.6,
+        rationale: "Type widened, treating as additive.",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    logger: {
+      warn: (m) => warnings.push(m),
+      log: () => {},
+    },
+  });
+
+  try {
+    const [result] = await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    // ADDITION is reserved for brand-new exports; the model violated the
+    // protocol on an in-place modification, so we coerce to NON_BREAKING.
+    assert.equal(result.type, ChangeType.NON_BREAKING);
+    assert.equal(result.severity, ChangeSeverity.MINOR);
+    assert.equal(result.ruleBasedType, ChangeType.BREAKING);
+    assert.equal(result.aiAnalysis.source, "rule-overridden");
+    assert.ok(
+      warnings.some((w) => w.includes("addition")),
+      `expected warning about bogus 'addition' verdict, got: ${warnings.join(" | ")}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("ai-analyzer: chunks large change lists across multiple calls", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const changes = Array.from({ length: 5 }, (_, i) => ({
