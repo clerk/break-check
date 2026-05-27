@@ -9,6 +9,7 @@ import {
   ChangeSeverity,
   ChangeType,
 } from "../types.js";
+import { VersionAnalyzer } from "../analyzers/version.js";
 
 /**
  * Options for the markdown reporter
@@ -26,6 +27,7 @@ export interface MarkdownReporterOptions {
 export class MarkdownReporter {
   private collapseThreshold: number;
   private includeFooter: boolean;
+  private versionAnalyzer = new VersionAnalyzer();
 
   constructor(options: MarkdownReporterOptions = {}) {
     this.collapseThreshold = options.collapseThreshold ?? 10;
@@ -128,10 +130,29 @@ export class MarkdownReporter {
     // Package header
     lines.push(`## ${pkg.packageName}\n`);
 
-    // Version info
-    lines.push(`**Version:** ${pkg.version.previous} → ${pkg.version.current}`);
+    // Version info. When previous === current the PR hasn't bumped yet, so an
+    // arrow would be misleading; show the current version and project the
+    // target version implied by the recommended bump instead.
+    const versionUnchanged = pkg.version.previous === pkg.version.current;
+    if (versionUnchanged) {
+      lines.push(`**Current version:** ${pkg.version.current}`);
+    } else {
+      lines.push(
+        `**Version:** ${pkg.version.previous} → ${pkg.version.current}`,
+      );
+    }
+
+    const bumpLabel = pkg.recommendedVersionBump.toUpperCase();
+    const targetVersion = versionUnchanged
+      ? this.versionAnalyzer.applyBump(
+          pkg.version.current,
+          pkg.recommendedVersionBump,
+        )
+      : null;
     lines.push(
-      `**Recommended bump:** ${pkg.recommendedVersionBump.toUpperCase()}`,
+      targetVersion
+        ? `**Recommended bump:** ${bumpLabel} → ${targetVersion}`
+        : `**Recommended bump:** ${bumpLabel}`,
     );
 
     if (pkg.actualVersionBump) {
@@ -292,16 +313,20 @@ export class MarkdownReporter {
       lines.push("```\n");
     }
 
-    // Description
-    lines.push(`> ${change.description}\n`);
+    // Description. When the AI also reviewed this same change, label the
+    // rule-based description as the static analyzer's voice so the AI block
+    // below reads as a distinct opinion rather than a contradiction.
+    const ai = change.aiAnalysis;
+    const labelStatic = ai && ai.source !== "ai-discovered";
+    const prefix = labelStatic ? "**Static analyzer:** " : "";
+    lines.push(`> ${prefix}${change.description}\n`);
 
-    if (change.aiAnalysis) {
-      const confidence = Math.round(change.aiAnalysis.confidence * 100);
-      lines.push(
-        `> 🤖 **AI review** (confidence: ${confidence}%): ${change.aiAnalysis.rationale}\n`,
-      );
-      if (change.aiAnalysis.migration) {
-        lines.push(`> **Migration:** ${change.aiAnalysis.migration}\n`);
+    if (ai) {
+      const confidence = Math.round(ai.confidence * 100);
+      const label = this.aiReviewLabel(change);
+      lines.push(`> 🤖 **${label}** (${confidence}%): ${ai.rationale}\n`);
+      if (ai.migration) {
+        lines.push(`> **Migration:** ${ai.migration}\n`);
       }
     }
 
@@ -311,13 +336,23 @@ export class MarkdownReporter {
   private aiHeadingTag(change: ApiChange): string {
     const ai = change.aiAnalysis;
     if (!ai) return "";
-    if (ai.source === "rule-overridden" && change.ruleBasedType) {
-      return ` _(reclassified from ${change.ruleBasedType})_`;
-    }
     if (ai.source === "ai-discovered") {
       return ` _(detected by AI)_`;
     }
     return "";
+  }
+
+  private aiReviewLabel(change: ApiChange): string {
+    const ai = change.aiAnalysis;
+    if (!ai) return "AI review";
+    switch (ai.source) {
+      case "rule-overridden":
+        return `AI review (reclassified as ${change.type})`;
+      case "rule-confirmed":
+        return "AI review (confirmed)";
+      case "ai-discovered":
+        return "AI review (additional finding)";
+    }
   }
 
   private firstAiModel(result: AnalysisResult): string | null {
