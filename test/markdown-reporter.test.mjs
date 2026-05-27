@@ -51,7 +51,7 @@ test("markdown reporter: short snippets are rendered inline without <details>", 
   );
 });
 
-test("markdown reporter: oversized snippets are truncated and wrapped in <details>", () => {
+test("markdown reporter: tiny edit in huge snippet renders as a focused diff", () => {
   const bigLines = Array.from({ length: 500 }, (_, i) => `key${i}: string;`);
   const beforeSnippet = `type Foo = {\n${bigLines.join("\n")}\n};`;
   const afterSnippet = `type Foo = {\n${bigLines.join("\n")}\nadded: string;\n};`;
@@ -71,15 +71,50 @@ test("markdown reporter: oversized snippets are truncated and wrapped in <detail
     snippetMaxLines: 60,
   }).generate(makeResult(change));
 
-  assert.ok(out.includes("<details>"), "expected <details> wrapper");
+  // The actual diff is one new line; surrounding identical content should be
+  // collapsed into elision markers, not rendered head+tail of each side.
+  assert.match(out, /unchanged lines? elided/);
   assert.ok(
-    out.includes("Diff truncated"),
-    "expected summary mentioning truncation",
+    out.includes("+ added: string;"),
+    "expected the added line to be visible",
   );
-  assert.match(out, /more lines? elided/);
-  // Sanity: the rendered report should be far smaller than the raw snippet size.
+  // Mostly-identical snippets should not produce a wall of `-` lines.
+  const removedLines = out.split("\n").filter((line) => line.startsWith("- "));
+  assert.ok(
+    removedLines.length <= 1,
+    `expected at most 1 removed line, got ${removedLines.length}`,
+  );
+  // Short enough to render inline.
+  assert.ok(!out.includes("<details>"), "small diffs render inline");
+  // Sanity: the rendered report should be far smaller than the raw snippet.
   assert.ok(
     out.length < 10_000,
-    `expected truncated report under 10KB, got ${out.length} bytes`,
+    `expected report under 10KB, got ${out.length} bytes`,
   );
+});
+
+test("markdown reporter: large unrelated snippets fall back to head+tail with <details>", () => {
+  const before = Array.from({ length: 300 }, (_, i) => `oldKey${i}: string;`);
+  const after = Array.from({ length: 300 }, (_, i) => `newKey${i}: number;`);
+  const beforeSnippet = `type Foo = {\n${before.join("\n")}\n};`;
+  const afterSnippet = `type Foo = {\n${after.join("\n")}\n};`;
+
+  const change = {
+    id: "x",
+    type: ChangeType.BREAKING,
+    severity: ChangeSeverity.MAJOR,
+    category: "type",
+    name: "Foo",
+    description: "Type changed",
+    beforeSnippet,
+    afterSnippet,
+  };
+  const out = new MarkdownReporter({
+    includeFooter: false,
+    snippetMaxLines: 60,
+  }).generate(makeResult(change));
+
+  assert.ok(out.includes("<details>"), "expected <details> wrapper");
+  assert.ok(out.includes("Diff (before:"), "expected diff summary line");
+  assert.match(out, /more lines? elided/);
 });
