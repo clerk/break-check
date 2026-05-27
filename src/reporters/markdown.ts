@@ -19,6 +19,13 @@ export interface MarkdownReporterOptions {
   collapseThreshold?: number;
   /** Whether to include the footer */
   includeFooter?: boolean;
+  /**
+   * Maximum number of lines kept verbatim in a single before/after snippet.
+   * Longer snippets are shown head + tail with the middle elided, wrapped in
+   * a collapsible <details> block. Keeps the report under GitHub's 65 KB
+   * comment limit on packages with huge object-literal types.
+   */
+  snippetMaxLines?: number;
 }
 
 /**
@@ -27,11 +34,13 @@ export interface MarkdownReporterOptions {
 export class MarkdownReporter {
   private collapseThreshold: number;
   private includeFooter: boolean;
+  private snippetMaxLines: number;
   private versionAnalyzer = new VersionAnalyzer();
 
   constructor(options: MarkdownReporterOptions = {}) {
     this.collapseThreshold = options.collapseThreshold ?? 10;
     this.includeFooter = options.includeFooter ?? true;
+    this.snippetMaxLines = options.snippetMaxLines ?? 60;
   }
 
   /**
@@ -292,25 +301,37 @@ export class MarkdownReporter {
 
     // Code diff
     if (change.beforeSnippet || change.afterSnippet) {
+      const beforeLines = change.beforeSnippet
+        ? change.beforeSnippet.trim().split("\n")
+        : [];
+      const afterLines = change.afterSnippet
+        ? change.afterSnippet.trim().split("\n")
+        : [];
+      const oversize =
+        beforeLines.length > this.snippetMaxLines ||
+        afterLines.length > this.snippetMaxLines;
+
+      if (oversize) {
+        lines.push("<details>");
+        lines.push(
+          `<summary>Diff truncated (before: ${beforeLines.length} lines, after: ${afterLines.length} lines) — click to expand</summary>\n`,
+        );
+      }
+
       lines.push("```diff");
-
-      if (change.beforeSnippet) {
-        // Add - prefix to each line
-        const beforeLines = change.beforeSnippet.trim().split("\n");
-        for (const line of beforeLines) {
-          lines.push(`- ${line}`);
-        }
+      for (const line of this.truncateForDiff(beforeLines)) {
+        lines.push(`- ${line}`);
       }
-
-      if (change.afterSnippet) {
-        // Add + prefix to each line
-        const afterLines = change.afterSnippet.trim().split("\n");
-        for (const line of afterLines) {
-          lines.push(`+ ${line}`);
-        }
+      for (const line of this.truncateForDiff(afterLines)) {
+        lines.push(`+ ${line}`);
       }
+      lines.push("```");
 
-      lines.push("```\n");
+      if (oversize) {
+        lines.push("</details>\n");
+      } else {
+        lines.push("");
+      }
     }
 
     // Description. When the AI also reviewed this same change, label the
@@ -331,6 +352,23 @@ export class MarkdownReporter {
     }
 
     return lines.join("\n");
+  }
+
+  /**
+   * Trim a snippet to head + tail with an elision marker when it exceeds
+   * snippetMaxLines. Returns the original lines untouched when within budget.
+   */
+  private truncateForDiff(lines: string[]): string[] {
+    if (lines.length <= this.snippetMaxLines) return lines;
+    const half = Math.max(1, Math.floor(this.snippetMaxLines / 2));
+    const head = lines.slice(0, half);
+    const tail = lines.slice(lines.length - half);
+    const elided = lines.length - head.length - tail.length;
+    return [
+      ...head,
+      `// ... ${elided} more line${elided === 1 ? "" : "s"} elided ...`,
+      ...tail,
+    ];
   }
 
   private aiHeadingTag(change: ApiChange): string {

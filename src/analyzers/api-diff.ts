@@ -483,7 +483,9 @@ export class ApiDiffAnalyzer {
 
     const notes: string[] = [];
     if (before.type !== after.type) {
-      notes.push(`Type changed: \`${before.type}\` → \`${after.type}\``);
+      notes.push(
+        `Type changed: \`${summarizeType(before.type)}\` → \`${summarizeType(after.type)}\``,
+      );
     }
     if (before.isReadonly !== after.isReadonly) {
       notes.push(
@@ -673,4 +675,16 @@ export class ApiDiffAnalyzer {
       .digest("hex")
       .slice(0, 12);
   }
+}
+
+/**
+ * Cap a type literal used in human-readable descriptions. The full type is
+ * already visible in the change's before/after snippet, so the description
+ * only needs enough characters to be useful at a glance. Large object-literal
+ * types otherwise produce ~tens-of-KB descriptions that push PR comments past
+ * GitHub's 65 KB limit.
+ */
+function summarizeType(text: string, maxLen = 120): string {
+  if (text.length <= maxLen) return text;
+  return `${text.slice(0, maxLen - 1).trimEnd()}…`;
 }

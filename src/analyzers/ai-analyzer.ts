@@ -326,20 +326,33 @@ export class AiChangeAnalyzer {
         enriched.push(change);
         continue;
       }
+      // `addition` is reserved for brand-new exports. The rule-based pass
+      // already routes those around the AI (see `reviewable` filter above),
+      // so any `addition` verdict here is a protocol violation: the model
+      // meant "not breaking" for an in-place modification. Coerce to
+      // non-breaking and note it.
+      let verdictType = v.type;
+      if (verdictType === ChangeType.ADDITION) {
+        this.warn(
+          `[ai] ${ctx.packageName}: model returned 'addition' for in-place change \`${change.name}\` (${change.category}); coercing to 'non-breaking'.`,
+        );
+        verdictType = ChangeType.NON_BREAKING;
+      }
       this.reviewedCount += 1;
-      const overrode = v.type !== change.type;
+      const overrode = verdictType !== change.type;
       if (overrode) this.overriddenCount += 1;
       const aiAnalysis: AiAnalysis = {
         source: overrode ? "rule-overridden" : "rule-confirmed",
         confidence: clamp01(v.confidence),
         rationale: v.rationale,
-        migration: v.type === ChangeType.BREAKING ? v.migration : undefined,
+        migration:
+          verdictType === ChangeType.BREAKING ? v.migration : undefined,
         model: this.model,
       };
       enriched.push({
         ...change,
-        type: v.type,
-        severity: severityForType(v.type),
+        type: verdictType,
+        severity: severityForType(verdictType),
         ruleBasedType: overrode ? change.type : change.ruleBasedType,
         aiAnalysis,
       });
