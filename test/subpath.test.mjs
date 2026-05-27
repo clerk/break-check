@@ -110,7 +110,10 @@ test("snapshot generates one .api.json per non-wildcard subpath", () => {
     const metadata = JSON.parse(
       readFileSync(join(pkgDir, "snapi.snapshot.json"), "utf-8"),
     );
-    assert.equal(metadata.schemaVersion, 2);
+    assert.equal(metadata.schemaVersion, 3);
+    assert.equal(metadata.apiExtractorPackage, "@microsoft/api-extractor");
+    assert.match(metadata.apiExtractorVersion, /^\d+\.\d+\.\d+/);
+    assert.match(metadata.snapiVersion, /^\d+\.\d+\.\d+/);
     assert.equal(metadata.entries.length, 3);
     const subpaths = metadata.entries.map((e) => e.subpath).sort();
     assert.deepEqual(subpaths, [".", "./errors", "./react"]);
