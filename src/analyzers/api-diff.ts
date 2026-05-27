@@ -145,11 +145,37 @@ export class ApiDiffAnalyzer {
 
   private parseApiJson(filePath: string): Map<string, ParsedApiItem> {
     const content = fs.readFileSync(filePath, "utf-8");
-    const apiJson: ApiJsonFile = JSON.parse(content);
+    let raw: unknown;
+    try {
+      raw = JSON.parse(content);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to parse API JSON at ${filePath}: ${message}`);
+    }
+
+    const apiJson = raw as Partial<ApiJsonFile> | null;
+    const toolPackage = apiJson?.metadata?.toolPackage;
+    const toolVersion = apiJson?.metadata?.toolVersion ?? "unknown";
+
+    if (toolPackage !== "@microsoft/api-extractor") {
+      throw new Error(
+        `Unrecognized API JSON at ${filePath}: expected metadata.toolPackage ` +
+          `"@microsoft/api-extractor", got ${JSON.stringify(toolPackage)}. ` +
+          `The file may be corrupt or produced by an incompatible tool.`,
+      );
+    }
+    if (!Array.isArray(apiJson?.members)) {
+      throw new Error(
+        `Unrecognized API JSON at ${filePath} (toolVersion ${toolVersion}): ` +
+          `\`members\` array is missing. The schema may have changed across ` +
+          `an API Extractor upgrade; regenerate the snapshot.`,
+      );
+    }
 
     const items = new Map<string, ParsedApiItem>();
+    const members = (apiJson as ApiJsonFile).members;
 
-    for (const member of apiJson.members) {
+    for (const member of members) {
       if (member.kind === "EntryPoint" && member.members) {
         for (const exportedMember of member.members) {
           this.processApiMember(exportedMember, items);

@@ -10,7 +10,12 @@ import {
   SnapiConfig,
   resolvePackagePaths,
 } from "../config.js";
-import { ApiExtractorRunner, readPackageInfo } from "../utils/api-extractor.js";
+import {
+  ApiExtractorRunner,
+  API_EXTRACTOR_PACKAGE,
+  getApiExtractorVersion,
+  readPackageInfo,
+} from "../utils/api-extractor.js";
 import { ApiDiffAnalyzer } from "../analyzers/api-diff.js";
 import { VersionAnalyzer } from "../analyzers/version.js";
 import { AiChangeAnalyzer } from "../analyzers/ai-analyzer.js";
@@ -57,6 +62,15 @@ export interface DetectorOptions {
 
 const snapshotKey = (packageName: string, subpath: string): string =>
   `${packageName}#${subpath}`;
+
+const SCHEMA_VERSION_WITH_PRODUCER_STAMP = 3;
+
+function parseMajor(version: string): number | null {
+  const match = /^(\d+)\./.exec(version);
+  if (!match) return null;
+  const n = Number(match[1]);
+  return Number.isFinite(n) ? n : null;
+}
 
 /**
  * Orchestrates API breaking changes detection
@@ -303,7 +317,13 @@ export class BreakingChangesDetector {
 
     const metadata = this.readSnapshotMetadata(metadataPath);
 
-    if (metadata && metadata.schemaVersion === 2 && metadata.entries) {
+    this.assertCompatibleProducer(metadata, packageName, metadataPath);
+
+    if (
+      metadata &&
+      (metadata.schemaVersion === 2 || metadata.schemaVersion === 3) &&
+      metadata.entries
+    ) {
       return metadata.entries
         .map((entry) => {
           const apiJsonPath = path.join(packageDir, entry.apiJsonFile);
@@ -350,6 +370,9 @@ export class BreakingChangesDetector {
 
   private readSnapshotMetadata(metadataPath: string): {
     schemaVersion?: number;
+    snapiVersion?: string;
+    apiExtractorPackage?: string;
+    apiExtractorVersion?: string;
     packagePath?: string;
     version?: string;
     timestamp?: string;
@@ -364,6 +387,9 @@ export class BreakingChangesDetector {
     try {
       const parsed = JSON.parse(fs.readFileSync(metadataPath, "utf-8")) as {
         schemaVersion?: unknown;
+        snapiVersion?: unknown;
+        apiExtractorPackage?: unknown;
+        apiExtractorVersion?: unknown;
         packagePath?: unknown;
         version?: unknown;
         timestamp?: unknown;
@@ -372,6 +398,9 @@ export class BreakingChangesDetector {
 
       const result: {
         schemaVersion?: number;
+        snapiVersion?: string;
+        apiExtractorPackage?: string;
+        apiExtractorVersion?: string;
         packagePath?: string;
         version?: string;
         timestamp?: string;
@@ -384,6 +413,15 @@ export class BreakingChangesDetector {
 
       if (typeof parsed.schemaVersion === "number") {
         result.schemaVersion = parsed.schemaVersion;
+      }
+      if (typeof parsed.snapiVersion === "string") {
+        result.snapiVersion = parsed.snapiVersion;
+      }
+      if (typeof parsed.apiExtractorPackage === "string") {
+        result.apiExtractorPackage = parsed.apiExtractorPackage;
+      }
+      if (typeof parsed.apiExtractorVersion === "string") {
+        result.apiExtractorVersion = parsed.apiExtractorVersion;
       }
       if (typeof parsed.packagePath === "string") {
         result.packagePath = parsed.packagePath;
@@ -424,6 +462,60 @@ export class BreakingChangesDetector {
       return result;
     } catch {
       return null;
+    }
+  }
+
+  /**
+   * Refuse a baseline whose recorded API Extractor major version disagrees with
+   * the one snapi is running. Different majors of `@microsoft/api-extractor`
+   * can rename or restructure fields in the `.api.json` shape that
+   * `parseApiJson` reads by hand, which silently produces nonsense diffs
+   * (typically mass false-positive removals). Failing fast forces the user to
+   * regenerate the baseline before the diff runs.
+   *
+   * Pre-stamping baselines (schemaVersion < 3) have no producer fingerprint;
+   * we warn but proceed since we cannot prove a mismatch, and breaking every
+   * existing baseline on a snapi minor that didn't touch AE would be hostile.
+   */
+  private assertCompatibleProducer(
+    metadata: ReturnType<typeof this.readSnapshotMetadata>,
+    packageName: string,
+    metadataPath: string,
+  ): void {
+    if (!metadata) return;
+
+    const baselineAeVersion = metadata.apiExtractorVersion;
+    if (!baselineAeVersion) {
+      if (
+        typeof metadata.schemaVersion === "number" &&
+        metadata.schemaVersion < SCHEMA_VERSION_WITH_PRODUCER_STAMP
+      ) {
+        process.stderr.write(
+          `[snapi] warning: baseline for ${packageName} predates producer-version stamping ` +
+            `(schemaVersion ${metadata.schemaVersion} at ${metadataPath}). ` +
+            `Regenerate with \`snapi snapshot\` to enable API Extractor drift detection.\n`,
+        );
+      }
+      return;
+    }
+
+    const runningAeVersion = getApiExtractorVersion();
+    const baselineMajor = parseMajor(baselineAeVersion);
+    const runningMajor = parseMajor(runningAeVersion);
+
+    if (
+      baselineMajor !== null &&
+      runningMajor !== null &&
+      baselineMajor !== runningMajor
+    ) {
+      throw new Error(
+        `Baseline for ${packageName} was produced by ${API_EXTRACTOR_PACKAGE} ` +
+          `v${baselineAeVersion}; this snapi runs v${runningAeVersion} ` +
+          `(major version mismatch). The .api.json shape is not guaranteed ` +
+          `compatible across API Extractor majors, so the diff would be ` +
+          `unreliable. Regenerate the baseline with \`snapi snapshot\` ` +
+          `against the baseline ref, then retry.`,
+      );
     }
   }
 

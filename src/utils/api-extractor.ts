@@ -4,6 +4,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { createRequire } from "node:module";
 import {
   Extractor,
   ExtractorConfig,
@@ -13,8 +14,38 @@ import {
 } from "@microsoft/api-extractor";
 import type { ApiSnapshot, PackageEntry, PackageInfo } from "../types.js";
 
-const SNAPSHOT_METADATA_VERSION = 2;
-const METADATA_FILENAME = "snapi.snapshot.json";
+export const SNAPSHOT_METADATA_VERSION = 3;
+export const METADATA_FILENAME = "snapi.snapshot.json";
+export const API_EXTRACTOR_PACKAGE = "@microsoft/api-extractor";
+
+const requireFromHere = createRequire(import.meta.url);
+
+let cachedSnapiVersion: string | null = null;
+let cachedApiExtractorVersion: string | null = null;
+
+export function getSnapiVersion(): string {
+  if (cachedSnapiVersion) return cachedSnapiVersion;
+  try {
+    const pkg = requireFromHere("../../package.json") as { version?: string };
+    cachedSnapiVersion = pkg.version ?? "0.0.0";
+  } catch {
+    cachedSnapiVersion = "0.0.0";
+  }
+  return cachedSnapiVersion;
+}
+
+export function getApiExtractorVersion(): string {
+  if (cachedApiExtractorVersion) return cachedApiExtractorVersion;
+  try {
+    const pkg = requireFromHere(`${API_EXTRACTOR_PACKAGE}/package.json`) as {
+      version?: string;
+    };
+    cachedApiExtractorVersion = pkg.version ?? "0.0.0";
+  } catch {
+    cachedApiExtractorVersion = "0.0.0";
+  }
+  return cachedApiExtractorVersion;
+}
 
 /**
  * Options for the ApiExtractorRunner
@@ -125,6 +156,9 @@ export class ApiExtractorRunner {
 
     const payload = {
       schemaVersion: SNAPSHOT_METADATA_VERSION,
+      snapiVersion: getSnapiVersion(),
+      apiExtractorPackage: API_EXTRACTOR_PACKAGE,
+      apiExtractorVersion: getApiExtractorVersion(),
       packageName: packageInfo.name,
       packagePath: packageInfo.path,
       version: packageInfo.version,
