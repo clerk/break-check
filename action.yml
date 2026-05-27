@@ -40,6 +40,22 @@ inputs:
     description: "Version of @clerk/break-check to fetch with `npx`."
     required: false
     default: "latest"
+  baseline-artifact-name:
+    description: |
+      Name of a baseline snapshot artifact uploaded from a push-to-`base-ref`
+      workflow. When set, the Action downloads the most recent matching
+      artifact instead of rebuilding `base-ref`. Falls back to the worktree
+      rebuild if no usable artifact is found. Requires `actions:read` on
+      `github-token` (the default `github.token` has it).
+    required: false
+    default: ""
+  baseline-max-age:
+    description: |
+      Maximum age, in hours, for a downloaded baseline artifact before the
+      Action falls back to a fresh worktree rebuild. Default unset (no
+      maximum). Only applies when `baseline-artifact-name` is set.
+    required: false
+    default: ""
   comment:
     description: "Post (or update) a PR comment with the report."
     required: false
@@ -79,7 +95,62 @@ runs:
         BASE_REF: ${{ inputs.base-ref }}
         CONFIG_PATH: ${{ inputs.config-path }}
 
+    - name: Try fetching baseline artifact
+      id: fetch-baseline
+      if: inputs.baseline-artifact-name != ''
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        BASE_REF: ${{ inputs.base-ref }}
+        ARTIFACT_NAME: ${{ inputs.baseline-artifact-name }}
+        MAX_AGE_HOURS: ${{ inputs.baseline-max-age }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+        BASELINE_DIR="$RUNNER_TEMP/break-check-baseline"
+
+        fallback() {
+          echo "::notice::$1 Falling back to base-ref rebuild."
+          echo "fetched=false" >> "$GITHUB_OUTPUT"
+          exit 0
+        }
+
+        ARTIFACT=$(gh api \
+          "repos/$REPO/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" \
+          --jq "[.artifacts[] | select(.workflow_run.head_branch == \"$BASE_REF\" and .expired == false)] | .[0]") \
+          || fallback "Artifact lookup failed."
+
+        if [ -z "$ARTIFACT" ] || [ "$ARTIFACT" = "null" ]; then
+          fallback "No baseline artifact '$ARTIFACT_NAME' on '$BASE_REF'."
+        fi
+
+        ARTIFACT_ID=$(echo "$ARTIFACT" | jq -r '.id')
+        CREATED_AT=$(echo "$ARTIFACT" | jq -r '.created_at')
+        RUN_ID=$(echo "$ARTIFACT" | jq -r '.workflow_run.id')
+
+        if [ -n "$MAX_AGE_HOURS" ]; then
+          AGE_SECONDS=$(( $(date -u +%s) - $(date -u -d "$CREATED_AT" +%s) ))
+          MAX_AGE_SECONDS=$(( MAX_AGE_HOURS * 3600 ))
+          if [ "$AGE_SECONDS" -gt "$MAX_AGE_SECONDS" ]; then
+            fallback "Baseline artifact older than $MAX_AGE_HOURS hours."
+          fi
+        fi
+
+        rm -rf "$BASELINE_DIR"
+        mkdir -p "$BASELINE_DIR"
+        ZIP_PATH="$RUNNER_TEMP/break-check-baseline.zip"
+        gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" > "$ZIP_PATH" \
+          || fallback "Artifact download failed."
+        unzip -q "$ZIP_PATH" -d "$BASELINE_DIR" \
+          || fallback "Artifact unzip failed."
+        rm -f "$ZIP_PATH"
+
+        echo "BASELINE_DIR=$BASELINE_DIR" >> "$GITHUB_ENV"
+        echo "fetched=true" >> "$GITHUB_OUTPUT"
+        echo "::notice::Using baseline artifact '$ARTIFACT_NAME' from run $RUN_ID."
+
     - name: Snapshot baseline from ${{ inputs.base-ref }}
+      if: steps.fetch-baseline.outputs.fetched != 'true'
       shell: bash
       env:
         BASE_REF: ${{ inputs.base-ref }}

@@ -242,16 +242,18 @@ jobs:
 
 ### Action inputs
 
-| Input                 | Default                                        | Description                                                                                        |
-| --------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `config-path`         | `break-check.config.json`                      | Path to the config file, relative to the repo root.                                                |
-| `base-ref`            | PR base SHA                                    | Git ref or SHA to snapshot as the baseline.                                                        |
-| `head-ref`            | PR head SHA                                    | Git ref or SHA to build as the "current" side. Pins the diff to the PR head, not the merge ref.    |
-| `setup-command`       | `pnpm install --frozen-lockfile && pnpm build` | Shell command run inside both the base checkout and the current checkout to produce `.d.ts` files. |
-| `break-check-version` | `latest`                                       | npm version of `@clerk/break-check` to fetch with `npx`.                                           |
-| `comment`             | `true`                                         | Post or update a PR comment with the report.                                                       |
-| `fail-on-breaking`    | `false`                                        | Fail the workflow when breaking changes are detected.                                              |
-| `github-token`        | `${{ github.token }}`                          | Token used to read/write PR comments.                                                              |
+| Input                    | Default                                        | Description                                                                                                         |
+| ------------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `config-path`            | `break-check.config.json`                      | Path to the config file, relative to the repo root.                                                                 |
+| `base-ref`               | PR base SHA                                    | Git ref or SHA to snapshot as the baseline.                                                                         |
+| `head-ref`               | PR head SHA                                    | Git ref or SHA to build as the "current" side. Pins the diff to the PR head, not the merge ref.                     |
+| `setup-command`          | `pnpm install --frozen-lockfile && pnpm build` | Shell command run inside both the base checkout and the current checkout to produce `.d.ts` files.                  |
+| `break-check-version`    | `latest`                                       | npm version of `@clerk/break-check` to fetch with `npx`.                                                            |
+| `baseline-artifact-name` | unset                                          | Name of a snapshot artifact uploaded from a push-to-`base-ref` workflow. See [Larger monorepos](#larger-monorepos). |
+| `baseline-max-age`       | unset                                          | Maximum age (hours) for a downloaded baseline artifact before falling back to a worktree rebuild.                   |
+| `comment`                | `true`                                         | Post or update a PR comment with the report.                                                                        |
+| `fail-on-breaking`       | `false`                                        | Fail the workflow when breaking changes are detected.                                                               |
+| `github-token`           | `${{ github.token }}`                          | Token used to read/write PR comments and (when `baseline-artifact-name` is set) fetch the artifact.                 |
 
 ### Action outputs
 
@@ -270,10 +272,60 @@ config.
 
 ### Larger monorepos
 
-For larger monorepos, generate baseline snapshots on `main` and upload them as
-artifacts. PR checks can then download the latest baseline artifact instead of
-checking out and rebuilding `main`. The Action does not (yet) cover this
-pattern out of the box; fall back to the CLI directly when you need it.
+Rebuilding `main` on every PR is too slow for large monorepos. Instead, snapshot
+`main` once per push and have PR checks download the artifact.
+
+**Producer** (`.github/workflows/break-check-baseline.yml`):
+
+```yaml
+name: Break Check baseline
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile && pnpm build
+      - run: npx @clerk/break-check snapshot --output .api-baseline-main
+      - uses: actions/upload-artifact@v4
+        with:
+          name: break-check-baseline-main
+          path: .api-baseline-main
+          retention-days: 30
+          if-no-files-found: error
+```
+
+**Consumer** (PR check): point the Action at the artifact name.
+
+```yaml
+- uses: clerk/break-check@v1
+  with:
+    baseline-artifact-name: break-check-baseline-main
+    fail-on-breaking: true
+```
+
+The Action looks up the most recent non-expired artifact with that name on
+`base-ref`, downloads it, and uses it directly. If no artifact is found, it's
+expired, or it's older than `baseline-max-age` (when set), the Action falls
+back to the worktree rebuild. The fallback also covers the first PR after
+adding break-check, before the producer has run.
+
+Workflow runs that download the artifact need `actions:read` on
+`github-token`; the default `github.token` has it. Pin the break-check version
+identically in producer and consumer if you want to guarantee snapshot
+compatibility.
 
 ## Change Detection
 
@@ -318,10 +370,6 @@ Near-term, in rough priority order:
 - **Generic-parameter analysis.** Today generics are detected as text
   diffs only. Classify adding, removing, reordering, or constraining
   type parameters with the same rigor as regular parameters.
-- **Action support for monorepo baselines.** Add a first-class path
-  in the composite Action for downloading the latest baseline artifact
-  uploaded from `main`, instead of checking out and rebuilding the base
-  ref on every PR.
 - **Structural-equivalence pass for unions and discriminated unions.**
   The rule-based diff currently flags reorderings and equivalent
   rewrites as breaking; the AI reviewer can catch these but we want
