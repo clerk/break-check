@@ -9,6 +9,7 @@ import {
   ChangeSeverity,
   ChangeType,
 } from "../types.js";
+import { VersionAnalyzer } from "../analyzers/version.js";
 
 /**
  * Options for the markdown reporter
@@ -26,6 +27,7 @@ export interface MarkdownReporterOptions {
 export class MarkdownReporter {
   private collapseThreshold: number;
   private includeFooter: boolean;
+  private versionAnalyzer = new VersionAnalyzer();
 
   constructor(options: MarkdownReporterOptions = {}) {
     this.collapseThreshold = options.collapseThreshold ?? 10;
@@ -128,10 +130,29 @@ export class MarkdownReporter {
     // Package header
     lines.push(`## ${pkg.packageName}\n`);
 
-    // Version info
-    lines.push(`**Version:** ${pkg.version.previous} → ${pkg.version.current}`);
+    // Version info. When previous === current the PR hasn't bumped yet, so an
+    // arrow would be misleading; show the current version and project the
+    // target version implied by the recommended bump instead.
+    const versionUnchanged = pkg.version.previous === pkg.version.current;
+    if (versionUnchanged) {
+      lines.push(`**Current version:** ${pkg.version.current}`);
+    } else {
+      lines.push(
+        `**Version:** ${pkg.version.previous} → ${pkg.version.current}`,
+      );
+    }
+
+    const bumpLabel = pkg.recommendedVersionBump.toUpperCase();
+    const targetVersion = versionUnchanged
+      ? this.versionAnalyzer.applyBump(
+          pkg.version.current,
+          pkg.recommendedVersionBump,
+        )
+      : null;
     lines.push(
-      `**Recommended bump:** ${pkg.recommendedVersionBump.toUpperCase()}`,
+      targetVersion
+        ? `**Recommended bump:** ${bumpLabel} → ${targetVersion}`
+        : `**Recommended bump:** ${bumpLabel}`,
     );
 
     if (pkg.actualVersionBump) {

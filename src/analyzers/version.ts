@@ -181,6 +181,23 @@ export class VersionAnalyzer {
   }
 
   /**
+   * Apply a bump level to a version string and return the resulting version.
+   * Strips any pre-release suffix. Returns null if the input doesn't parse.
+   */
+  applyBump(version: string, bump: ChangeSeverity): string | null {
+    const parsed = this.parseSemver(version);
+    if (!parsed) return null;
+    switch (bump) {
+      case ChangeSeverity.MAJOR:
+        return `${parsed.major + 1}.0.0`;
+      case ChangeSeverity.MINOR:
+        return `${parsed.major}.${parsed.minor + 1}.0`;
+      case ChangeSeverity.PATCH:
+        return `${parsed.major}.${parsed.minor}.${parsed.patch + 1}`;
+    }
+  }
+
+  /**
    * Parse a semver version string into components
    * @param version - Version string (e.g., "1.2.3", "1.2.3-beta.1")
    * @returns Parsed components or null if invalid
