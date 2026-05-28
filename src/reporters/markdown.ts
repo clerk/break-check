@@ -20,10 +20,11 @@ export interface MarkdownReporterOptions {
   /** Whether to include the footer */
   includeFooter?: boolean;
   /**
-   * Maximum number of lines kept verbatim in a single before/after snippet.
-   * Longer snippets are shown head + tail with the middle elided, wrapped in
-   * a collapsible <details> block. Keeps the report under GitHub's 65 KB
-   * comment limit on packages with huge object-literal types.
+   * Visible-line budget for a single before/after diff. When the rendered
+   * diff exceeds this, the block is wrapped in a collapsible <details>
+   * element. The middle hunk is also bulk-truncated head+tail per side past
+   * this budget when no common prefix/suffix exists. Keeps the report under
+   * GitHub's 65 KB comment limit on packages with huge object-literal types.
    */
   snippetMaxLines?: number;
 }
@@ -307,27 +308,23 @@ export class MarkdownReporter {
       const afterLines = change.afterSnippet
         ? change.afterSnippet.trim().split("\n")
         : [];
-      const oversize =
-        beforeLines.length > this.snippetMaxLines ||
-        afterLines.length > this.snippetMaxLines;
+      const rendered = this.renderUnifiedDiff(beforeLines, afterLines);
+      const collapsed = rendered.length > this.snippetMaxLines;
 
-      if (oversize) {
+      if (collapsed) {
         lines.push("<details>");
         lines.push(
-          `<summary>Diff truncated (before: ${beforeLines.length} lines, after: ${afterLines.length} lines) — click to expand</summary>\n`,
+          `<summary>Diff (before: ${beforeLines.length} lines, after: ${afterLines.length} lines). Click to expand.</summary>\n`,
         );
       }
 
       lines.push("```diff");
-      for (const line of this.truncateForDiff(beforeLines)) {
-        lines.push(`- ${line}`);
-      }
-      for (const line of this.truncateForDiff(afterLines)) {
-        lines.push(`+ ${line}`);
+      for (const line of rendered) {
+        lines.push(line);
       }
       lines.push("```");
 
-      if (oversize) {
+      if (collapsed) {
         lines.push("</details>\n");
       } else {
         lines.push("");
@@ -355,12 +352,113 @@ export class MarkdownReporter {
   }
 
   /**
-   * Trim a snippet to head + tail with an elision marker when it exceeds
-   * snippetMaxLines. Returns the original lines untouched when within budget.
+   * Render a unified-style diff between two snippets. Anchors on the aligned
+   * common prefix and suffix so a tiny edit inside a huge type alias renders
+   * as the changed lines plus a few context lines, instead of the entire
+   * before-and-after walls of text. The middle hunk is rendered as a
+   * line-level diff (LCS) when small enough; otherwise it falls back to
+   * head+tail bulk delete + add. Lines are prefixed for a ```diff fence:
+   * "  " for context, "- " for removed, "+ " for added.
    */
-  private truncateForDiff(lines: string[]): string[] {
-    if (lines.length <= this.snippetMaxLines) return lines;
-    const half = Math.max(1, Math.floor(this.snippetMaxLines / 2));
+  private renderUnifiedDiff(
+    beforeLines: string[],
+    afterLines: string[],
+  ): string[] {
+    const context = 3;
+
+    // Aligned common prefix
+    let prefix = 0;
+    const minLen = Math.min(beforeLines.length, afterLines.length);
+    while (prefix < minLen && beforeLines[prefix] === afterLines[prefix]) {
+      prefix++;
+    }
+
+    // Aligned common suffix (must not overlap the prefix on either side)
+    let suffix = 0;
+    const maxSuffix = Math.min(
+      beforeLines.length - prefix,
+      afterLines.length - prefix,
+    );
+    while (
+      suffix < maxSuffix &&
+      beforeLines[beforeLines.length - 1 - suffix] ===
+        afterLines[afterLines.length - 1 - suffix]
+    ) {
+      suffix++;
+    }
+
+    const beforeMid = beforeLines.slice(prefix, beforeLines.length - suffix);
+    const afterMid = afterLines.slice(prefix, afterLines.length - suffix);
+
+    const out: string[] = [];
+
+    // Leading context: last few lines of common prefix, with elision marker
+    // for whatever sits above the context window.
+    if (prefix > 0) {
+      const ctxLen = Math.min(context, prefix);
+      const ctxStart = prefix - ctxLen;
+      if (ctxStart > 0) {
+        out.push(this.elisionMarker(ctxStart));
+      }
+      for (let i = ctxStart; i < prefix; i++) {
+        out.push(`  ${beforeLines[i]}`);
+      }
+    }
+
+    // Middle: line-level diff when the LCS table fits in budget AND the
+    // resulting diff stays compact. If the two sides share little structure,
+    // LCS degenerates to "delete everything, then add everything" which is
+    // no better than the bulk fallback, so we skip it past a size cap.
+    const lcsBudget = 500 * 500;
+    const middleBudget = this.snippetMaxLines * 2;
+    let usedLcs = false;
+    if (beforeMid.length * afterMid.length <= lcsBudget) {
+      const ops = this.lineDiff(beforeMid, afterMid);
+      const changedOps = ops.reduce(
+        (n, op) => (op.kind === "ctx" ? n : n + 1),
+        0,
+      );
+      if (changedOps <= middleBudget) {
+        for (const op of ops) {
+          const marker =
+            op.kind === "ctx" ? "  " : op.kind === "del" ? "- " : "+ ";
+          out.push(`${marker}${op.line}`);
+        }
+        usedLcs = true;
+      }
+    }
+    if (!usedLcs) {
+      for (const line of this.headTail(beforeMid, this.snippetMaxLines)) {
+        out.push(line.startsWith("// ...") ? line : `- ${line}`);
+      }
+      for (const line of this.headTail(afterMid, this.snippetMaxLines)) {
+        out.push(line.startsWith("// ...") ? line : `+ ${line}`);
+      }
+    }
+
+    // Trailing context: first few lines of common suffix, with elision
+    // marker for whatever sits below the context window.
+    if (suffix > 0) {
+      const ctxLen = Math.min(context, suffix);
+      for (let i = 0; i < ctxLen; i++) {
+        out.push(`  ${beforeLines[beforeLines.length - suffix + i]}`);
+      }
+      const remaining = suffix - ctxLen;
+      if (remaining > 0) {
+        out.push(this.elisionMarker(remaining));
+      }
+    }
+
+    return out;
+  }
+
+  private elisionMarker(count: number): string {
+    return `// ... ${count} unchanged line${count === 1 ? "" : "s"} elided ...`;
+  }
+
+  private headTail(lines: string[], max: number): string[] {
+    if (lines.length <= max) return lines;
+    const half = Math.max(1, Math.floor(max / 2));
     const head = lines.slice(0, half);
     const tail = lines.slice(lines.length - half);
     const elided = lines.length - head.length - tail.length;
@@ -369,6 +467,46 @@ export class MarkdownReporter {
       `// ... ${elided} more line${elided === 1 ? "" : "s"} elided ...`,
       ...tail,
     ];
+  }
+
+  // Longest-common-subsequence line diff. O(m*n) time and space; caller
+  // gates by lcsBudget so we don't run this on pathologically large inputs.
+  private lineDiff(
+    a: string[],
+    b: string[],
+  ): { kind: "ctx" | "del" | "add"; line: string }[] {
+    const m = a.length;
+    const n = b.length;
+    if (m === 0) return b.map((line) => ({ kind: "add" as const, line }));
+    if (n === 0) return a.map((line) => ({ kind: "del" as const, line }));
+
+    const dp: number[][] = [];
+    for (let i = 0; i <= m; i++) dp.push(new Array(n + 1).fill(0));
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        if (a[i - 1] === b[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;
+        else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+
+    const ops: { kind: "ctx" | "del" | "add"; line: string }[] = [];
+    let i = m;
+    let j = n;
+    while (i > 0 || j > 0) {
+      if (i > 0 && j > 0 && a[i - 1] === b[j - 1]) {
+        ops.push({ kind: "ctx", line: a[i - 1] });
+        i--;
+        j--;
+      } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
+        ops.push({ kind: "add", line: b[j - 1] });
+        j--;
+      } else {
+        ops.push({ kind: "del", line: a[i - 1] });
+        i--;
+      }
+    }
+    ops.reverse();
+    return ops;
   }
 
   private aiHeadingTag(change: ApiChange): string {

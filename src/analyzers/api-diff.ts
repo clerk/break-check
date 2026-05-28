@@ -337,7 +337,7 @@ export class ApiDiffAnalyzer {
       );
     }
 
-    // Kind mismatch (e.g., became a different shape) — treat as breaking
+    // Kind mismatch (e.g., became a different shape); treat as breaking.
     if (baseline.shape.kind !== current.shape.kind) {
       return this.buildModification(
         baseline,
