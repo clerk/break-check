@@ -236,16 +236,32 @@ export class ApiExtractorRunner {
     const exports = packageJson.exports;
 
     if (exports && typeof exports === "object" && !Array.isArray(exports)) {
+      const seen = new Set<string>();
       for (const [subpath, value] of Object.entries(
         exports as Record<string, unknown>,
       )) {
         if (!subpath.startsWith(".")) continue;
         if (ignore.has(subpath)) continue;
+        if (subpath === "./package.json") continue;
+
         if (subpath.includes("*")) {
-          result.skippedWildcards.push(subpath);
+          // Wildcard subpaths (e.g. `"./*": "./dist/runtime/*.d.mts"`) are
+          // how packages like @clerk/shared expose most of their API. Glob
+          // the filesystem and synthesize one concrete entry per match so
+          // breaking changes under wildcard surfaces aren't invisible.
+          const expanded = expandWildcardSubpath(subpath, value, packagePath);
+          if (expanded.length === 0) {
+            result.skippedWildcards.push(subpath);
+            continue;
+          }
+          for (const e of expanded) {
+            if (ignore.has(e.subpath)) continue;
+            if (seen.has(e.subpath)) continue;
+            seen.add(e.subpath);
+            result.entries.push(e);
+          }
           continue;
         }
-        if (subpath === "./package.json") continue;
 
         const typesPath = resolveTypesFromExportValue(value, packagePath);
         if (!typesPath) continue;
@@ -255,6 +271,8 @@ export class ApiExtractorRunner {
           continue;
         }
 
+        if (seen.has(subpath)) continue;
+        seen.add(subpath);
         result.entries.push({ subpath, typesEntry: typesPath });
       }
 
@@ -432,6 +450,59 @@ function resolveTypesFromExportValue(
   }
 
   return null;
+}
+
+/**
+ * Expand a wildcard subpath export (e.g. `"./*": "./dist/runtime/*.d.mts"`)
+ * into one concrete `PackageEntry` per matching file on disk. Mirrors how
+ * Node resolves consumer-side imports of `<pkg>/foo` against the pattern:
+ * the part of the consumer path that the `*` captures is substituted into
+ * the value to find the actual `.d.ts`.
+ *
+ * Only single-wildcard patterns are supported (the common case and the
+ * shape the Node spec actually documents). Multi-wildcard or wildcards
+ * with no resolvable types target return an empty array, which the
+ * caller surfaces as a skipped wildcard.
+ *
+ * The glob uses a single-segment `*`, so this catches packages like
+ * `@clerk/shared` that expose `./file`, `./url`, `./error` flat; nested
+ * `./internal/foo/bar` style wildcards are not auto-expanded yet.
+ */
+function expandWildcardSubpath(
+  keyPattern: string,
+  value: unknown,
+  packagePath: string,
+): PackageEntry[] {
+  if (value === null) return [];
+
+  const typesPath = resolveTypesFromExportValue(value, packagePath);
+  if (!typesPath) return [];
+
+  const keyStarCount = (keyPattern.match(/\*/g) ?? []).length;
+  const valStarCount = (typesPath.match(/\*/g) ?? []).length;
+  if (keyStarCount !== 1 || valStarCount !== 1) return [];
+
+  const starIdx = typesPath.indexOf("*");
+  const prefix = typesPath.slice(0, starIdx);
+  const suffix = typesPath.slice(starIdx + 1);
+
+  let matches: string[] = [];
+  try {
+    matches = fs.globSync(typesPath) as string[];
+  } catch {
+    return [];
+  }
+
+  const entries: PackageEntry[] = [];
+  for (const match of matches) {
+    const abs = path.resolve(match);
+    if (!abs.startsWith(prefix) || !abs.endsWith(suffix)) continue;
+    const captured = abs.slice(prefix.length, abs.length - suffix.length);
+    if (!captured) continue;
+    const subpath = keyPattern.replace("*", captured);
+    entries.push({ subpath, typesEntry: abs });
+  }
+  return entries;
 }
 
 function resolveRootTypes(

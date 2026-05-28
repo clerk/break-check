@@ -430,6 +430,114 @@ test("detect reads v1 baseline metadata as a root-only entry", () => {
   }
 });
 
+test("snapshot expands wildcard subpath exports against the filesystem", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    // Mirror @clerk/shared: `./*` wildcard pointing into `./dist/runtime/`.
+    // Three concrete files there → three concrete subpaths the consumer
+    // can import. The wildcard itself must not appear as a literal entry.
+    const packageDir = join(workspace, "packages", "pkg");
+    mkdirSync(packageDir, { recursive: true });
+    writeDts(
+      join(packageDir, "dist/runtime/file.d.mts"),
+      "export declare function readFile(): string;\n",
+    );
+    writeDts(
+      join(packageDir, "dist/runtime/url.d.mts"),
+      "export declare function parseUrl(): URL;\n",
+    );
+    writeDts(
+      join(packageDir, "dist/runtime/error.d.mts"),
+      "export declare class FooError extends Error {}\n",
+    );
+    writeDts(
+      join(packageDir, "dist/index.d.ts"),
+      "export declare const root: number;\n",
+    );
+    writeJson(join(packageDir, "package.json"), {
+      name: "@demo/pkg",
+      version: "1.0.0",
+      exports: {
+        ".": { import: { types: "./dist/index.d.ts" } },
+        "./*": { import: { types: "./dist/runtime/*.d.mts" } },
+        "./package.json": "./package.json",
+      },
+    });
+
+    const snapshot = runSnapi(["snapshot", "-c", configPath]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+
+    const metadata = JSON.parse(
+      readFileSync(
+        join(workspace, "snapshots", "demo__pkg", "snapi.snapshot.json"),
+        "utf-8",
+      ),
+    );
+    const subpaths = metadata.entries.map((e) => e.subpath).sort();
+    assert.deepEqual(subpaths, [".", "./error", "./file", "./url"]);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("detect surfaces a breaking change under a wildcard subpath", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    const packageDir = join(workspace, "packages", "pkg");
+    mkdirSync(packageDir, { recursive: true });
+
+    const writeWildcardPackage = (fileBody) => {
+      writeDts(
+        join(packageDir, "dist/index.d.ts"),
+        "export declare const root: number;\n",
+      );
+      writeDts(join(packageDir, "dist/runtime/file.d.mts"), fileBody);
+      writeJson(join(packageDir, "package.json"), {
+        name: "@demo/pkg",
+        version: "1.0.0",
+        exports: {
+          ".": { import: { types: "./dist/index.d.ts" } },
+          "./*": { import: { types: "./dist/runtime/*.d.mts" } },
+          "./package.json": "./package.json",
+        },
+      });
+    };
+
+    writeWildcardPackage("export declare function readJSONFile(): string;\n");
+    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    assert.equal(baseline.status, 0, baseline.stderr);
+
+    // Rename the exported function: the rule-based diff classifies that as
+    // removal + addition, both surfacing under `./file`.
+    writeWildcardPackage("export declare function parseJSONFile(): string;\n");
+
+    const detect = runSnapi([
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "baseline",
+      "--format",
+      "json",
+      "--no-ai",
+    ]);
+    assert.equal(detect.status, 0, detect.stderr);
+
+    const result = JSON.parse(detect.stdout);
+    const fileChanges = result.packages[0].changes.filter(
+      (c) => c.subpath === "./file",
+    );
+    assert.ok(
+      fileChanges.some((c) => c.type === "breaking"),
+      "expected a breaking change under the wildcard-expanded ./file subpath",
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("ignoreSubpaths drops matching subpaths from discovery", () => {
   const workspace = workspaceDir();
   try {
