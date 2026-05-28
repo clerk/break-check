@@ -62,6 +62,10 @@ export class MarkdownReporter {
       sections.push(`> 🤖 This report was reviewed by \`${aiModel}\`.\n`);
     }
 
+    if (result.skippedEntries && result.skippedEntries.length > 0) {
+      sections.push(this.generateSkippedSection(result.skippedEntries));
+    }
+
     // Package sections
     const packagesWithChanges = result.packages.filter(
       (p) => p.changes.length > 0,
@@ -95,6 +99,27 @@ export class MarkdownReporter {
    */
   generateJson(result: AnalysisResult): string {
     return JSON.stringify(result, null, 2);
+  }
+
+  /**
+   * Render a callout listing subpaths snapi couldn't snapshot. Reviewers
+   * need to see this so they know the diff omits those surfaces; otherwise
+   * the "No API changes" footer below is dangerously incomplete.
+   */
+  private generateSkippedSection(
+    skipped: NonNullable<AnalysisResult["skippedEntries"]>,
+  ): string {
+    const lines: string[] = [];
+    lines.push(
+      `> **Note**\n> snapi could not snapshot ${skipped.length} subpath${skipped.length === 1 ? "" : "s"}; the diff below excludes them.`,
+    );
+    lines.push(">");
+    for (const s of skipped) {
+      const reason = s.reason.replace(/\s+/g, " ").trim();
+      lines.push(`> - \`${s.packageName}\` ${s.subpath}: ${reason}`);
+    }
+    lines.push("");
+    return lines.join("\n");
   }
 
   /**

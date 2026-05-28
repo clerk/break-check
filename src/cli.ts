@@ -91,6 +91,12 @@ program
       console.log(
         `  Output: ${path.resolve(path.dirname(configPath), config.snapshotDir)}`,
       );
+      const skipped = detector.lastSkippedEntries;
+      if (skipped.length > 0) {
+        console.log(
+          `  Skipped ${skipped.length} subpath(s) due to extraction errors (see warnings above).`,
+        );
+      }
     } catch (error) {
       console.error(
         "Error:",
@@ -185,6 +191,11 @@ program
       logInfo(`  Breaking changes: ${result.summary.breakingChanges}`);
       logInfo(`  Non-breaking changes: ${result.summary.nonBreakingChanges}`);
       logInfo(`  Additions: ${result.summary.additions}`);
+      if (result.skippedEntries && result.skippedEntries.length > 0) {
+        logInfo(
+          `  Skipped subpaths: ${result.skippedEntries.length} (see warnings above)`,
+        );
+      }
 
       if (detector.aiEnabled) {
         const s = detector.aiStats;

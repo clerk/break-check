@@ -430,6 +430,48 @@ test("detect reads v1 baseline metadata as a root-only entry", () => {
   }
 });
 
+test("snapshot warns and continues when one subpath fails extraction", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    writeSubpathOnlyPackage(workspace, {
+      version: "1.0.0",
+      surfaces: {
+        dts: {
+          ".": "export declare const root: number;\n",
+          "./broken":
+            // Syntactically invalid TypeScript triggers an extractor
+            // failure. The exact error shape doesn't matter; what matters
+            // is that the orchestrator catches it and continues instead
+            // of throwing the whole run. Same fail-soft behavior we need
+            // for ambient-global crashes on @clerk/testing (./cypress)
+            // and @clerk/astro (./env).
+            "this is not valid typescript $$$ {{{\n",
+          "./good": "export declare function helper(): string;\n",
+        },
+      },
+    });
+
+    const snapshot = runSnapi(["snapshot", "-c", configPath]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+    assert.match(snapshot.stderr, /skipping @demo\/pkg \.\/broken/);
+
+    const pkgDir = join(workspace, "snapshots", "demo__pkg");
+    assert.ok(existsSync(join(pkgDir, "demo__pkg___root.api.json")));
+    assert.ok(existsSync(join(pkgDir, "demo__pkg__good.api.json")));
+    assert.ok(!existsSync(join(pkgDir, "demo__pkg__broken.api.json")));
+
+    const metadata = JSON.parse(
+      readFileSync(join(pkgDir, "snapi.snapshot.json"), "utf-8"),
+    );
+    const subpaths = metadata.entries.map((e) => e.subpath).sort();
+    assert.deepEqual(subpaths, [".", "./good"]);
+    assert.match(snapshot.stdout, /Skipped 1 subpath/);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("ignoreSubpaths drops matching subpaths from discovery", () => {
   const workspace = workspaceDir();
   try {

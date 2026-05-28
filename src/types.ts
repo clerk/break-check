@@ -124,6 +124,22 @@ export interface PackageAnalysis {
 }
 
 /**
+ * A subpath snapi tried to snapshot but couldn't, typically because API
+ * Extractor threw on an ambient-global augmentation or a `.d.ts` outside
+ * `dist/`. These are surfaced as warnings rather than fatal errors so a
+ * single broken entry doesn't tank the whole run; users can add the
+ * subpath to `ignoreSubpaths` once they've seen the warning.
+ */
+export interface SkippedEntry {
+  /** Package name as declared in package.json. */
+  packageName: string;
+  /** Subpath that failed (`.`, `./cypress`, `./env`, ...). */
+  subpath: string;
+  /** Underlying error message from the extractor. */
+  reason: string;
+}
+
+/**
  * Overall analysis result across all packages
  */
 export interface AnalysisResult {
@@ -133,6 +149,8 @@ export interface AnalysisResult {
   packages: PackageAnalysis[];
   /** Whether any package has breaking changes */
   hasBreakingChanges: boolean;
+  /** Subpaths snapi could not snapshot on either side of the diff. */
+  skippedEntries?: SkippedEntry[];
   /** Summary statistics */
   summary: {
     /** Total packages analyzed */
