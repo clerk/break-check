@@ -11,9 +11,13 @@ inputs:
     required: false
     default: "snapi.config.json"
   base-ref:
-    description: "Git ref to compare against. Defaults to the pull request base."
+    description: |
+      Git ref or commit SHA to compare against. Defaults to the pull request
+      base SHA (`github.event.pull_request.base.sha`) so PRs are diffed
+      against the exact commit they were opened against, not the moving tip
+      of the base branch.
     required: false
-    default: ${{ github.base_ref }}
+    default: ${{ github.event.pull_request.base.sha || github.base_ref }}
   setup-command:
     description: |
       Shell command snapi runs inside both the base-ref checkout and the
@@ -76,8 +80,23 @@ runs:
         BASE_CHECKOUT="$RUNNER_TEMP/snapi-base-checkout"
         rm -rf "$BASELINE_DIR" "$BASE_CHECKOUT"
 
-        git fetch --no-tags --depth=1 origin "$BASE_REF" || true
-        git worktree add "$BASE_CHECKOUT" "origin/$BASE_REF"
+        # base-ref may be a branch name ("main") or a commit SHA (the PR's
+        # base.sha). We want the exact commit either way, not the current
+        # tip of a moving branch. Resolve in two passes:
+        #   1. If BASE_REF already names a reachable object locally (full
+        #      clone + the SHA is in history, or a tracked branch tip is
+        #      already updated), skip the fetch entirely. This is the
+        #      common case when the caller used `actions/checkout` with
+        #      `fetch-depth: 0` and `persist-credentials: false`, where a
+        #      subsequent unauthenticated fetch would prompt for creds.
+        #   2. Otherwise, fetch the ref and pin to FETCH_HEAD.
+        if git rev-parse --verify --quiet "$BASE_REF^{commit}" > /dev/null; then
+          BASE_TARGET="$BASE_REF"
+        else
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          BASE_TARGET="FETCH_HEAD"
+        fi
+        git worktree add --detach "$BASE_CHECKOUT" "$BASE_TARGET"
 
         # If the base ref doesn't have a snapi config yet (e.g. the PR is the
         # one introducing snapi), seed it from the current checkout so the

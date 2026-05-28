@@ -29,9 +29,14 @@ jobs:
 
       - name: Snapshot baseline from base branch
         env:
-          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
-          git worktree add /tmp/base-checkout "origin/$BASE_REF"
+          # Use the PR's base SHA so we diff against the exact commit the PR
+          # was opened against, not the moving tip of the base branch. The
+          # checkout above uses fetch-depth: 0 + persist-credentials: false,
+          # so the SHA is already in local history and a fresh fetch would
+          # fail without auth; check out directly.
+          git worktree add --detach /tmp/base-checkout "$BASE_SHA"
           # Bring the PR's snapi.config.json over so first-run PRs (where the
           # base branch doesn't yet have one) can still produce a baseline.
           # If the base already has a config, cp -n leaves it untouched.
