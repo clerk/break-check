@@ -29,6 +29,7 @@ import {
   PackageAnalysis,
   PackageEntry,
   PackageInfo,
+  SkippedEntry,
 } from "../types.js";
 import * as crypto from "node:crypto";
 
@@ -85,6 +86,11 @@ export class BreakingChangesDetector {
   private verbose: boolean;
   private configPath: string;
   private configDir: string;
+  /**
+   * Per-entry failures collected during the last `generateSnapshots()` or
+   * `detect()` run. Populated by the orchestrator; reset on each call.
+   */
+  private skippedEntries: SkippedEntry[] = [];
 
   constructor(
     private config: SnapiConfig,
@@ -182,13 +188,29 @@ export class BreakingChangesDetector {
   }
 
   /**
+   * Skipped entries from the last generate/detect call. The set is cleared
+   * at the start of each `generateSnapshots()` invocation.
+   */
+  get lastSkippedEntries(): readonly SkippedEntry[] {
+    return this.skippedEntries;
+  }
+
+  /**
    * Generate snapshots for every (package, subpath) entry.
    * Map keys are `${packageName}#${subpath}`.
+   *
+   * Per-entry extraction failures (the typical case: API Extractor crashing
+   * on an ambient-global augmentation or a `.d.ts` outside `dist/`) are
+   * reported as warnings on stderr and collected in `lastSkippedEntries`,
+   * but the run continues. Only package-level fatals (missing package.json,
+   * zero discoverable entries) still throw, since those usually indicate a
+   * broken config rather than one weird subpath.
    */
   async generateSnapshots(): Promise<Map<string, ApiSnapshot>> {
     const snapshots = new Map<string, ApiSnapshot>();
     const packagePaths = resolvePackagePaths(this.config, this.configPath);
-    const failures: string[] = [];
+    const fatals: string[] = [];
+    this.skippedEntries = [];
 
     for (const packagePath of packagePaths) {
       const packageInfo = readPackageInfo(packagePath, {
@@ -196,12 +218,12 @@ export class BreakingChangesDetector {
       });
 
       if (!packageInfo) {
-        failures.push(`${packagePath}: no package.json found`);
+        fatals.push(`${packagePath}: no package.json found`);
         continue;
       }
 
       if (packageInfo.entries.length === 0) {
-        failures.push(
+        fatals.push(
           `${packageInfo.name}: no TypeScript declarations found (no \`types\`/\`exports\` types resolved)`,
         );
         continue;
@@ -212,7 +234,6 @@ export class BreakingChangesDetector {
       );
 
       const packageSnapshots: ApiSnapshot[] = [];
-      const entryFailures: string[] = [];
 
       for (const entry of packageInfo.entries) {
         try {
@@ -224,10 +245,14 @@ export class BreakingChangesDetector {
           packageSnapshots.push(snapshot);
           this.log(`  ✓ ${packageInfo.name} ${entry.subpath}`);
         } catch (error) {
-          const message =
-            error instanceof Error ? error.message : String(error);
-          entryFailures.push(
-            `${packageInfo.name} ${entry.subpath}: ${message}`,
+          const reason = error instanceof Error ? error.message : String(error);
+          this.skippedEntries.push({
+            packageName: packageInfo.name,
+            subpath: entry.subpath,
+            reason,
+          });
+          process.stderr.write(
+            `[snapi] warning: skipping ${packageInfo.name} ${entry.subpath}: ${reason}\n`,
           );
         }
       }
@@ -237,15 +262,13 @@ export class BreakingChangesDetector {
       if (packageSnapshots.length > 0) {
         this.extractor.writePackageMetadata(packageInfo, packageSnapshots);
       }
-
-      failures.push(...entryFailures);
     }
 
-    if (failures.length > 0) {
+    if (fatals.length > 0) {
       throw new Error(
         [
           "Failed to generate API snapshots:",
-          ...failures.map((f) => `  - ${f}`),
+          ...fatals.map((f) => `  - ${f}`),
         ].join("\n"),
       );
     }
@@ -678,12 +701,16 @@ export class BreakingChangesDetector {
   private buildResult(packages: PackageAnalysis[]): AnalysisResult {
     const summary = this.buildSummary(packages);
 
-    return {
+    const result: AnalysisResult = {
       timestamp: new Date().toISOString(),
       packages,
       hasBreakingChanges: packages.some((p) => p.hasBreakingChanges),
       summary,
     };
+    if (this.skippedEntries.length > 0) {
+      result.skippedEntries = [...this.skippedEntries];
+    }
+    return result;
   }
 
   private buildSummary(packages: PackageAnalysis[]): AnalysisResult["summary"] {

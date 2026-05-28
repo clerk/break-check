@@ -105,11 +105,18 @@ Options:
   -o, --output <path>     Output report path
   --format <format>       Output format: markdown|json
   --fail-on-breaking      Exit with code 1 if breaking changes found
+  --fail-on-skipped       Exit with code 1 if any subpath could not be snapshotted
   --no-ai                 Disable the AI reviewer even if SNAPI_ANTHROPIC_API_KEY is set
   --ai-model <model>      Override the AI model (e.g. claude-opus-4-7)
   --ai-strict             Run the AI reviewer even when only additions are detected
   -v, --verbose           Show verbose output
 ```
+
+By default a subpath that API Extractor can't process (ambient-global
+augmentations, a `.d.ts` outside `dist/`, etc.) is skipped with a warning and
+the run continues; the report lists what was omitted. Pass `--fail-on-skipped`
+(available on both `snapshot` and `detect`) to turn those skips into a non-zero
+exit, which is the safer default when producing a committed baseline.
 
 When `--format json` writes to stdout, progress and summary logs are written to
 stderr so stdout remains parseable JSON.
