@@ -472,6 +472,39 @@ test("snapshot warns and continues when one subpath fails extraction", () => {
   }
 });
 
+test("snapshot --fail-on-skipped turns a skipped subpath into a hard error", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    writeSubpathOnlyPackage(workspace, {
+      version: "1.0.0",
+      surfaces: {
+        dts: {
+          ".": "export declare const root: number;\n",
+          "./broken": "this is not valid typescript $$$ {{{\n",
+        },
+      },
+    });
+
+    // Default (fail-soft): succeeds despite the skip.
+    const soft = runSnapi(["snapshot", "-c", configPath]);
+    assert.equal(soft.status, 0, soft.stderr);
+
+    // Strict: same input, exits non-zero. The good entry is still written
+    // (the run completes), but the exit code forces the producer to notice.
+    const strict = runSnapi([
+      "snapshot",
+      "-c",
+      configPath,
+      "--fail-on-skipped",
+    ]);
+    assert.equal(strict.status, 1);
+    assert.match(strict.stderr, /could not be snapshotted .*--fail-on-skipped/);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("ignoreSubpaths drops matching subpaths from discovery", () => {
   const workspace = workspaceDir();
   try {

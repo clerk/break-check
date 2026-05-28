@@ -59,6 +59,10 @@ program
   .description("Generate API snapshots for configured packages")
   .option("-c, --config <path>", "Config file path", CONFIG_FILE_NAME)
   .option("-o, --output <path>", "Output directory (overrides config)")
+  .option(
+    "--fail-on-skipped",
+    "Exit with code 1 if any subpath could not be snapshotted (use when producing a committed baseline so holes surface in CI)",
+  )
   .option("-v, --verbose", "Show verbose output")
   .action(async (options) => {
     try {
@@ -96,6 +100,12 @@ program
         console.log(
           `  Skipped ${skipped.length} subpath(s) due to extraction errors (see warnings above).`,
         );
+        if (options.failOnSkipped) {
+          console.error(
+            `\n✗ ${skipped.length} subpath(s) could not be snapshotted (--fail-on-skipped)`,
+          );
+          process.exit(1);
+        }
       }
     } catch (error) {
       console.error(
@@ -117,6 +127,10 @@ program
   .option("-o, --output <path>", "Output report path")
   .option("--format <format>", "Output format (markdown|json)")
   .option("--fail-on-breaking", "Exit with code 1 if breaking changes found")
+  .option(
+    "--fail-on-skipped",
+    "Exit with code 1 if any subpath could not be snapshotted (turns fail-soft skips into a hard error)",
+  )
   .option(
     "--no-ai",
     "Disable the AI reviewer even if SNAPI_ANTHROPIC_API_KEY is set",
@@ -214,6 +228,17 @@ program
         logInfo("\n⚠ Breaking changes detected");
       } else {
         logInfo("\n✓ No breaking changes detected");
+      }
+
+      // Strict mode: a skipped subpath means snapi reported "no changes" for
+      // a surface it never actually inspected. Callers that would rather fail
+      // the check than trust a partial diff opt in with --fail-on-skipped.
+      const skippedCount = result.skippedEntries?.length ?? 0;
+      if (options.failOnSkipped && skippedCount > 0) {
+        logInfo(
+          `\n✗ ${skippedCount} subpath(s) could not be snapshotted (--fail-on-skipped)`,
+        );
+        process.exit(1);
       }
     } catch (error) {
       console.error(
