@@ -40,8 +40,13 @@ jobs:
         id: changesets
         uses: changesets/action@63a615b9cd06ba9a3e6d13796c7fbcb080a60a0b # v1
         with:
-          publish: pnpm release
-          version: pnpm version
+          # Use `pnpm run <script>`, not `pnpm <script>`. `pnpm version`
+          # resolves to pnpm's built-in version command (which demands a
+          # semver argument and exits non-zero here), shadowing the
+          # package.json "version" script. `release` has no such collision
+          # today, but spelling both as `run` removes the footgun.
+          publish: pnpm run release
+          version: pnpm run version
           title: "chore: version packages"
           commit: "chore: version packages"
         env:
