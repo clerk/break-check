@@ -502,6 +502,13 @@ function expandWildcardSubpath(
     const subpath = keyPattern.replace("*", captured);
     entries.push({ subpath, typesEntry: abs });
   }
+
+  // `fs.globSync` makes no ordering guarantee across platforms or
+  // filesystems, and these entries flow straight into the `entries` array
+  // in `snapi.snapshot.json`. Sort by subpath so two runs on different
+  // runners produce byte-identical metadata instead of spurious
+  // order-only baseline churn.
+  entries.sort((a, b) => a.subpath.localeCompare(b.subpath));
   return entries;
 }
 

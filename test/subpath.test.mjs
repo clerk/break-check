@@ -474,7 +474,11 @@ test("snapshot expands wildcard subpath exports against the filesystem", () => {
         "utf-8",
       ),
     );
-    const subpaths = metadata.entries.map((e) => e.subpath).sort();
+    // Assert the raw (unsorted) order: `.` from the literal key, then the
+    // wildcard expansion sorted by subpath. `fs.globSync` order is not
+    // stable across platforms, so the expansion must sort deterministically
+    // or committed-baseline metadata churns between runners.
+    const subpaths = metadata.entries.map((e) => e.subpath);
     assert.deepEqual(subpaths, [".", "./error", "./file", "./url"]);
   } finally {
     rmSync(workspace, { recursive: true, force: true });
