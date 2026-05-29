@@ -204,9 +204,11 @@ Priority is `--ai-model` > `BREAK_CHECK_AI_MODEL` > `ai.model` in config >
 > with the first stable release; until then, copy the workflow from
 > `.github/workflows/api-check.yml` as a starting point.
 
-Use the bundled composite Action. It snapshots the base ref in a temporary
-git worktree, builds the PR, runs `break-check detect`, and posts (or updates) a
-single PR comment.
+Use the bundled composite Action. It snapshots the base ref and the PR head in
+separate git worktrees, diffs them with `break-check detect`, and posts (or
+updates) a single PR comment. Pinning both sides to commit SHAs (rather than the
+`refs/pull/N/merge` ref `actions/checkout` resolves by default) keeps the report
+scoped to the PR's own changes even after the base branch advances.
 
 ```yaml
 name: API Check
@@ -243,7 +245,8 @@ jobs:
 | Input                 | Default                                        | Description                                                                                        |
 | --------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
 | `config-path`         | `break-check.config.json`                      | Path to the config file, relative to the repo root.                                                |
-| `base-ref`            | `${{ github.base_ref }}`                       | Git ref to snapshot as the baseline.                                                               |
+| `base-ref`            | PR base SHA                                    | Git ref or SHA to snapshot as the baseline.                                                        |
+| `head-ref`            | PR head SHA                                    | Git ref or SHA to build as the "current" side. Pins the diff to the PR head, not the merge ref.    |
 | `setup-command`       | `pnpm install --frozen-lockfile && pnpm build` | Shell command run inside both the base checkout and the current checkout to produce `.d.ts` files. |
 | `break-check-version` | `latest`                                       | npm version of `@clerk/break-check` to fetch with `npx`.                                           |
 | `comment`             | `true`                                         | Post or update a PR comment with the report.                                                       |
