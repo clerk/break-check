@@ -67,6 +67,20 @@ const snapshotKey = (packageName: string, subpath: string): string =>
 
 const SCHEMA_VERSION_WITH_PRODUCER_STAMP = 3;
 
+/**
+ * Thrown when a baseline is refused because its recorded producer disagrees
+ * with the running snapi (API Extractor major, or discovery version). It is a
+ * distinct type so `cli.ts` can map it to a dedicated exit code, letting CI
+ * recognize "incompatible baseline" and rebuild it rather than treating it as
+ * a generic failure or as detected breaking changes.
+ */
+export class IncompatibleBaselineError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "IncompatibleBaselineError";
+  }
+}
+
 function parseMajor(version: string): number | null {
   const match = /^(\d+)\./.exec(version);
   if (!match) return null;
@@ -540,7 +554,7 @@ export class BreakingChangesDetector {
       runningMajor !== null &&
       baselineMajor !== runningMajor
     ) {
-      throw new Error(
+      throw new IncompatibleBaselineError(
         `Baseline for ${packageName} was produced by ${API_EXTRACTOR_PACKAGE} ` +
           `v${baselineAeVersion}; this snapi runs v${runningAeVersion} ` +
           `(major version mismatch). The .api.json shape is not guaranteed ` +
@@ -577,7 +591,7 @@ export class BreakingChangesDetector {
 
     if (typeof baselineDiscovery === "number") {
       if (baselineDiscovery < DISCOVERY_VERSION) {
-        throw new Error(
+        throw new IncompatibleBaselineError(
           `Baseline for ${packageName} was produced with snapi discovery ` +
             `version ${baselineDiscovery}; this snapi uses discovery version ` +
             `${DISCOVERY_VERSION}. Entry-point discovery changed between them, ` +
@@ -594,7 +608,7 @@ export class BreakingChangesDetector {
       typeof metadata.schemaVersion === "number" &&
       metadata.schemaVersion >= SCHEMA_VERSION_WITH_PRODUCER_STAMP
     ) {
-      throw new Error(
+      throw new IncompatibleBaselineError(
         `Baseline for ${packageName} (schemaVersion ${metadata.schemaVersion} ` +
           `at ${metadataPath}) predates snapi discovery-version stamping, so ` +
           `its API surface cannot be guaranteed to match this snapi's ` +

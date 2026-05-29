@@ -13,11 +13,23 @@ import {
   writeConfig,
   CONFIG_FILE_NAME,
 } from "./config.js";
-import { BreakingChangesDetector } from "./core/detector.js";
+import {
+  BreakingChangesDetector,
+  IncompatibleBaselineError,
+} from "./core/detector.js";
 import { MarkdownReporter } from "./reporters/markdown.js";
 
 const program = new Command();
 const OUTPUT_FORMATS = ["markdown", "json"] as const;
+
+/**
+ * Exit code `snapi detect` uses when it refuses a baseline as incompatible
+ * with the running snapi (API Extractor major or discovery version mismatch).
+ * Distinct from the generic error exit (1) and from `--fail-on-breaking` (1)
+ * so CI can recognize the condition and rebuild the baseline instead of
+ * failing. Keep this in sync with the action.yml / api-check.yml handlers.
+ */
+const EXIT_INCOMPATIBLE_BASELINE = 3;
 
 program
   .name("snapi")
@@ -245,6 +257,9 @@ program
         "Error:",
         error instanceof Error ? error.message : String(error),
       );
+      if (error instanceof IncompatibleBaselineError) {
+        process.exit(EXIT_INCOMPATIBLE_BASELINE);
+      }
       process.exit(1);
     }
   });

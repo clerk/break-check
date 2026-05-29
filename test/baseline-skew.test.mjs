@@ -126,7 +126,7 @@ test("detect refuses a baseline whose API Extractor major differs", () => {
       "--no-ai",
     ]);
 
-    assert.notEqual(detect.status, 0);
+    assert.equal(detect.status, 3, detect.stderr);
     assert.match(
       detect.stderr,
       /major version mismatch|@microsoft\/api-extractor/i,
@@ -173,7 +173,7 @@ test("detect refuses a baseline whose discovery version is older", () => {
       "--no-ai",
     ]);
 
-    assert.notEqual(detect.status, 0);
+    assert.equal(detect.status, 3, detect.stderr);
     assert.match(detect.stderr, /discovery version/i);
     assert.match(detect.stderr, /Regenerate the baseline/i);
   } finally {
@@ -219,9 +219,62 @@ test("detect refuses a producer-stamped baseline that predates discovery stampin
       "--no-ai",
     ]);
 
-    assert.notEqual(detect.status, 0);
+    assert.equal(detect.status, 3, detect.stderr);
     assert.match(detect.stderr, /predates snapi discovery-version stamping/i);
     assert.match(detect.stderr, /Regenerate the baseline/i);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("detect recovers (exit 3 -> regenerate -> success) on an incompatible baseline", () => {
+  // Mirrors what the CI workflows automate: a refused baseline exits 3, the
+  // baseline is regenerated with the current snapi, and detect then succeeds.
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    writeMinimalPackage(workspace, {
+      version: "1.0.0",
+      body: "export declare const root: number;\n",
+    });
+
+    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    assert.equal(baseline.status, 0, baseline.stderr);
+
+    // Age the recorded discovery version so detect refuses the baseline.
+    const metadataPath = join(
+      workspace,
+      "baseline",
+      "demo__pkg",
+      "snapi.snapshot.json",
+    );
+    const metadata = JSON.parse(readFileSync(metadataPath, "utf-8"));
+    metadata.discoveryVersion = 0;
+    writeJson(metadataPath, metadata);
+
+    const detectArgs = [
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "baseline",
+      "--format",
+      "json",
+      "--no-ai",
+    ];
+
+    const refused = runSnapi(detectArgs);
+    assert.equal(refused.status, 3, refused.stderr);
+
+    // Recompute the baseline with the current snapi (the recovery step), then
+    // detect succeeds against the now-compatible baseline.
+    const regen = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    assert.equal(regen.status, 0, regen.stderr);
+
+    const detect = runSnapi(detectArgs);
+    assert.equal(detect.status, 0, detect.stderr);
+    const result = JSON.parse(detect.stdout);
+    assert.equal(result.summary.breakingChanges, 0);
   } finally {
     rmSync(workspace, { recursive: true, force: true });
   }

@@ -115,6 +115,7 @@ runs:
         )
 
         echo "BASELINE_DIR=$BASELINE_DIR" >> "$GITHUB_ENV"
+        echo "BASE_CHECKOUT=$BASE_CHECKOUT" >> "$GITHUB_ENV"
 
     - name: Build current checkout
       shell: bash
@@ -130,24 +131,60 @@ runs:
         SNAPI_VERSION: ${{ inputs.snapi-version }}
         FAIL_ON_BREAKING: ${{ inputs.fail-on-breaking }}
       run: |
-        set -euo pipefail
+        set -uo pipefail
         REPORT_PATH="$RUNNER_TEMP/snapi-report.md"
         JSON_PATH="$RUNNER_TEMP/snapi-report.json"
 
-        npx --yes "@clerk/snapi@$SNAPI_VERSION" detect \
-          --config "$CONFIG_PATH" \
-          --baseline "$BASELINE_DIR" \
-          --output "$REPORT_PATH" || DETECT_EXIT=$?
+        detect_md() {
+          npx --yes "@clerk/snapi@$SNAPI_VERSION" detect \
+            --config "$CONFIG_PATH" \
+            --baseline "$BASELINE_DIR" \
+            --output "$REPORT_PATH"
+        }
 
+        # detect exits 3 when it refuses the baseline as incompatible with this
+        # snapi (API Extractor major or discovery version mismatch). Rebuild the
+        # baseline from the base ref with this snapi so both sides match, then
+        # retry once. This recovers when the baseline came from a different
+        # snapi (a cached or committed baseline); when it was just produced
+        # fresh at the same version the rebuild is identical, so a persistent
+        # exit 3 surfaces as a clear error below.
+        status=0
+        detect_md || status=$?
+        if [ "$status" = "3" ]; then
+          echo "::notice::snapi refused the baseline as incompatible; rebuilding it from the base ref with this snapi and retrying."
+          rm -rf "$BASELINE_DIR"
+          (
+            cd "$BASE_CHECKOUT"
+            npx --yes "@clerk/snapi@$SNAPI_VERSION" snapshot \
+              --config "$CONFIG_PATH" \
+              --output "$BASELINE_DIR"
+          )
+          status=0
+          detect_md || status=$?
+        fi
+        if [ "$status" = "3" ]; then
+          echo "::error::snapi refused the baseline as incompatible even after rebuilding it from the base ref. The snapshot-time and detect-time snapi versions likely differ; pin a single snapi-version."
+          exit 1
+        fi
+        if [ "$status" != "0" ]; then
+          echo "::error::snapi detect failed (exit $status)."
+          exit "$status"
+        fi
+
+        # Baseline is now compatible; the JSON pass reuses it (best-effort).
         npx --yes "@clerk/snapi@$SNAPI_VERSION" detect \
           --config "$CONFIG_PATH" \
           --baseline "$BASELINE_DIR" \
           --format json > "$JSON_PATH" || true
 
-        HAS_BREAKING=$(node -e "
-          const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf-8'));
-          process.stdout.write(r.hasBreakingChanges ? 'true' : 'false');
-        " "$JSON_PATH")
+        HAS_BREAKING=false
+        if [ -f "$JSON_PATH" ]; then
+          HAS_BREAKING=$(node -e "
+            const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf-8'));
+            process.stdout.write(r.hasBreakingChanges ? 'true' : 'false');
+          " "$JSON_PATH" 2>/dev/null || echo false)
+        fi
 
         echo "has-breaking-changes=$HAS_BREAKING" >> "$GITHUB_OUTPUT"
         echo "report-path=$REPORT_PATH" >> "$GITHUB_OUTPUT"

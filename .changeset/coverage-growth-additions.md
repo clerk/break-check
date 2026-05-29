@@ -27,4 +27,9 @@ GitHub's 65 KB comment limit and failed to post. Three fixes:
   reached, then the remainder is dropped with a notice pointing at the full
   JSON report, so an oversized diff still posts a valid comment.
 
+`snapi detect` now exits with code 3 (distinct from the generic error exit 1)
+when it refuses a baseline as incompatible, so CI can recognize the condition.
+The GitHub Action recovers automatically: on an incompatible-baseline refuse it
+rebuilds the baseline with the current snapi and retries instead of failing.
+
 Fixes #40.
