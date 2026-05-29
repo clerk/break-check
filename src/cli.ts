@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Snapi CLI - Detect API breaking changes in TypeScript packages
+ * Break Check CLI - Detect API breaking changes in TypeScript packages
  */
 
 import * as fs from "node:fs";
@@ -23,8 +23,8 @@ const program = new Command();
 const OUTPUT_FORMATS = ["markdown", "json"] as const;
 
 /**
- * Exit code `snapi detect` uses when it refuses a baseline as incompatible
- * with the running snapi (API Extractor major or discovery version mismatch).
+ * Exit code `break-check detect` uses when it refuses a baseline as incompatible
+ * with the running break-check (API Extractor major or discovery version mismatch).
  * Distinct from the generic error exit (1) and from `--fail-on-breaking` (1)
  * so CI can recognize the condition and rebuild the baseline instead of
  * failing. Keep this in sync with the action.yml / api-check.yml handlers.
@@ -32,16 +32,16 @@ const OUTPUT_FORMATS = ["markdown", "json"] as const;
 const EXIT_INCOMPATIBLE_BASELINE = 3;
 
 program
-  .name("snapi")
+  .name("break-check")
   .description("Detect API breaking changes in TypeScript packages")
   .version("0.0.1");
 
 /**
- * snapi init - Create default configuration file
+ * break-check init - Create default configuration file
  */
 program
   .command("init")
-  .description("Create default snapi.config.json")
+  .description("Create default break-check.config.json")
   .option("-o, --output <path>", "Output path", CONFIG_FILE_NAME)
   .option("-f, --force", "Overwrite existing config file")
   .action((options) => {
@@ -59,12 +59,12 @@ program
     console.log(`Created ${outputPath}`);
     console.log("\nNext steps:");
     console.log("  1. Edit the config to add your packages");
-    console.log("  2. Run: snapi snapshot");
-    console.log("  3. Run: snapi detect --baseline <baseline-dir>");
+    console.log("  2. Run: break-check snapshot");
+    console.log("  3. Run: break-check detect --baseline <baseline-dir>");
   });
 
 /**
- * snapi snapshot - Generate API snapshots
+ * break-check snapshot - Generate API snapshots
  */
 program
   .command("snapshot")
@@ -129,7 +129,7 @@ program
   });
 
 /**
- * snapi detect - Detect breaking changes
+ * break-check detect - Detect breaking changes
  */
 program
   .command("detect")
@@ -145,15 +145,15 @@ program
   )
   .option(
     "--no-ai",
-    "Disable the AI reviewer even if SNAPI_ANTHROPIC_API_KEY is set",
+    "Disable the AI reviewer even if BREAK_CHECK_ANTHROPIC_API_KEY is set",
   )
   .option(
     "--ai-model <model>",
-    "Override the AI model (e.g. claude-opus-4-7). Wins over SNAPI_AI_MODEL and config.ai.model.",
+    "Override the AI model (e.g. claude-opus-4-7). Wins over BREAK_CHECK_AI_MODEL and config.ai.model.",
   )
   .option(
     "--ai-strict",
-    "Run the AI reviewer even when only additions are detected (equivalent to SNAPI_AI_STRICT=1).",
+    "Run the AI reviewer even when only additions are detected (equivalent to BREAK_CHECK_AI_STRICT=1).",
   )
   .option("-v, --verbose", "Show verbose output")
   .action(async (options) => {
@@ -242,7 +242,7 @@ program
         logInfo("\n✓ No breaking changes detected");
       }
 
-      // Strict mode: a skipped subpath means snapi reported "no changes" for
+      // Strict mode: a skipped subpath means break-check reported "no changes" for
       // a surface it never actually inspected. Callers that would rather fail
       // the check than trust a partial diff opt in with --fail-on-skipped.
       const skippedCount = result.skippedEntries?.length ?? 0;

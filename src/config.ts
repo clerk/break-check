@@ -1,5 +1,5 @@
 /**
- * Configuration loading and validation for snapi
+ * Configuration loading and validation for break-check
  */
 
 import * as fs from "node:fs";
@@ -9,7 +9,14 @@ import { z } from "zod";
 /**
  * Default config file name
  */
-export const CONFIG_FILE_NAME = "snapi.config.json";
+export const CONFIG_FILE_NAME = "break-check.config.json";
+
+/**
+ * Pre-rename config file name. Still honored as a deprecated fallback so repos
+ * that predate the snapi -> break-check rename keep working without an edit.
+ * Prefer CONFIG_FILE_NAME; this will be removed in a future major.
+ */
+export const LEGACY_CONFIG_FILE_NAME = "snapi.config.json";
 
 /**
  * Default model used by the AI analyzer when no override is configured.
@@ -21,13 +28,13 @@ export const DEFAULT_AI_MODEL = "claude-sonnet-4-6";
  */
 export const AiConfigSchema = z.object({
   /**
-   * When true: AI runs (errors if SNAPI_ANTHROPIC_API_KEY is missing).
+   * When true: AI runs (errors if BREAK_CHECK_ANTHROPIC_API_KEY is missing).
    * When false: AI never runs even if the key is set.
-   * When unset (default): AI runs iff SNAPI_ANTHROPIC_API_KEY is in the environment.
+   * When unset (default): AI runs iff BREAK_CHECK_ANTHROPIC_API_KEY is in the environment.
    */
   enabled: z.boolean().optional(),
 
-  /** Model identifier (Anthropic API). Defaults to DEFAULT_AI_MODEL when neither config nor SNAPI_AI_MODEL is set. */
+  /** Model identifier (Anthropic API). Defaults to DEFAULT_AI_MODEL when neither config nor BREAK_CHECK_AI_MODEL is set. */
   model: z.string().optional(),
 
   /** Maximum rule-based changes batched into a single AI call per package. */
@@ -36,14 +43,14 @@ export const AiConfigSchema = z.object({
   /**
    * When true, also invoke the AI reviewer for diffs that the rule-based pass
    * classified as pure additions. Useful for paranoid scans; costs an extra
-   * model call per such package. May also be enabled via `SNAPI_AI_STRICT=1`
+   * model call per such package. May also be enabled via `BREAK_CHECK_AI_STRICT=1`
    * or `--ai-strict`.
    */
   strict: z.boolean().default(false),
 });
 
 /**
- * Zod schema for snapi configuration
+ * Zod schema for break-check configuration
  */
 export const ConfigSchema = z.object({
   /** Package paths relative to config file location */
@@ -78,14 +85,14 @@ export const ConfigSchema = z.object({
 export type AiConfig = z.infer<typeof AiConfigSchema>;
 
 /**
- * Snapi configuration type
+ * Break Check configuration type
  */
-export type SnapiConfig = z.infer<typeof ConfigSchema>;
+export type BreakCheckConfig = z.infer<typeof ConfigSchema>;
 
 /**
  * Create a default configuration object
  */
-export function createDefaultConfig(): SnapiConfig {
+export function createDefaultConfig(): BreakCheckConfig {
   return {
     packages: ["packages/my-package"],
     snapshotDir: ".api-snapshots",
@@ -105,21 +112,27 @@ export function findConfigFile(startDir?: string): string | null {
   let currentDir = startDir ?? process.cwd();
   const root = path.parse(currentDir).root;
 
-  while (currentDir !== root) {
-    const configPath = path.join(currentDir, CONFIG_FILE_NAME);
-    if (fs.existsSync(configPath)) {
-      return configPath;
+  // Prefer the current name in each directory, then fall back to the legacy
+  // one before walking further up, so a closer legacy config still wins over a
+  // distant current config.
+  const findIn = (dir: string): string | null => {
+    for (const name of [CONFIG_FILE_NAME, LEGACY_CONFIG_FILE_NAME]) {
+      const configPath = path.join(dir, name);
+      if (fs.existsSync(configPath)) {
+        return configPath;
+      }
     }
+    return null;
+  };
+
+  while (currentDir !== root) {
+    const found = findIn(currentDir);
+    if (found) return found;
     currentDir = path.dirname(currentDir);
   }
 
   // Check root as well
-  const rootConfig = path.join(root, CONFIG_FILE_NAME);
-  if (fs.existsSync(rootConfig)) {
-    return rootConfig;
-  }
-
-  return null;
+  return findIn(root);
 }
 
 /**
@@ -128,12 +141,34 @@ export function findConfigFile(startDir?: string): string | null {
  * @returns Validated configuration object
  * @throws Error if config file not found or invalid
  */
-export function loadConfig(configPath?: string): SnapiConfig {
-  const resolvedPath = configPath ?? findConfigFile();
+export function loadConfig(configPath?: string): BreakCheckConfig {
+  let resolvedPath = configPath ?? findConfigFile();
+
+  // Legacy fallback: a caller that passed (or defaulted to)
+  // break-check.config.json but only has the pre-rename snapi.config.json
+  // beside it still loads, with a deprecation warning on stderr (kept off
+  // stdout so JSON output stays parseable).
+  if (
+    resolvedPath &&
+    !fs.existsSync(resolvedPath) &&
+    path.basename(resolvedPath) === CONFIG_FILE_NAME
+  ) {
+    const legacyPath = path.join(
+      path.dirname(resolvedPath),
+      LEGACY_CONFIG_FILE_NAME,
+    );
+    if (fs.existsSync(legacyPath)) {
+      process.stderr.write(
+        `[break-check] warning: ${LEGACY_CONFIG_FILE_NAME} is deprecated; ` +
+          `rename it to ${CONFIG_FILE_NAME}.\n`,
+      );
+      resolvedPath = legacyPath;
+    }
+  }
 
   if (!resolvedPath) {
     throw new Error(
-      `Config file not found. Run 'snapi init' to create ${CONFIG_FILE_NAME}`,
+      `Config file not found. Run 'break-check init' to create ${CONFIG_FILE_NAME}`,
     );
   }
 
@@ -169,7 +204,10 @@ export function loadConfig(configPath?: string): SnapiConfig {
  * @param config - Configuration object to write
  * @param configPath - Path to write to (defaults to CONFIG_FILE_NAME in cwd)
  */
-export function writeConfig(config: SnapiConfig, configPath?: string): void {
+export function writeConfig(
+  config: BreakCheckConfig,
+  configPath?: string,
+): void {
   const resolvedPath = configPath ?? path.join(process.cwd(), CONFIG_FILE_NAME);
   const content = JSON.stringify(config, null, 2) + "\n";
   fs.writeFileSync(resolvedPath, content, "utf-8");
@@ -190,7 +228,7 @@ export function getConfigDir(configPath: string): string {
  * @returns Array of absolute package paths
  */
 export function resolvePackagePaths(
-  config: SnapiConfig,
+  config: BreakCheckConfig,
   configPath: string,
 ): string[] {
   const configDir = getConfigDir(configPath);

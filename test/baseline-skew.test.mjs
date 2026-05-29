@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = join(repoRoot, "dist", "cli.js");
 
-function runSnapi(args, opts = {}) {
+function runBreakCheck(args, opts = {}) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd: opts.cwd ?? repoRoot,
     encoding: "utf-8",
@@ -24,7 +24,7 @@ function runSnapi(args, opts = {}) {
 }
 
 function workspaceDir() {
-  return mkdtempSync(join(tmpdir(), "snapi-skew-"));
+  return mkdtempSync(join(tmpdir(), "break-check-skew-"));
 }
 
 function writeJson(filePath, value) {
@@ -48,7 +48,7 @@ function writeMinimalPackage(workspace, { version, body }) {
 }
 
 function writeConfig(workspace) {
-  const configPath = join(workspace, "snapi.config.json");
+  const configPath = join(workspace, "break-check.config.json");
   writeJson(configPath, {
     packages: ["packages/pkg"],
     snapshotDir: "snapshots",
@@ -59,7 +59,7 @@ function writeConfig(workspace) {
   return configPath;
 }
 
-test("snapshot metadata records snapi and API Extractor producer versions", () => {
+test("snapshot metadata records break-check and API Extractor producer versions", () => {
   const workspace = workspaceDir();
   try {
     const configPath = writeConfig(workspace);
@@ -68,14 +68,14 @@ test("snapshot metadata records snapi and API Extractor producer versions", () =
       body: "export declare const root: number;\n",
     });
 
-    const snapshot = runSnapi(["snapshot", "-c", configPath]);
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
     assert.equal(snapshot.status, 0, snapshot.stderr);
 
     const metadataPath = join(
       workspace,
       "snapshots",
       "demo__pkg",
-      "snapi.snapshot.json",
+      "break-check.snapshot.json",
     );
     assert.ok(existsSync(metadataPath));
     const metadata = JSON.parse(readFileSync(metadataPath, "utf-8"));
@@ -83,7 +83,7 @@ test("snapshot metadata records snapi and API Extractor producer versions", () =
     assert.equal(metadata.schemaVersion, 4);
     assert.equal(metadata.apiExtractorPackage, "@microsoft/api-extractor");
     assert.match(metadata.apiExtractorVersion, /^\d+\.\d+\.\d+/);
-    assert.match(metadata.snapiVersion, /^\d+\.\d+\.\d+/);
+    assert.match(metadata.breakCheckVersion, /^\d+\.\d+\.\d+/);
     assert.equal(typeof metadata.discoveryVersion, "number");
   } finally {
     rmSync(workspace, { recursive: true, force: true });
@@ -99,23 +99,29 @@ test("detect refuses a baseline whose API Extractor major differs", () => {
       body: "export declare const root: number;\n",
     });
 
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
     // Rewrite the baseline metadata to claim it was produced by a different
-    // AE major. The .api.json shape is still current snapi's, but the
+    // AE major. The .api.json shape is still current break-check's, but the
     // recorded producer version is what we check.
     const metadataPath = join(
       workspace,
       "baseline",
       "demo__pkg",
-      "snapi.snapshot.json",
+      "break-check.snapshot.json",
     );
     const metadata = JSON.parse(readFileSync(metadataPath, "utf-8"));
     metadata.apiExtractorVersion = "6.0.0";
     writeJson(metadataPath, metadata);
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -146,7 +152,13 @@ test("detect refuses a baseline whose discovery version is older", () => {
       body: "export declare const root: number;\n",
     });
 
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
     // Rewrite the baseline metadata to claim an older discovery version,
@@ -156,13 +168,13 @@ test("detect refuses a baseline whose discovery version is older", () => {
       workspace,
       "baseline",
       "demo__pkg",
-      "snapi.snapshot.json",
+      "break-check.snapshot.json",
     );
     const metadata = JSON.parse(readFileSync(metadataPath, "utf-8"));
     metadata.discoveryVersion = 0;
     writeJson(metadataPath, metadata);
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -190,7 +202,13 @@ test("detect refuses a producer-stamped baseline that predates discovery stampin
       body: "export declare const root: number;\n",
     });
 
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
     // Simulate a baseline from the producer-stamp era (schemaVersion 3) that
@@ -201,14 +219,14 @@ test("detect refuses a producer-stamped baseline that predates discovery stampin
       workspace,
       "baseline",
       "demo__pkg",
-      "snapi.snapshot.json",
+      "break-check.snapshot.json",
     );
     const metadata = JSON.parse(readFileSync(metadataPath, "utf-8"));
     delete metadata.discoveryVersion;
     metadata.schemaVersion = 3;
     writeJson(metadataPath, metadata);
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -220,7 +238,10 @@ test("detect refuses a producer-stamped baseline that predates discovery stampin
     ]);
 
     assert.equal(detect.status, 3, detect.stderr);
-    assert.match(detect.stderr, /predates snapi discovery-version stamping/i);
+    assert.match(
+      detect.stderr,
+      /predates break-check discovery-version stamping/i,
+    );
     assert.match(detect.stderr, /Regenerate the baseline/i);
   } finally {
     rmSync(workspace, { recursive: true, force: true });
@@ -229,7 +250,7 @@ test("detect refuses a producer-stamped baseline that predates discovery stampin
 
 test("detect recovers (exit 3 -> regenerate -> success) on an incompatible baseline", () => {
   // Mirrors what the CI workflows automate: a refused baseline exits 3, the
-  // baseline is regenerated with the current snapi, and detect then succeeds.
+  // baseline is regenerated with the current break-check, and detect then succeeds.
   const workspace = workspaceDir();
   try {
     const configPath = writeConfig(workspace);
@@ -238,7 +259,13 @@ test("detect recovers (exit 3 -> regenerate -> success) on an incompatible basel
       body: "export declare const root: number;\n",
     });
 
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
     // Age the recorded discovery version so detect refuses the baseline.
@@ -246,7 +273,7 @@ test("detect recovers (exit 3 -> regenerate -> success) on an incompatible basel
       workspace,
       "baseline",
       "demo__pkg",
-      "snapi.snapshot.json",
+      "break-check.snapshot.json",
     );
     const metadata = JSON.parse(readFileSync(metadataPath, "utf-8"));
     metadata.discoveryVersion = 0;
@@ -263,15 +290,21 @@ test("detect recovers (exit 3 -> regenerate -> success) on an incompatible basel
       "--no-ai",
     ];
 
-    const refused = runSnapi(detectArgs);
+    const refused = runBreakCheck(detectArgs);
     assert.equal(refused.status, 3, refused.stderr);
 
-    // Recompute the baseline with the current snapi (the recovery step), then
+    // Recompute the baseline with the current break-check (the recovery step), then
     // detect succeeds against the now-compatible baseline.
-    const regen = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const regen = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(regen.status, 0, regen.stderr);
 
-    const detect = runSnapi(detectArgs);
+    const detect = runBreakCheck(detectArgs);
     assert.equal(detect.status, 0, detect.stderr);
     const result = JSON.parse(detect.stdout);
     assert.equal(result.summary.breakingChanges, 0);
@@ -289,25 +322,31 @@ test("detect warns but proceeds for a legacy baseline without producer stamp", (
       body: "export declare const root: number;\n",
     });
 
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
-    // Simulate a baseline produced by an older snapi by dropping the producer
+    // Simulate a baseline produced by an older break-check by dropping the producer
     // fields and downgrading schemaVersion.
     const metadataPath = join(
       workspace,
       "baseline",
       "demo__pkg",
-      "snapi.snapshot.json",
+      "break-check.snapshot.json",
     );
     const metadata = JSON.parse(readFileSync(metadataPath, "utf-8"));
     delete metadata.apiExtractorVersion;
     delete metadata.apiExtractorPackage;
-    delete metadata.snapiVersion;
+    delete metadata.breakCheckVersion;
     metadata.schemaVersion = 2;
     writeJson(metadataPath, metadata);
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -334,7 +373,13 @@ test("parseApiJson throws when the file shape is unrecognized", () => {
       body: "export declare const root: number;\n",
     });
 
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
     // Corrupt the api.json so the toolPackage check fails.
@@ -349,7 +394,7 @@ test("parseApiJson throws when the file shape is unrecognized", () => {
       JSON.stringify({ metadata: { toolPackage: "something-else" } }),
     );
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,

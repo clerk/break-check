@@ -26,7 +26,7 @@ function writeApiJson(filePath, members) {
 }
 
 function makeWorkspace() {
-  const dir = mkdtempSync(join(tmpdir(), "snapi-ai-"));
+  const dir = mkdtempSync(join(tmpdir(), "break-check-ai-"));
   mkdirSync(dir, { recursive: true });
   const baseline = join(dir, "baseline.api.json");
   const current = join(dir, "current.api.json");

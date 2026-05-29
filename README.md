@@ -1,9 +1,9 @@
-# @clerk/snapi
+# @clerk/break-check
 
 CLI tool for detecting TypeScript API changes in packages that publish
 declaration files.
 
-snapi uses Microsoft API Extractor to snapshot public `.d.ts` surfaces, then
+Break Check uses Microsoft API Extractor to snapshot public `.d.ts` surfaces, then
 compares a current snapshot against a baseline snapshot. It is designed for PR
 checks where a package should fail CI when a breaking API change is not matched
 by the expected version bump.
@@ -19,9 +19,9 @@ by the expected version bump.
 ## Installation
 
 ```bash
-npm install -D @clerk/snapi
-pnpm add -D @clerk/snapi
-yarn add -D @clerk/snapi
+npm install -D @clerk/break-check
+pnpm add -D @clerk/break-check
+yarn add -D @clerk/break-check
 ```
 
 ## Quick Start
@@ -29,10 +29,10 @@ yarn add -D @clerk/snapi
 Create a config:
 
 ```bash
-npx snapi init
+npx break-check init
 ```
 
-Edit `snapi.config.json`:
+Edit `break-check.config.json`:
 
 ```json
 {
@@ -49,7 +49,7 @@ Generate a baseline from your main branch:
 ```bash
 git switch main
 pnpm build
-npx snapi snapshot --output .api-snapshots-baseline
+npx break-check snapshot --output .api-snapshots-baseline
 ```
 
 Compare the current branch against that baseline:
@@ -57,56 +57,56 @@ Compare the current branch against that baseline:
 ```bash
 git switch -
 pnpm build
-npx snapi detect --baseline .api-snapshots-baseline --fail-on-breaking
+npx break-check detect --baseline .api-snapshots-baseline --fail-on-breaking
 ```
 
 Relative package, snapshot, and baseline paths are resolved from the directory
-that contains `snapi.config.json`.
+that contains `break-check.config.json`.
 
 ## CLI Commands
 
-### `snapi init`
+### `break-check init`
 
-Create a default `snapi.config.json` configuration file.
+Create a default `break-check.config.json` configuration file.
 
 ```bash
-snapi init [options]
+break-check init [options]
 
 Options:
-  -o, --output <path>  Output path (default: "snapi.config.json")
+  -o, --output <path>  Output path (default: "break-check.config.json")
   -f, --force          Overwrite existing config file
 ```
 
-### `snapi snapshot`
+### `break-check snapshot`
 
 Generate API snapshots for all configured packages.
 
 ```bash
-snapi snapshot [options]
+break-check snapshot [options]
 
 Options:
-  -c, --config <path>  Config file path (default: "snapi.config.json")
+  -c, --config <path>  Config file path (default: "break-check.config.json")
   -o, --output <path>  Output directory (overrides config)
   -v, --verbose        Show verbose output
 ```
 
 `snapshot` exits non-zero when a configured package cannot be analyzed.
 
-### `snapi detect`
+### `break-check detect`
 
 Detect API changes between baseline and current snapshots.
 
 ```bash
-snapi detect [options]
+break-check detect [options]
 
 Options:
-  -c, --config <path>     Config file path (default: "snapi.config.json")
+  -c, --config <path>     Config file path (default: "break-check.config.json")
   -b, --baseline <path>   Baseline snapshots directory (required)
   -o, --output <path>     Output report path
   --format <format>       Output format: markdown|json
   --fail-on-breaking      Exit with code 1 if breaking changes found
   --fail-on-skipped       Exit with code 1 if any subpath could not be snapshotted
-  --no-ai                 Disable the AI reviewer even if SNAPI_ANTHROPIC_API_KEY is set
+  --no-ai                 Disable the AI reviewer even if BREAK_CHECK_ANTHROPIC_API_KEY is set
   --ai-model <model>      Override the AI model (e.g. claude-opus-4-7)
   --ai-strict             Run the AI reviewer even when only additions are detected
   -v, --verbose           Show verbose output
@@ -135,16 +135,16 @@ stderr so stdout remains parseable JSON.
 
 ### AI reviewer config
 
-| Field               | Type    | Default             | Description                                                                  |
-| ------------------- | ------- | ------------------- | ---------------------------------------------------------------------------- |
-| `enabled`           | boolean | unset               | Force-enable or force-disable. Unset: runs iff `SNAPI_ANTHROPIC_API_KEY` set |
-| `model`             | string  | `claude-sonnet-4-6` | Anthropic model identifier                                                   |
-| `maxChangesPerCall` | number  | `80`                | Maximum rule-based changes batched into a single AI call                     |
-| `strict`            | boolean | `false`             | Run the reviewer even when only additions are detected                       |
+| Field               | Type    | Default             | Description                                                                        |
+| ------------------- | ------- | ------------------- | ---------------------------------------------------------------------------------- |
+| `enabled`           | boolean | unset               | Force-enable or force-disable. Unset: runs iff `BREAK_CHECK_ANTHROPIC_API_KEY` set |
+| `model`             | string  | `claude-sonnet-4-6` | Anthropic model identifier                                                         |
+| `maxChangesPerCall` | number  | `80`                | Maximum rule-based changes batched into a single AI call                           |
+| `strict`            | boolean | `false`             | Run the reviewer even when only additions are detected                             |
 
 ## AI Review
 
-snapi can optionally route the rule-based diff through Claude for a second
+Break Check can optionally route the rule-based diff through Claude for a second
 opinion. The reviewer confirms or overrides each rule-based classification,
 adds a one-sentence migration hint per breaking change, and scans the full
 API surface for breaks the rule-based pass missed (e.g., type variance,
@@ -154,12 +154,12 @@ as breaking but aren't).
 Enable it by exporting an API key:
 
 ```bash
-export SNAPI_ANTHROPIC_API_KEY=sk-ant-...
-npx snapi detect --baseline .api-snapshots-baseline --fail-on-breaking
+export BREAK_CHECK_ANTHROPIC_API_KEY=sk-ant-...
+npx break-check detect --baseline .api-snapshots-baseline --fail-on-breaking
 ```
 
 The reviewer is fail-soft: if the API is unreachable, the key is missing while
-`ai.enabled` is unset, or the model returns a malformed response, snapi falls
+`ai.enabled` is unset, or the model returns a malformed response, Break Check falls
 back to the rule-based result and exits the same way it would without AI.
 
 ### Picking a model
@@ -171,9 +171,9 @@ back to the rule-based result and exits the same way it would without AI.
   for high-stakes releases.
 
 Override per-invocation with `--ai-model claude-opus-4-7`, set
-`SNAPI_AI_MODEL` in the environment (handy for CI, where you might want
+`BREAK_CHECK_AI_MODEL` in the environment (handy for CI, where you might want
 Opus on release workflows and Sonnet on PRs without editing config), or
-set it permanently in `snapi.config.json`:
+set it permanently in `break-check.config.json`:
 
 ```json
 {
@@ -184,28 +184,28 @@ set it permanently in `snapi.config.json`:
 }
 ```
 
-Priority is `--ai-model` > `SNAPI_AI_MODEL` > `ai.model` in config >
+Priority is `--ai-model` > `BREAK_CHECK_AI_MODEL` > `ai.model` in config >
 `claude-sonnet-4-6`.
 
 ### Environment variables
 
-| Variable                  | Effect                                                                               |
-| ------------------------- | ------------------------------------------------------------------------------------ |
-| `SNAPI_ANTHROPIC_API_KEY` | Anthropic API key. Required to enable the reviewer (unless `ai.enabled` is `false`). |
-| `SNAPI_AI_MODEL`          | Override the model. Equivalent to `--ai-model`; loses to the flag, wins over config. |
-| `SNAPI_AI_STRICT`         | Set to `1` (or any truthy value) to run the reviewer even on pure-additions diffs.   |
+| Variable                        | Effect                                                                               |
+| ------------------------------- | ------------------------------------------------------------------------------------ |
+| `BREAK_CHECK_ANTHROPIC_API_KEY` | Anthropic API key. Required to enable the reviewer (unless `ai.enabled` is `false`). |
+| `BREAK_CHECK_AI_MODEL`          | Override the model. Equivalent to `--ai-model`; loses to the flag, wins over config. |
+| `BREAK_CHECK_AI_STRICT`         | Set to `1` (or any truthy value) to run the reviewer even on pure-additions diffs.   |
 
 ## GitHub Actions Integration
 
 > **Status: preview.** The composite Action ships from this repo but is not
-> usable yet. It depends on `@clerk/snapi` being available on the npm
+> usable yet. It depends on `@clerk/break-check` being available on the npm
 > registry (which the `npx` step fetches at runtime) and on a `v1` tag
 > existing in this repo. Neither is true today. The Action becomes usable
 > with the first stable release; until then, copy the workflow from
 > `.github/workflows/api-check.yml` as a starting point.
 
 Use the bundled composite Action. It snapshots the base ref in a temporary
-git worktree, builds the PR, runs `snapi detect`, and posts (or updates) a
+git worktree, builds the PR, runs `break-check detect`, and posts (or updates) a
 single PR comment.
 
 ```yaml
@@ -233,34 +233,34 @@ jobs:
           node-version: "24"
           cache: "pnpm"
 
-      - uses: clerk/snapi@v1
+      - uses: clerk/break-check@v1
         with:
           fail-on-breaking: true
 ```
 
 ### Action inputs
 
-| Input              | Default                                        | Description                                                                                        |
-| ------------------ | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
-| `config-path`      | `snapi.config.json`                            | Path to the config file, relative to the repo root.                                                |
-| `base-ref`         | `${{ github.base_ref }}`                       | Git ref to snapshot as the baseline.                                                               |
-| `setup-command`    | `pnpm install --frozen-lockfile && pnpm build` | Shell command run inside both the base checkout and the current checkout to produce `.d.ts` files. |
-| `snapi-version`    | `latest`                                       | npm version of `@clerk/snapi` to fetch with `npx`.                                                 |
-| `comment`          | `true`                                         | Post or update a PR comment with the report.                                                       |
-| `fail-on-breaking` | `false`                                        | Fail the workflow when breaking changes are detected.                                              |
-| `github-token`     | `${{ github.token }}`                          | Token used to read/write PR comments.                                                              |
+| Input                 | Default                                        | Description                                                                                        |
+| --------------------- | ---------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `config-path`         | `break-check.config.json`                      | Path to the config file, relative to the repo root.                                                |
+| `base-ref`            | `${{ github.base_ref }}`                       | Git ref to snapshot as the baseline.                                                               |
+| `setup-command`       | `pnpm install --frozen-lockfile && pnpm build` | Shell command run inside both the base checkout and the current checkout to produce `.d.ts` files. |
+| `break-check-version` | `latest`                                       | npm version of `@clerk/break-check` to fetch with `npx`.                                           |
+| `comment`             | `true`                                         | Post or update a PR comment with the report.                                                       |
+| `fail-on-breaking`    | `false`                                        | Fail the workflow when breaking changes are detected.                                              |
+| `github-token`        | `${{ github.token }}`                          | Token used to read/write PR comments.                                                              |
 
 ### Action outputs
 
-| Output                 | Description                                              |
-| ---------------------- | -------------------------------------------------------- |
-| `has-breaking-changes` | `"true"` if snapi detected at least one breaking change. |
-| `report-path`          | Filesystem path to the generated markdown report.        |
+| Output                 | Description                                                    |
+| ---------------------- | -------------------------------------------------------------- |
+| `has-breaking-changes` | `"true"` if Break Check detected at least one breaking change. |
+| `report-path`          | Filesystem path to the generated markdown report.              |
 
 ### When the base ref doesn't yet have a config
 
-On the first PR that introduces snapi, the base ref won't contain a
-`snapi.config.json` and the snapshot would otherwise fail. The Action copies
+On the first PR that introduces Break Check, the base ref won't contain a
+`break-check.config.json` and the snapshot would otherwise fail. The Action copies
 the PR's config into the base checkout in that case so the first run still
 produces a usable baseline. Subsequent runs always use the base ref's own
 config.
@@ -274,7 +274,7 @@ pattern out of the box; fall back to the CLI directly when you need it.
 
 ## Change Detection
 
-snapi classifies each diff as one of three types.
+Break Check classifies each diff as one of three types.
 
 | Type         | Severity | What it covers                                                                                                                                              |
 | ------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -291,7 +291,7 @@ structurally. The following are deliberately **not** flagged:
   (e.g., adding a property to an interface produces one addition, not an
   addition plus an interface modification)
 
-What snapi does **not** yet do:
+What Break Check does **not** yet do:
 
 - type variance: any parameter, property, or return-type change is treated as
   breaking, even when the new type is strictly wider. Widening (e.g.,
@@ -305,7 +305,7 @@ What snapi does **not** yet do:
 
 Near-term, in rough priority order:
 
-- **First stable release.** Publish `@clerk/snapi` to npm and cut a `v1`
+- **First stable release.** Publish `@clerk/break-check` to npm and cut a `v1`
   tag so the bundled GitHub Action becomes usable without copying the
   workflow by hand.
 - **Type variance awareness.** Stop classifying strictly-widening type
@@ -329,9 +329,9 @@ Near-term, in rough priority order:
 
 Longer-term ideas (less committed):
 
-- A `snapi explain <symbol>` command that prints the before/after rollup
+- A `break-check explain <symbol>` command that prints the before/after rollup
   for a single export, for use during code review.
-- Per-package severity overrides in `snapi.config.json` (e.g. treat
+- Per-package severity overrides in `break-check.config.json` (e.g. treat
   internal packages as non-breaking by default).
 - Pluggable analyzers so consumers can add project-specific rules
   (deprecation policies, naming conventions) without forking.
@@ -356,7 +356,7 @@ Relative baseline paths are resolved from the config directory.
 Run with `--verbose` to see API Extractor diagnostics:
 
 ```bash
-snapi snapshot --verbose
+break-check snapshot --verbose
 ```
 
 ## License

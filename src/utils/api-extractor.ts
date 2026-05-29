@@ -15,11 +15,17 @@ import {
 import type { ApiSnapshot, PackageEntry, PackageInfo } from "../types.js";
 
 export const SNAPSHOT_METADATA_VERSION = 4;
-export const METADATA_FILENAME = "snapi.snapshot.json";
+export const METADATA_FILENAME = "break-check.snapshot.json";
+/**
+ * Pre-rename per-package metadata filename. `detect` reads it as a fallback so
+ * baselines committed before the snapi -> break-check rename still load without
+ * being silently treated as "no baseline".
+ */
+export const LEGACY_METADATA_FILENAME = "snapi.snapshot.json";
 export const API_EXTRACTOR_PACKAGE = "@microsoft/api-extractor";
 
 /**
- * Version of snapi's entry-point discovery semantics. Bump this whenever a
+ * Version of break-check's entry-point discovery semantics. Bump this whenever a
  * change alters *which* entry points are enumerated (e.g. #37's wildcard
  * subpath expansion would have bumped it). `detect` refuses a baseline whose
  * recorded discovery version is older than the running one, because the two
@@ -31,18 +37,18 @@ export const DISCOVERY_VERSION = 1;
 
 const requireFromHere = createRequire(import.meta.url);
 
-let cachedSnapiVersion: string | null = null;
+let cachedBreakCheckVersion: string | null = null;
 let cachedApiExtractorVersion: string | null = null;
 
-export function getSnapiVersion(): string {
-  if (cachedSnapiVersion) return cachedSnapiVersion;
+export function getBreakCheckVersion(): string {
+  if (cachedBreakCheckVersion) return cachedBreakCheckVersion;
   try {
     const pkg = requireFromHere("../../package.json") as { version?: string };
-    cachedSnapiVersion = pkg.version ?? "0.0.0";
+    cachedBreakCheckVersion = pkg.version ?? "0.0.0";
   } catch {
-    cachedSnapiVersion = "0.0.0";
+    cachedBreakCheckVersion = "0.0.0";
   }
-  return cachedSnapiVersion;
+  return cachedBreakCheckVersion;
 }
 
 export function getApiExtractorVersion(): string {
@@ -154,7 +160,7 @@ export class ApiExtractorRunner {
 
   /**
    * Write the per-package metadata file listing all generated entries, the
-   * producing snapi / API Extractor versions, and the discovery version.
+   * producing break-check / API Extractor versions, and the discovery version.
    */
   writePackageMetadata(
     packageInfo: PackageInfo,
@@ -168,7 +174,7 @@ export class ApiExtractorRunner {
 
     const payload = {
       schemaVersion: SNAPSHOT_METADATA_VERSION,
-      snapiVersion: getSnapiVersion(),
+      breakCheckVersion: getBreakCheckVersion(),
       discoveryVersion: DISCOVERY_VERSION,
       apiExtractorPackage: API_EXTRACTOR_PACKAGE,
       apiExtractorVersion: getApiExtractorVersion(),
@@ -414,7 +420,7 @@ export class ApiExtractorRunner {
 
   private warn(message: string): void {
     if (this.verbose) {
-      console.warn(`[snapi] ${message}`);
+      console.warn(`[break-check] ${message}`);
     }
   }
 }
@@ -518,7 +524,7 @@ function expandWildcardSubpath(
 
   // `fs.globSync` makes no ordering guarantee across platforms or
   // filesystems, and these entries flow straight into the `entries` array
-  // in `snapi.snapshot.json`. Sort by subpath so two runs on different
+  // in `break-check.snapshot.json`. Sort by subpath so two runs on different
   // runners produce byte-identical metadata instead of spurious
   // order-only baseline churn.
   entries.sort((a, b) => a.subpath.localeCompare(b.subpath));

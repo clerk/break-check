@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Orientation for agents and new contributors working on `@clerk/snapi`. The
+Orientation for agents and new contributors working on `@clerk/break-check`. The
 [README](./README.md) is the user-facing surface; this file covers what you
 need to know to change the code.
 
@@ -10,11 +10,11 @@ A CLI that snapshots TypeScript public API surfaces using Microsoft API
 Extractor, diffs them between a baseline and the current build, and reports
 breaking vs. non-breaking changes. It is consumed three ways:
 
-1. As a local CLI (`snapi snapshot`, `snapi detect`).
+1. As a local CLI (`break-check snapshot`, `break-check detect`).
 2. As a GitHub composite Action (see `action.yml`) that runs the CLI on PRs.
 3. Programmatically via `src/index.ts` exports (currently thin).
 
-The package is published as `@clerk/snapi`. Versioning is managed by
+The package is published as `@clerk/break-check`. Versioning is managed by
 Changesets.
 
 ## Layout
@@ -22,14 +22,14 @@ Changesets.
 ```
 src/
   cli.ts              Commander entrypoint. Wires init / snapshot / detect.
-  config.ts           Loads + validates snapi.config.json via zod.
+  config.ts           Loads + validates break-check.config.json via zod.
   index.ts            Public programmatic exports.
   types.ts            Shared types (Snapshot, ApiChange, Severity, etc.).
   core/
     api-extractor.ts  Wraps @microsoft/api-extractor. Discovers package
                       entrypoints, including subpath exports, and produces
                       raw .d.ts rollups.
-    detector.ts       Top-level orchestration for `snapi detect`. Loads
+    detector.ts       Top-level orchestration for `break-check detect`. Loads
                       snapshots, runs the rule-based diff, optionally
                       invokes the AI reviewer, then renders the report.
   analyzers/
@@ -79,7 +79,7 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   module consumes it. Most options flow into `detector.ts` or
   `api-extractor.ts`.
 - **New config field**: extend the zod schema in `src/config.ts` and the
-  `SnapiConfig` type. Document it in `README.md` and bump via a changeset.
+  `BreakCheckConfig` type. Document it in `README.md` and bump via a changeset.
 - **Change how a diff is classified**: edit `src/analyzers/api-diff.ts`.
   The "Change Detection" table in `README.md` is the contract; if you
   shift a classification, update the README and add a test in
@@ -88,7 +88,7 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   it fail-soft. Any new failure mode must fall back to the rule-based
   result rather than crashing `detect`.
 - **Change Action behavior**: `action.yml` is a composite Action,
-  pure shell. The Action's "first PR introducing snapi" branch copies
+  pure shell. The Action's "first PR introducing break-check" branch copies
   the PR config into the base checkout (see README for context); be
   careful not to regress that.
 
@@ -124,17 +124,17 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   flagged as breaking, even when the new type is strictly wider. The
   AI reviewer is currently the only thing that can downgrade those.
   This is documented in the README; don't "fix" it silently.
-- **API Extractor major bumps are snapi major bumps.** `@microsoft/api-extractor`
+- **API Extractor major bumps are break-check major bumps.** `@microsoft/api-extractor`
   is pinned to an exact version in `package.json` (no `^`). Each per-package
-  metadata file records the producing `snapiVersion`, `apiExtractorVersion`,
-  and `discoveryVersion` (snapshot `schemaVersion: 4`). On `snapi detect`, a
+  metadata file records the producing `breakCheckVersion`, `apiExtractorVersion`,
+  and `discoveryVersion` (snapshot `schemaVersion: 4`). On `break-check detect`, a
   baseline whose recorded AE major differs from the running one is refused with
   a structured error, since the hand-rolled `parseApiJson` reader is not
   guaranteed to be forward/backward compatible across AE majors. Pre-stamp
   baselines (v1/v2) load with a warning. When you bump AE, expect to issue a
-  snapi major and document that committed baselines must be regenerated.
+  break-check major and document that committed baselines must be regenerated.
 - **Discovery-version gate.** `DISCOVERY_VERSION` in `utils/api-extractor.ts`
-  tracks snapi's entry-point discovery semantics; bump it whenever a change
+  tracks break-check's entry-point discovery semantics; bump it whenever a change
   alters _which_ entry points are enumerated (e.g. wildcard subpath expansion
   did). `detect` refuses a baseline whose recorded `discoveryVersion` is older
   than the running one, and refuses a producer-stamped baseline (schema >= 3)
@@ -144,12 +144,12 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   already-baselined package is collapsed to a single "new subpath" addition
   (`buildSubpathAdditionChange` in `core/detector.ts`) rather than one addition
   per exported member.
-- **AI reviewer is opt-in**: it runs iff `SNAPI_ANTHROPIC_API_KEY` is
+- **AI reviewer is opt-in**: it runs iff `BREAK_CHECK_ANTHROPIC_API_KEY` is
   set, unless `ai.enabled` is explicitly `false`. Model resolution
-  priority is `--ai-model` > `SNAPI_AI_MODEL` > `ai.model` config >
+  priority is `--ai-model` > `BREAK_CHECK_AI_MODEL` > `ai.model` config >
   `claude-sonnet-4-6`. Preserve that priority order when editing.
 - **Action is preview**: it ships from this repo but isn't usable
-  until `@clerk/snapi` is on npm and a `v1` tag exists. The README
+  until `@clerk/break-check` is on npm and a `v1` tag exists. The README
   has the disclaimer; keep it in sync if the status changes.
 
 ## Release flow

@@ -1,6 +1,9 @@
 {
   "$schema": "https://unpkg.com/@changesets/config@3.0.0/schema.json",
-  "changelog": ["@changesets/changelog-github", { "repo": "clerk/snapi" }],
+  "changelog": [
+    "@changesets/changelog-github",
+    { "repo": "clerk/break-check" }
+  ],
   "commit": false,
   "fixed": [],
   "linked": [],

@@ -38,6 +38,6 @@ jobs:
 
       - name: pnpm test (AI tests enabled)
         env:
-          SNAPI_ANTHROPIC_API_KEY: ${{ secrets.SNAPI_ANTHROPIC_API_KEY }}
-          SNAPI_RUN_REAL_AI_TESTS: "1"
+          BREAK_CHECK_ANTHROPIC_API_KEY: ${{ secrets.BREAK_CHECK_ANTHROPIC_API_KEY }}
+          BREAK_CHECK_RUN_REAL_AI_TESTS: "1"
         run: pnpm test
