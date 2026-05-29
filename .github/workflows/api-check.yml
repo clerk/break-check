@@ -72,10 +72,12 @@ jobs:
           run_detect || status=$?
           if [ "$status" = "3" ]; then
             echo "::notice::Baseline was produced by a different snapi (producer/discovery mismatch); rebuilding it with the current build and retrying."
-            rm -rf .api-baseline-main
+            # --output is resolved relative to the --config dir, so it must be
+            # absolute to land back in the workspace where detect reads it.
+            rm -rf "$GITHUB_WORKSPACE/.api-baseline-main"
             node dist/cli.js snapshot \
               --config /tmp/base-checkout/snapi.config.json \
-              --output .api-baseline-main
+              --output "$GITHUB_WORKSPACE/.api-baseline-main"
             status=0
             run_detect || status=$?
           fi
