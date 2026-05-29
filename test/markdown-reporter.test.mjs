@@ -118,3 +118,75 @@ test("markdown reporter: large unrelated snippets fall back to head+tail with <d
   assert.ok(out.includes("Diff (before:"), "expected diff summary line");
   assert.match(out, /more lines? elided/);
 });
+
+function makeMultiPackageResult(packageCount, changesPerPackage) {
+  const packages = [];
+  for (let p = 0; p < packageCount; p++) {
+    const changes = [];
+    for (let c = 0; c < changesPerPackage; c++) {
+      changes.push({
+        id: `p${p}c${c}`,
+        type: ChangeType.ADDITION,
+        severity: ChangeSeverity.MINOR,
+        category: "function",
+        name: `fn_${p}_${c}`,
+        description:
+          `Added function fn_${p}_${c} with a reasonably long description so the section takes up space. `.repeat(
+            3,
+          ),
+      });
+    }
+    packages.push({
+      packageName: `@demo/pkg-${p}`,
+      version: { previous: "1.0.0", current: "1.1.0" },
+      recommendedVersionBump: "minor",
+      changes,
+    });
+  }
+  return {
+    timestamp: "2026-05-29T00:00:00.000Z",
+    summary: {
+      totalPackages: packageCount,
+      packagesWithChanges: packageCount,
+      breakingChanges: 0,
+      nonBreakingChanges: 0,
+      additions: packageCount * changesPerPackage,
+    },
+    hasBreakingChanges: false,
+    packages,
+  };
+}
+
+test("markdown reporter: caps total report size and notes the overflow", () => {
+  const result = makeMultiPackageResult(40, 5);
+  const budget = 8000;
+
+  // Without a budget the report is well over the limit.
+  const full = new MarkdownReporter().generate(result);
+  assert.ok(
+    full.length > budget,
+    `precondition: unbudgeted report should exceed ${budget}, got ${full.length}`,
+  );
+
+  const out = new MarkdownReporter({ maxReportChars: budget }).generate(result);
+  assert.ok(
+    out.length <= budget,
+    `expected report within ${budget} chars, got ${out.length}`,
+  );
+  assert.match(out, /Report truncated to fit GitHub's comment size limit/);
+  assert.match(out, /omitted from this comment/);
+  // The summary table is part of the always-included head.
+  assert.ok(out.includes("## Summary"), "summary must always be present");
+  // At least the first package section should make it in.
+  assert.ok(out.includes("@demo/pkg-0"), "first package should be included");
+});
+
+test("markdown reporter: no truncation notice when the report fits", () => {
+  const result = makeMultiPackageResult(2, 1);
+  const out = new MarkdownReporter().generate(result);
+  assert.ok(
+    !out.includes("Report truncated"),
+    "a small report should not be truncated",
+  );
+  assert.ok(out.includes("@demo/pkg-0") && out.includes("@demo/pkg-1"));
+});

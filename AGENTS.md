@@ -126,13 +126,24 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   This is documented in the README; don't "fix" it silently.
 - **API Extractor major bumps are snapi major bumps.** `@microsoft/api-extractor`
   is pinned to an exact version in `package.json` (no `^`). Each per-package
-  metadata file records the producing `snapiVersion` and `apiExtractorVersion`
-  (snapshot `schemaVersion: 3`). On `snapi detect`, a baseline whose recorded
-  AE major differs from the running one is refused with a structured error,
-  since the hand-rolled `parseApiJson` reader is not guaranteed to be
-  forward/backward compatible across AE majors. Pre-stamp baselines (v1/v2)
-  load with a warning. When you bump AE, expect to issue a snapi major and
-  document that committed baselines must be regenerated.
+  metadata file records the producing `snapiVersion`, `apiExtractorVersion`,
+  and `discoveryVersion` (snapshot `schemaVersion: 4`). On `snapi detect`, a
+  baseline whose recorded AE major differs from the running one is refused with
+  a structured error, since the hand-rolled `parseApiJson` reader is not
+  guaranteed to be forward/backward compatible across AE majors. Pre-stamp
+  baselines (v1/v2) load with a warning. When you bump AE, expect to issue a
+  snapi major and document that committed baselines must be regenerated.
+- **Discovery-version gate.** `DISCOVERY_VERSION` in `utils/api-extractor.ts`
+  tracks snapi's entry-point discovery semantics; bump it whenever a change
+  alters _which_ entry points are enumerated (e.g. wildcard subpath expansion
+  did). `detect` refuses a baseline whose recorded `discoveryVersion` is older
+  than the running one, and refuses a producer-stamped baseline (schema >= 3)
+  that predates the field, because the two snapshots no longer cover the same
+  surface and newly enumerated subpaths would otherwise read as phantom
+  additions. As a backstop, a current subpath that has no baseline entry in an
+  already-baselined package is collapsed to a single "new subpath" addition
+  (`buildSubpathAdditionChange` in `core/detector.ts`) rather than one addition
+  per exported member.
 - **AI reviewer is opt-in**: it runs iff `SNAPI_ANTHROPIC_API_KEY` is
   set, unless `ai.enabled` is explicitly `false`. Model resolution
   priority is `--ai-model` > `SNAPI_AI_MODEL` > `ai.model` config >

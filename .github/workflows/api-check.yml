@@ -55,8 +55,33 @@ jobs:
         id: detect
         env:
           SNAPI_ANTHROPIC_API_KEY: ${{ secrets.SNAPI_ANTHROPIC_API_KEY }}
-        run: node dist/cli.js detect --baseline .api-baseline-main --output api-report.md
         continue-on-error: true
+        run: |
+          set -uo pipefail
+          run_detect() {
+            node dist/cli.js detect --baseline .api-baseline-main --output api-report.md
+          }
+
+          # The baseline above is produced by the BASE ref's snapi, while this
+          # step runs the PR's snapi. When the PR changes producer semantics
+          # (API Extractor major, discovery version), detect refuses the
+          # baseline with exit code 3. That's expected here; rebuild the
+          # baseline with the current build (against the already-built base
+          # checkout) so both sides match, then retry once.
+          status=0
+          run_detect || status=$?
+          if [ "$status" = "3" ]; then
+            echo "::notice::Baseline was produced by a different snapi (producer/discovery mismatch); rebuilding it with the current build and retrying."
+            # --output is resolved relative to the --config dir, so it must be
+            # absolute to land back in the workspace where detect reads it.
+            rm -rf "$GITHUB_WORKSPACE/.api-baseline-main"
+            node dist/cli.js snapshot \
+              --config /tmp/base-checkout/snapi.config.json \
+              --output "$GITHUB_WORKSPACE/.api-baseline-main"
+            status=0
+            run_detect || status=$?
+          fi
+          exit "$status"
 
       - name: Comment on PR
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
@@ -64,6 +89,10 @@ jobs:
           script: |
             const fs = require('fs');
             const marker = '<!-- snapi-self-dogfood -->';
+            if (!fs.existsSync('api-report.md')) {
+              core.warning('snapi report not found (detect failed); skipping comment.');
+              return;
+            }
             const report = fs.readFileSync('api-report.md', 'utf-8');
             const body = `${marker}\n${report}`;
 
