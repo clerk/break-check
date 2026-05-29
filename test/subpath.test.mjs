@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = join(repoRoot, "dist", "cli.js");
 
-function runSnapi(args) {
+function runBreakCheck(args) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd: repoRoot,
     encoding: "utf-8",
@@ -24,7 +24,7 @@ function runSnapi(args) {
 }
 
 function workspaceDir() {
-  return mkdtempSync(join(tmpdir(), "snapi-subpath-"));
+  return mkdtempSync(join(tmpdir(), "break-check-subpath-"));
 }
 
 function writeJson(filePath, value) {
@@ -37,7 +37,7 @@ function writeDts(filePath, contents) {
 }
 
 function writeConfig(workspace, overrides = {}) {
-  const configPath = join(workspace, "snapi.config.json");
+  const configPath = join(workspace, "break-check.config.json");
   writeJson(configPath, {
     packages: ["packages/pkg"],
     snapshotDir: "snapshots",
@@ -96,7 +96,7 @@ test("snapshot generates one .api.json per non-wildcard subpath", () => {
       },
     });
 
-    const snapshot = runSnapi(["snapshot", "-c", configPath]);
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
     assert.equal(snapshot.status, 0, snapshot.stderr);
 
     const pkgDir = join(workspace, "snapshots", "demo__pkg");
@@ -108,12 +108,12 @@ test("snapshot generates one .api.json per non-wildcard subpath", () => {
     }
 
     const metadata = JSON.parse(
-      readFileSync(join(pkgDir, "snapi.snapshot.json"), "utf-8"),
+      readFileSync(join(pkgDir, "break-check.snapshot.json"), "utf-8"),
     );
     assert.equal(metadata.schemaVersion, 4);
     assert.equal(metadata.apiExtractorPackage, "@microsoft/api-extractor");
     assert.match(metadata.apiExtractorVersion, /^\d+\.\d+\.\d+/);
-    assert.match(metadata.snapiVersion, /^\d+\.\d+\.\d+/);
+    assert.match(metadata.breakCheckVersion, /^\d+\.\d+\.\d+/);
     assert.equal(typeof metadata.discoveryVersion, "number");
     assert.equal(metadata.entries.length, 3);
     const subpaths = metadata.entries.map((e) => e.subpath).sort();
@@ -139,7 +139,13 @@ test("detect surfaces breaking changes per subpath", () => {
       },
     });
 
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
     // Change ./react's signature so the diff is breaking
@@ -153,7 +159,7 @@ test("detect surfaces breaking changes per subpath", () => {
       },
     });
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -194,7 +200,13 @@ test("detect flags a removed subpath as breaking", () => {
       },
     });
 
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
     writeSubpathOnlyPackage(workspace, {
@@ -206,7 +218,7 @@ test("detect flags a removed subpath as breaking", () => {
       },
     });
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -245,7 +257,13 @@ test("detect reports a newly added subpath as additions, not breaking", () => {
       },
     });
 
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
     writeSubpathOnlyPackage(workspace, {
@@ -258,7 +276,7 @@ test("detect reports a newly added subpath as additions, not breaking", () => {
       },
     });
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -310,7 +328,13 @@ test("detect collapses a newly enumerated subpath to a single addition, not one 
       },
     });
 
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
     const manyMembers =
@@ -329,7 +353,7 @@ test("detect collapses a newly enumerated subpath to a single addition, not one 
       },
     });
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -375,7 +399,13 @@ test("ignoreSubpaths suppresses removals for ignored baseline subpaths", () => {
         },
       },
     });
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
     // Second run: rewrite config to ignore ./types and drop the subpath
@@ -391,7 +421,7 @@ test("ignoreSubpaths suppresses removals for ignored baseline subpaths", () => {
       },
     });
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -429,11 +459,11 @@ test("detect reads v1 baseline metadata as a root-only entry", () => {
     const configPath = writeConfig(workspace);
 
     // Fabricate a legacy v1 baseline directory: only `<safe>.api.json` and
-    // a v1-shaped metadata file. snapi's writer no longer produces this
+    // a v1-shaped metadata file. break-check's writer no longer produces this
     // layout, but already-cached baselines from earlier runs still use it.
     const baselineDir = join(workspace, "baseline", "demo__pkg");
     mkdirSync(baselineDir, { recursive: true });
-    writeJson(join(baselineDir, "snapi.snapshot.json"), {
+    writeJson(join(baselineDir, "break-check.snapshot.json"), {
       schemaVersion: 1,
       packageName: "@demo/pkg",
       packagePath: join(workspace, "packages", "pkg"),
@@ -442,14 +472,14 @@ test("detect reads v1 baseline metadata as a root-only entry", () => {
       apiJsonFile: "demo__pkg.api.json",
       apiReportFile: null,
     });
-    // Generate a real api.json by running snapi on the v1 layout
+    // Generate a real api.json by running break-check on the v1 layout
     writeSubpathOnlyPackage(workspace, {
       version: "1.0.0",
       surfaces: {
         dts: { ".": "export declare const root: number;\n" },
       },
     });
-    const stage = runSnapi([
+    const stage = runBreakCheck([
       "snapshot",
       "-c",
       configPath,
@@ -477,7 +507,7 @@ test("detect reads v1 baseline metadata as a root-only entry", () => {
       },
     });
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -533,12 +563,12 @@ test("snapshot expands wildcard subpath exports against the filesystem", () => {
       },
     });
 
-    const snapshot = runSnapi(["snapshot", "-c", configPath]);
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
     assert.equal(snapshot.status, 0, snapshot.stderr);
 
     const metadata = JSON.parse(
       readFileSync(
-        join(workspace, "snapshots", "demo__pkg", "snapi.snapshot.json"),
+        join(workspace, "snapshots", "demo__pkg", "break-check.snapshot.json"),
         "utf-8",
       ),
     );
@@ -578,14 +608,20 @@ test("detect surfaces a breaking change under a wildcard subpath", () => {
     };
 
     writeWildcardPackage("export declare function readJSONFile(): string;\n");
-    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(baseline.status, 0, baseline.stderr);
 
     // Rename the exported function: the rule-based diff classifies that as
     // removal + addition, both surfacing under `./file`.
     writeWildcardPackage("export declare function parseJSONFile(): string;\n");
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -632,7 +668,7 @@ test("snapshot warns and continues when one subpath fails extraction", () => {
       },
     });
 
-    const snapshot = runSnapi(["snapshot", "-c", configPath]);
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
     assert.equal(snapshot.status, 0, snapshot.stderr);
     assert.match(snapshot.stderr, /skipping @demo\/pkg \.\/broken/);
 
@@ -642,7 +678,7 @@ test("snapshot warns and continues when one subpath fails extraction", () => {
     assert.ok(!existsSync(join(pkgDir, "demo__pkg__broken.api.json")));
 
     const metadata = JSON.parse(
-      readFileSync(join(pkgDir, "snapi.snapshot.json"), "utf-8"),
+      readFileSync(join(pkgDir, "break-check.snapshot.json"), "utf-8"),
     );
     const subpaths = metadata.entries.map((e) => e.subpath).sort();
     assert.deepEqual(subpaths, [".", "./good"]);
@@ -667,12 +703,12 @@ test("snapshot --fail-on-skipped turns a skipped subpath into a hard error", () 
     });
 
     // Default (fail-soft): succeeds despite the skip.
-    const soft = runSnapi(["snapshot", "-c", configPath]);
+    const soft = runBreakCheck(["snapshot", "-c", configPath]);
     assert.equal(soft.status, 0, soft.stderr);
 
     // Strict: same input, exits non-zero. The good entry is still written
     // (the run completes), but the exit code forces the producer to notice.
-    const strict = runSnapi([
+    const strict = runBreakCheck([
       "snapshot",
       "-c",
       configPath,
@@ -702,12 +738,12 @@ test("ignoreSubpaths drops matching subpaths from discovery", () => {
       },
     });
 
-    const snapshot = runSnapi(["snapshot", "-c", configPath]);
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
     assert.equal(snapshot.status, 0, snapshot.stderr);
 
     const metadata = JSON.parse(
       readFileSync(
-        join(workspace, "snapshots", "demo__pkg", "snapi.snapshot.json"),
+        join(workspace, "snapshots", "demo__pkg", "break-check.snapshot.json"),
         "utf-8",
       ),
     );

@@ -7,13 +7,15 @@ import * as path from "node:path";
 import {
   CONFIG_FILE_NAME,
   DEFAULT_AI_MODEL,
-  SnapiConfig,
+  BreakCheckConfig,
   resolvePackagePaths,
 } from "../config.js";
 import {
   ApiExtractorRunner,
   API_EXTRACTOR_PACKAGE,
   DISCOVERY_VERSION,
+  METADATA_FILENAME,
+  LEGACY_METADATA_FILENAME,
   getApiExtractorVersion,
   readPackageInfo,
 } from "../utils/api-extractor.js";
@@ -43,19 +45,19 @@ export interface DetectorOptions {
   /** Config file path (for resolving relative paths) */
   configPath?: string;
   /**
-   * Hard-disable the AI analyzer, even when SNAPI_ANTHROPIC_API_KEY is set or
+   * Hard-disable the AI analyzer, even when BREAK_CHECK_ANTHROPIC_API_KEY is set or
    * `config.ai.enabled === true`. CLI's `--no-ai` flag wires through here.
    */
   disableAi?: boolean;
   /**
    * Override the AI model. Highest priority. When undefined,
-   * `SNAPI_AI_MODEL` env var and `config.ai.model` are consulted.
+   * `BREAK_CHECK_AI_MODEL` env var and `config.ai.model` are consulted.
    */
   aiModel?: string;
   /**
    * Force-enable (true) or force-disable (false) strict mode. Strict mode
    * runs the AI reviewer even for pure-additions diffs. When undefined,
-   * `SNAPI_AI_STRICT` env var and `config.ai.strict` are consulted.
+   * `BREAK_CHECK_AI_STRICT` env var and `config.ai.strict` are consulted.
    */
   aiStrict?: boolean;
   /** Inject a pre-built AI analyzer (used by tests). Overrides all other AI config. */
@@ -69,7 +71,7 @@ const SCHEMA_VERSION_WITH_PRODUCER_STAMP = 3;
 
 /**
  * Thrown when a baseline is refused because its recorded producer disagrees
- * with the running snapi (API Extractor major, or discovery version). It is a
+ * with the running break-check (API Extractor major, or discovery version). It is a
  * distinct type so `cli.ts` can map it to a dedicated exit code, letting CI
  * recognize "incompatible baseline" and rebuild it rather than treating it as
  * a generic failure or as detected breaking changes.
@@ -108,7 +110,7 @@ export class BreakingChangesDetector {
   private skippedEntries: SkippedEntry[] = [];
 
   constructor(
-    private config: SnapiConfig,
+    private config: BreakCheckConfig,
     private detectorOptions: DetectorOptions = {},
   ) {
     this.verbose = detectorOptions.verbose ?? false;
@@ -134,7 +136,7 @@ export class BreakingChangesDetector {
 
   private resolveStrict(options: DetectorOptions): boolean {
     if (typeof options.aiStrict === "boolean") return options.aiStrict;
-    const envFlag = process.env.SNAPI_AI_STRICT;
+    const envFlag = process.env.BREAK_CHECK_AI_STRICT;
     if (envFlag && envFlag !== "0" && envFlag.toLowerCase() !== "false") {
       return true;
     }
@@ -177,21 +179,21 @@ export class BreakingChangesDetector {
     if (options.aiAnalyzer) return options.aiAnalyzer;
     if (options.disableAi) return null;
 
-    const apiKey = process.env.SNAPI_ANTHROPIC_API_KEY;
+    const apiKey = process.env.BREAK_CHECK_ANTHROPIC_API_KEY;
     const aiCfg = this.config.ai;
     const enabledOverride = aiCfg?.enabled;
 
     if (enabledOverride === false) return null;
     if (enabledOverride === true && !apiKey) {
       throw new Error(
-        "config.ai.enabled is true but SNAPI_ANTHROPIC_API_KEY is not set in the environment.",
+        "config.ai.enabled is true but BREAK_CHECK_ANTHROPIC_API_KEY is not set in the environment.",
       );
     }
     if (enabledOverride === undefined && !apiKey) return null;
 
     const model =
       options.aiModel ??
-      process.env.SNAPI_AI_MODEL ??
+      process.env.BREAK_CHECK_AI_MODEL ??
       aiCfg?.model ??
       DEFAULT_AI_MODEL;
     return new AiChangeAnalyzer({
@@ -267,7 +269,7 @@ export class BreakingChangesDetector {
             reason,
           });
           process.stderr.write(
-            `[snapi] warning: skipping ${packageInfo.name} ${entry.subpath}: ${reason}\n`,
+            `[break-check] warning: skipping ${packageInfo.name} ${entry.subpath}: ${reason}\n`,
           );
         }
       }
@@ -346,7 +348,18 @@ export class BreakingChangesDetector {
   ): ApiSnapshot[] {
     const safePackageName = packageName.replace(/^@/, "").replace(/\//g, "__");
     const packageDir = path.join(baselineDir, safePackageName);
-    const metadataPath = path.join(packageDir, "snapi.snapshot.json");
+    // Prefer the current metadata filename; fall back to the pre-rename name so
+    // baselines committed before the snapi -> break-check rename still load.
+    let metadataPath = path.join(packageDir, METADATA_FILENAME);
+    if (!fs.existsSync(metadataPath)) {
+      const legacyMetadataPath = path.join(
+        packageDir,
+        LEGACY_METADATA_FILENAME,
+      );
+      if (fs.existsSync(legacyMetadataPath)) {
+        metadataPath = legacyMetadataPath;
+      }
+    }
 
     if (!fs.existsSync(packageDir)) {
       this.log(`No baseline found for ${packageName}`);
@@ -410,7 +423,7 @@ export class BreakingChangesDetector {
 
   private readSnapshotMetadata(metadataPath: string): {
     schemaVersion?: number;
-    snapiVersion?: string;
+    breakCheckVersion?: string;
     discoveryVersion?: number;
     apiExtractorPackage?: string;
     apiExtractorVersion?: string;
@@ -428,7 +441,7 @@ export class BreakingChangesDetector {
     try {
       const parsed = JSON.parse(fs.readFileSync(metadataPath, "utf-8")) as {
         schemaVersion?: unknown;
-        snapiVersion?: unknown;
+        breakCheckVersion?: unknown;
         discoveryVersion?: unknown;
         apiExtractorPackage?: unknown;
         apiExtractorVersion?: unknown;
@@ -440,7 +453,7 @@ export class BreakingChangesDetector {
 
       const result: {
         schemaVersion?: number;
-        snapiVersion?: string;
+        breakCheckVersion?: string;
         discoveryVersion?: number;
         apiExtractorPackage?: string;
         apiExtractorVersion?: string;
@@ -457,8 +470,8 @@ export class BreakingChangesDetector {
       if (typeof parsed.schemaVersion === "number") {
         result.schemaVersion = parsed.schemaVersion;
       }
-      if (typeof parsed.snapiVersion === "string") {
-        result.snapiVersion = parsed.snapiVersion;
+      if (typeof parsed.breakCheckVersion === "string") {
+        result.breakCheckVersion = parsed.breakCheckVersion;
       }
       if (typeof parsed.discoveryVersion === "number") {
         result.discoveryVersion = parsed.discoveryVersion;
@@ -513,7 +526,7 @@ export class BreakingChangesDetector {
 
   /**
    * Refuse a baseline whose recorded API Extractor major version disagrees with
-   * the one snapi is running. Different majors of `@microsoft/api-extractor`
+   * the one break-check is running. Different majors of `@microsoft/api-extractor`
    * can rename or restructure fields in the `.api.json` shape that
    * `parseApiJson` reads by hand, which silently produces nonsense diffs
    * (typically mass false-positive removals). Failing fast forces the user to
@@ -521,7 +534,7 @@ export class BreakingChangesDetector {
    *
    * Pre-stamping baselines (schemaVersion < 3) have no producer fingerprint;
    * we warn but proceed since we cannot prove a mismatch, and breaking every
-   * existing baseline on a snapi minor that didn't touch AE would be hostile.
+   * existing baseline on a break-check minor that didn't touch AE would be hostile.
    */
   private assertCompatibleProducer(
     metadata: ReturnType<typeof this.readSnapshotMetadata>,
@@ -537,9 +550,9 @@ export class BreakingChangesDetector {
         metadata.schemaVersion < SCHEMA_VERSION_WITH_PRODUCER_STAMP
       ) {
         process.stderr.write(
-          `[snapi] warning: baseline for ${packageName} predates producer-version stamping ` +
+          `[break-check] warning: baseline for ${packageName} predates producer-version stamping ` +
             `(schemaVersion ${metadata.schemaVersion} at ${metadataPath}). ` +
-            `Regenerate with \`snapi snapshot\` to enable API Extractor drift detection.\n`,
+            `Regenerate with \`break-check snapshot\` to enable API Extractor drift detection.\n`,
         );
       }
       return;
@@ -556,10 +569,10 @@ export class BreakingChangesDetector {
     ) {
       throw new IncompatibleBaselineError(
         `Baseline for ${packageName} was produced by ${API_EXTRACTOR_PACKAGE} ` +
-          `v${baselineAeVersion}; this snapi runs v${runningAeVersion} ` +
+          `v${baselineAeVersion}; this break-check runs v${runningAeVersion} ` +
           `(major version mismatch). The .api.json shape is not guaranteed ` +
           `compatible across API Extractor majors, so the diff would be ` +
-          `unreliable. Regenerate the baseline with \`snapi snapshot\` ` +
+          `unreliable. Regenerate the baseline with \`break-check snapshot\` ` +
           `against the baseline ref, then retry.`,
       );
     }
@@ -567,7 +580,7 @@ export class BreakingChangesDetector {
 
   /**
    * Refuse a baseline whose entry-point discovery semantics differ from the
-   * running snapi. When discovery changes which subpaths are enumerated (e.g.
+   * running break-check. When discovery changes which subpaths are enumerated (e.g.
    * #37's wildcard expansion), an older baseline covers a smaller surface, so
    * the diff reports every newly discovered subpath as a phantom addition.
    * Failing fast forces a regeneration against the baseline ref, mirroring the
@@ -592,12 +605,12 @@ export class BreakingChangesDetector {
     if (typeof baselineDiscovery === "number") {
       if (baselineDiscovery < DISCOVERY_VERSION) {
         throw new IncompatibleBaselineError(
-          `Baseline for ${packageName} was produced with snapi discovery ` +
-            `version ${baselineDiscovery}; this snapi uses discovery version ` +
+          `Baseline for ${packageName} was produced with break-check discovery ` +
+            `version ${baselineDiscovery}; this break-check uses discovery version ` +
             `${DISCOVERY_VERSION}. Entry-point discovery changed between them, ` +
             `so the baseline enumerates a different API surface and the diff ` +
             `would report newly discovered subpaths as phantom additions. ` +
-            `Regenerate the baseline with \`snapi snapshot\` against the ` +
+            `Regenerate the baseline with \`break-check snapshot\` against the ` +
             `baseline ref, then retry.`,
         );
       }
@@ -610,10 +623,10 @@ export class BreakingChangesDetector {
     ) {
       throw new IncompatibleBaselineError(
         `Baseline for ${packageName} (schemaVersion ${metadata.schemaVersion} ` +
-          `at ${metadataPath}) predates snapi discovery-version stamping, so ` +
-          `its API surface cannot be guaranteed to match this snapi's ` +
+          `at ${metadataPath}) predates break-check discovery-version stamping, so ` +
+          `its API surface cannot be guaranteed to match this break-check's ` +
           `discovery (version ${DISCOVERY_VERSION}). Regenerate the baseline ` +
-          `with \`snapi snapshot\` against the baseline ref, then retry.`,
+          `with \`break-check snapshot\` against the baseline ref, then retry.`,
       );
     }
   }

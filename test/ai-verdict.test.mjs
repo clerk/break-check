@@ -3,8 +3,8 @@
  *
  * These tests depend on external network + model behavior, so they are NOT
  * part of the regular CI matrix. Opt in explicitly by setting BOTH:
- *   SNAPI_RUN_REAL_AI_TESTS=1
- *   SNAPI_ANTHROPIC_API_KEY=<key>
+ *   BREAK_CHECK_RUN_REAL_AI_TESTS=1
+ *   BREAK_CHECK_ANTHROPIC_API_KEY=<key>
  *
  * The dedicated `.github/workflows/ai-smoke.yml` workflow sets both and runs
  * on a schedule / on manual dispatch.
@@ -23,13 +23,13 @@ const cliPath = join(repoRoot, "dist", "cli.js");
 
 const truthy = (v) => v === "1" || v === "true";
 const runRealAiTests =
-  truthy(process.env.SNAPI_RUN_REAL_AI_TESTS ?? "") &&
-  Boolean(process.env.SNAPI_ANTHROPIC_API_KEY);
+  truthy(process.env.BREAK_CHECK_RUN_REAL_AI_TESTS ?? "") &&
+  Boolean(process.env.BREAK_CHECK_ANTHROPIC_API_KEY);
 const skipReason = runRealAiTests
   ? false
-  : "real-AI tests require SNAPI_RUN_REAL_AI_TESTS=1 and SNAPI_ANTHROPIC_API_KEY";
+  : "real-AI tests require BREAK_CHECK_RUN_REAL_AI_TESTS=1 and BREAK_CHECK_ANTHROPIC_API_KEY";
 
-function runSnapi(args, cwd) {
+function runBreakCheck(args, cwd) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd,
     encoding: "utf-8",
@@ -50,12 +50,12 @@ function writePackage(pkgDir, { version, dts }) {
 }
 
 function setup({ baseline, current, extraDetectArgs = [] }) {
-  const workspace = mkdtempSync(join(tmpdir(), "snapi-ai-verdict-"));
+  const workspace = mkdtempSync(join(tmpdir(), "break-check-ai-verdict-"));
   const pkgDir = join(workspace, "packages", "pkg");
   mkdirSync(join(pkgDir, "dist"), { recursive: true });
 
   writeFileSync(
-    join(workspace, "snapi.config.json"),
+    join(workspace, "break-check.config.json"),
     JSON.stringify(
       {
         packages: ["packages/pkg"],
@@ -70,18 +70,24 @@ function setup({ baseline, current, extraDetectArgs = [] }) {
   );
 
   writePackage(pkgDir, baseline);
-  const snapshot = runSnapi(
-    ["snapshot", "-c", join(workspace, "snapi.config.json"), "-o", "baseline"],
+  const snapshot = runBreakCheck(
+    [
+      "snapshot",
+      "-c",
+      join(workspace, "break-check.config.json"),
+      "-o",
+      "baseline",
+    ],
     workspace,
   );
   assert.equal(snapshot.status, 0, snapshot.stderr || snapshot.stdout);
 
   writePackage(pkgDir, current);
-  const detect = runSnapi(
+  const detect = runBreakCheck(
     [
       "detect",
       "-c",
-      join(workspace, "snapi.config.json"),
+      join(workspace, "break-check.config.json"),
       "--baseline",
       "baseline",
       "--format",

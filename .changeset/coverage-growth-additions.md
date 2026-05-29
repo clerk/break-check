@@ -1,5 +1,5 @@
 ---
-"@clerk/snapi": minor
+"@clerk/break-check": minor
 ---
 
 Stop reporting coverage/discovery growth as phantom API additions, and bound
@@ -18,18 +18,18 @@ GitHub's 65 KB comment limit and failed to post. Three fixes:
   packages still stay silent on first run.
 - Snapshot metadata records a new `discoveryVersion` (`schemaVersion: 4`).
   `detect` refuses a baseline whose discovery version is older than the running
-  snapi, and refuses a producer-stamped baseline that predates the field, with
+  break-check, and refuses a producer-stamped baseline that predates the field, with
   the same "regenerate against the base ref" error the API Extractor major gate
-  uses. snapi's Action regenerates the baseline every run, so it is unaffected;
-  consumers caching a baseline across a snapi upgrade must regenerate once.
+  uses. break-check's Action regenerates the baseline every run, so it is unaffected;
+  consumers caching a baseline across a break-check upgrade must regenerate once.
 - The markdown reporter now enforces a total-size budget (`maxReportChars`,
   default 60,000): whole package sections are included until the budget is
   reached, then the remainder is dropped with a notice pointing at the full
   JSON report, so an oversized diff still posts a valid comment.
 
-`snapi detect` now exits with code 3 (distinct from the generic error exit 1)
+`break-check detect` now exits with code 3 (distinct from the generic error exit 1)
 when it refuses a baseline as incompatible, so CI can recognize the condition.
 The GitHub Action recovers automatically: on an incompatible-baseline refuse it
-rebuilds the baseline with the current snapi and retries instead of failing.
+rebuilds the baseline with the current break-check and retries instead of failing.
 
 Fixes #40.

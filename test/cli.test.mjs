@@ -16,7 +16,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = join(repoRoot, "dist", "cli.js");
 
-function runSnapi(args) {
+function runBreakCheck(args) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd: repoRoot,
     encoding: "utf-8",
@@ -24,7 +24,7 @@ function runSnapi(args) {
 }
 
 function createWorkspace() {
-  return mkdtempSync(join(tmpdir(), "snapi-test-"));
+  return mkdtempSync(join(tmpdir(), "break-check-test-"));
 }
 
 function writeJson(filePath, value) {
@@ -47,7 +47,7 @@ function writePackage(workspace, { version, declarations, withTypes = true }) {
 }
 
 function writeConfig(workspace) {
-  const configPath = join(workspace, "snapi.config.json");
+  const configPath = join(workspace, "break-check.config.json");
   writeJson(configPath, {
     packages: ["packages/pkg"],
     snapshotDir: "snapshots",
@@ -70,11 +70,17 @@ test("detect resolves relative baseline paths from the config directory", () => 
         "export interface User {\n  id: string;\n  name: string;\n}\nexport declare function getUser(id: string): User;\n",
     });
 
-    const snapshot = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    const snapshot = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
     assert.equal(snapshot.status, 0, snapshot.stderr);
     assert.ok(
       existsSync(
-        join(workspace, "baseline", "demo__pkg", "snapi.snapshot.json"),
+        join(workspace, "baseline", "demo__pkg", "break-check.snapshot.json"),
       ),
     );
 
@@ -84,7 +90,7 @@ test("detect resolves relative baseline paths from the config directory", () => 
         "export interface User {\n  id: string;\n}\nexport declare function getUser(id: string): User;\nexport declare function listUsers(): User[];\n",
     });
 
-    const detect = runSnapi([
+    const detect = runBreakCheck([
       "detect",
       "-c",
       configPath,
@@ -93,7 +99,7 @@ test("detect resolves relative baseline paths from the config directory", () => 
       "--format",
       "json",
       // Pin --no-ai: this test asserts rule-based behavior and must stay
-      // deterministic when SNAPI_ANTHROPIC_API_KEY is set.
+      // deterministic when BREAK_CHECK_ANTHROPIC_API_KEY is set.
       "--no-ai",
       "--fail-on-breaking",
     ]);
@@ -122,7 +128,7 @@ test("snapshot supports declaration packages without a tsconfig", () => {
       declarations: "export declare const value: string;\n",
     });
 
-    const snapshot = runSnapi(["snapshot", "-c", configPath]);
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
 
     assert.equal(snapshot.status, 0, snapshot.stderr);
 
@@ -130,7 +136,7 @@ test("snapshot supports declaration packages without a tsconfig", () => {
       workspace,
       "snapshots",
       "demo__pkg",
-      "snapi.snapshot.json",
+      "break-check.snapshot.json",
     );
     const metadata = JSON.parse(readFileSync(metadataPath, "utf-8"));
     assert.equal(metadata.version, "1.0.0");
@@ -149,7 +155,7 @@ test("snapshot fails when a configured package has no declarations", () => {
       withTypes: false,
     });
 
-    const snapshot = runSnapi(["snapshot", "-c", configPath]);
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
 
     assert.equal(snapshot.status, 1);
     assert.match(snapshot.stderr, /no TypeScript declarations found/);

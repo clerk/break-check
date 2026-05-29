@@ -1,5 +1,5 @@
 ---
-"@clerk/snapi": patch
+"@clerk/break-check": patch
 ---
 
 Harden production usage by failing invalid snapshots, fixing config-relative baseline resolution, preserving snapshot metadata, and adding regression checks.

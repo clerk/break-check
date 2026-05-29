@@ -1,5 +1,5 @@
 ---
-"@clerk/snapi": patch
+"@clerk/break-check": patch
 ---
 
 Keep PR comments under GitHub's 65 KB limit, and reject bogus `addition`

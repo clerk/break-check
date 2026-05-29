@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = join(repoRoot, "dist", "cli.js");
 
-function runSnapi(args, cwd) {
+function runBreakCheck(args, cwd) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd: cwd ?? repoRoot,
     encoding: "utf-8",
@@ -17,12 +17,12 @@ function runSnapi(args, cwd) {
 }
 
 function setup({ baseline, current }) {
-  const workspace = mkdtempSync(join(tmpdir(), "snapi-diff-"));
+  const workspace = mkdtempSync(join(tmpdir(), "break-check-diff-"));
   const pkgDir = join(workspace, "packages", "pkg");
   mkdirSync(join(pkgDir, "dist"), { recursive: true });
 
   writeFileSync(
-    join(workspace, "snapi.config.json"),
+    join(workspace, "break-check.config.json"),
     JSON.stringify(
       {
         packages: ["packages/pkg"],
@@ -37,24 +37,30 @@ function setup({ baseline, current }) {
   );
 
   writePackage(pkgDir, baseline);
-  let snapshot = runSnapi(
-    ["snapshot", "-c", join(workspace, "snapi.config.json"), "-o", "baseline"],
+  let snapshot = runBreakCheck(
+    [
+      "snapshot",
+      "-c",
+      join(workspace, "break-check.config.json"),
+      "-o",
+      "baseline",
+    ],
     workspace,
   );
   assert.equal(snapshot.status, 0, snapshot.stderr || snapshot.stdout);
 
   writePackage(pkgDir, current);
-  const detect = runSnapi(
+  const detect = runBreakCheck(
     [
       "detect",
       "-c",
-      join(workspace, "snapi.config.json"),
+      join(workspace, "break-check.config.json"),
       "--baseline",
       "baseline",
       "--format",
       "json",
       // These tests assert rule-based behavior. Pin --no-ai so the suite stays
-      // deterministic when SNAPI_ANTHROPIC_API_KEY happens to be set.
+      // deterministic when BREAK_CHECK_ANTHROPIC_API_KEY happens to be set.
       "--no-ai",
     ],
     workspace,

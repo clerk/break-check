@@ -1,5 +1,5 @@
 ---
-"@clerk/snapi": patch
+"@clerk/break-check": patch
 ---
 
 Markdown reporter now renders before/after snippets as a unified diff anchored

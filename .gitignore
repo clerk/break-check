@@ -28,7 +28,7 @@ pnpm-debug.log*
 # Test coverage
 coverage/
 
-# Snapi output
+# Break Check output
 .api-snapshots/
 .api-snapshots-baseline/
 .api-baseline-main/

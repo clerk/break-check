@@ -1,5 +1,5 @@
 /**
- * Core type definitions for snapi
+ * Core type definitions for break-check
  */
 
 /**
@@ -124,7 +124,7 @@ export interface PackageAnalysis {
 }
 
 /**
- * A subpath snapi tried to snapshot but couldn't, typically because API
+ * A subpath break-check tried to snapshot but couldn't, typically because API
  * Extractor threw on an ambient-global augmentation or a `.d.ts` outside
  * `dist/`. These are surfaced as warnings rather than fatal errors so a
  * single broken entry doesn't tank the whole run; users can add the
@@ -149,7 +149,7 @@ export interface AnalysisResult {
   packages: PackageAnalysis[];
   /** Whether any package has breaking changes */
   hasBreakingChanges: boolean;
-  /** Subpaths snapi could not snapshot on either side of the diff. */
+  /** Subpaths break-check could not snapshot on either side of the diff. */
   skippedEntries?: SkippedEntry[];
   /** Summary statistics */
   summary: {
@@ -195,7 +195,7 @@ export interface ApiSnapshot {
   apiReportPath: string;
   /** Path to the .api.json file */
   apiJsonPath: string;
-  /** Path to snapi metadata for this snapshot's package directory */
+  /** Path to break-check metadata for this snapshot's package directory */
   metadataPath: string;
 }
 

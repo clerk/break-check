@@ -1,11 +1,11 @@
 {
-  "name": "@clerk/snapi",
+  "name": "@clerk/break-check",
   "version": "0.0.1",
-  "description": "Snapi CLI",
+  "description": "Detect API breaking changes in TypeScript packages",
   "type": "module",
   "packageManager": "pnpm@11.2.2+sha512.36e6621fad506178936455e70247b8808ef4ec25797a9f437a93281a020484e2607f6a469a22e982987c3dbb8866e3071514ab10a4a1749e06edcd1ec118436f",
   "bin": {
-    "snapi": "./dist/cli.js"
+    "break-check": "./dist/cli.js"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -35,17 +35,20 @@
   },
   "keywords": [
     "cli",
-    "snapi"
+    "break-check",
+    "api",
+    "breaking-changes",
+    "typescript"
   ],
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/clerk/snapi.git"
+    "url": "git+https://github.com/clerk/break-check.git"
   },
   "bugs": {
-    "url": "https://github.com/clerk/snapi/issues"
+    "url": "https://github.com/clerk/break-check/issues"
   },
-  "homepage": "https://github.com/clerk/snapi#readme",
+  "homepage": "https://github.com/clerk/break-check#readme",
   "devDependencies": {
     "@changesets/changelog-github": "^0.7.0",
     "@changesets/cli": "^2.31.0",

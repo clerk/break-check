@@ -1,5 +1,5 @@
 /**
- * @clerk/snapi - API breaking changes detection for TypeScript packages
+ * @clerk/break-check - API breaking changes detection for TypeScript packages
  */
 
 // Types
@@ -20,8 +20,9 @@ export {
 // Config
 export {
   CONFIG_FILE_NAME,
+  LEGACY_CONFIG_FILE_NAME,
   DEFAULT_AI_MODEL,
-  type SnapiConfig,
+  type BreakCheckConfig,
   type AiConfig,
   createDefaultConfig,
   findConfigFile,

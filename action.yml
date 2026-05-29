@@ -1,4 +1,4 @@
-name: "snapi"
+name: "Break Check"
 description: "Detect API breaking changes in TypeScript packages on every PR."
 author: "Clerk"
 branding:
@@ -7,9 +7,9 @@ branding:
 
 inputs:
   config-path:
-    description: "Path to snapi.config.json, relative to the repository root."
+    description: "Path to break-check.config.json, relative to the repository root."
     required: false
-    default: "snapi.config.json"
+    default: "break-check.config.json"
   base-ref:
     description: |
       Git ref or commit SHA to compare against. Defaults to the pull request
@@ -20,12 +20,12 @@ inputs:
     default: ${{ github.event.pull_request.base.sha || github.base_ref }}
   setup-command:
     description: |
-      Shell command snapi runs inside both the base-ref checkout and the
+      Shell command break-check runs inside both the base-ref checkout and the
       current checkout to install dependencies and build .d.ts files.
     required: false
     default: "pnpm install --frozen-lockfile && pnpm build"
-  snapi-version:
-    description: "Version of @clerk/snapi to fetch with `npx`."
+  break-check-version:
+    description: "Version of @clerk/break-check to fetch with `npx`."
     required: false
     default: "latest"
   comment:
@@ -43,7 +43,7 @@ inputs:
 
 outputs:
   has-breaking-changes:
-    description: "true if snapi detected at least one breaking change."
+    description: "true if break-check detected at least one breaking change."
     value: ${{ steps.detect.outputs.has-breaking-changes }}
   report-path:
     description: "Path to the generated markdown report."
@@ -73,11 +73,11 @@ runs:
         BASE_REF: ${{ inputs.base-ref }}
         CONFIG_PATH: ${{ inputs.config-path }}
         SETUP_COMMAND: ${{ inputs.setup-command }}
-        SNAPI_VERSION: ${{ inputs.snapi-version }}
+        BREAK_CHECK_VERSION: ${{ inputs.break-check-version }}
       run: |
         set -euo pipefail
-        BASELINE_DIR="$RUNNER_TEMP/snapi-baseline"
-        BASE_CHECKOUT="$RUNNER_TEMP/snapi-base-checkout"
+        BASELINE_DIR="$RUNNER_TEMP/break-check-baseline"
+        BASE_CHECKOUT="$RUNNER_TEMP/break-check-base-checkout"
         rm -rf "$BASELINE_DIR" "$BASE_CHECKOUT"
 
         # base-ref may be a branch name ("main") or a commit SHA (the PR's
@@ -98,8 +98,8 @@ runs:
         fi
         git worktree add --detach "$BASE_CHECKOUT" "$BASE_TARGET"
 
-        # If the base ref doesn't have a snapi config yet (e.g. the PR is the
-        # one introducing snapi), seed it from the current checkout so the
+        # If the base ref doesn't have a break-check config yet (e.g. the PR is the
+        # one introducing break-check), seed it from the current checkout so the
         # first run still produces a usable baseline.
         if [ ! -f "$BASE_CHECKOUT/$CONFIG_PATH" ]; then
           mkdir -p "$BASE_CHECKOUT/$(dirname "$CONFIG_PATH")"
@@ -109,7 +109,7 @@ runs:
         (
           cd "$BASE_CHECKOUT"
           bash -c "$SETUP_COMMAND"
-          npx --yes "@clerk/snapi@$SNAPI_VERSION" snapshot \
+          npx --yes "@clerk/break-check@$BREAK_CHECK_VERSION" snapshot \
             --config "$CONFIG_PATH" \
             --output "$BASELINE_DIR"
         )
@@ -128,35 +128,35 @@ runs:
       shell: bash
       env:
         CONFIG_PATH: ${{ inputs.config-path }}
-        SNAPI_VERSION: ${{ inputs.snapi-version }}
+        BREAK_CHECK_VERSION: ${{ inputs.break-check-version }}
         FAIL_ON_BREAKING: ${{ inputs.fail-on-breaking }}
       run: |
         set -uo pipefail
-        REPORT_PATH="$RUNNER_TEMP/snapi-report.md"
-        JSON_PATH="$RUNNER_TEMP/snapi-report.json"
+        REPORT_PATH="$RUNNER_TEMP/break-check-report.md"
+        JSON_PATH="$RUNNER_TEMP/break-check-report.json"
 
         detect_md() {
-          npx --yes "@clerk/snapi@$SNAPI_VERSION" detect \
+          npx --yes "@clerk/break-check@$BREAK_CHECK_VERSION" detect \
             --config "$CONFIG_PATH" \
             --baseline "$BASELINE_DIR" \
             --output "$REPORT_PATH"
         }
 
         # detect exits 3 when it refuses the baseline as incompatible with this
-        # snapi (API Extractor major or discovery version mismatch). Rebuild the
-        # baseline from the base ref with this snapi so both sides match, then
+        # break-check (API Extractor major or discovery version mismatch). Rebuild the
+        # baseline from the base ref with this break-check so both sides match, then
         # retry once. This recovers when the baseline came from a different
-        # snapi (a cached or committed baseline); when it was just produced
+        # break-check (a cached or committed baseline); when it was just produced
         # fresh at the same version the rebuild is identical, so a persistent
         # exit 3 surfaces as a clear error below.
         status=0
         detect_md || status=$?
         if [ "$status" = "3" ]; then
-          echo "::notice::snapi refused the baseline as incompatible; rebuilding it from the base ref with this snapi and retrying."
+          echo "::notice::break-check refused the baseline as incompatible; rebuilding it from the base ref with this break-check and retrying."
           rm -rf "$BASELINE_DIR"
           (
             cd "$BASE_CHECKOUT"
-            npx --yes "@clerk/snapi@$SNAPI_VERSION" snapshot \
+            npx --yes "@clerk/break-check@$BREAK_CHECK_VERSION" snapshot \
               --config "$CONFIG_PATH" \
               --output "$BASELINE_DIR"
           )
@@ -164,16 +164,16 @@ runs:
           detect_md || status=$?
         fi
         if [ "$status" = "3" ]; then
-          echo "::error::snapi refused the baseline as incompatible even after rebuilding it from the base ref. The snapshot-time and detect-time snapi versions likely differ; pin a single snapi-version."
+          echo "::error::break-check refused the baseline as incompatible even after rebuilding it from the base ref. The snapshot-time and detect-time break-check versions likely differ; pin a single break-check-version."
           exit 1
         fi
         if [ "$status" != "0" ]; then
-          echo "::error::snapi detect failed (exit $status)."
+          echo "::error::break-check detect failed (exit $status)."
           exit "$status"
         fi
 
         # Baseline is now compatible; the JSON pass reuses it (best-effort).
-        npx --yes "@clerk/snapi@$SNAPI_VERSION" detect \
+        npx --yes "@clerk/break-check@$BREAK_CHECK_VERSION" detect \
           --config "$CONFIG_PATH" \
           --baseline "$BASELINE_DIR" \
           --format json > "$JSON_PATH" || true
@@ -203,10 +203,10 @@ runs:
           const fs = require('fs');
           const reportPath = '${{ steps.detect.outputs.report-path }}';
           if (!fs.existsSync(reportPath)) {
-            core.warning(`snapi report not found at ${reportPath}; skipping comment.`);
+            core.warning(`break-check report not found at ${reportPath}; skipping comment.`);
             return;
           }
-          const marker = '<!-- snapi-action -->';
+          const marker = '<!-- break-check-action -->';
           const body = `${marker}\n${fs.readFileSync(reportPath, 'utf-8')}`;
 
           const { data: comments } = await github.rest.issues.listComments({
