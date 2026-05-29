@@ -14,9 +14,20 @@ import {
 } from "@microsoft/api-extractor";
 import type { ApiSnapshot, PackageEntry, PackageInfo } from "../types.js";
 
-export const SNAPSHOT_METADATA_VERSION = 3;
+export const SNAPSHOT_METADATA_VERSION = 4;
 export const METADATA_FILENAME = "snapi.snapshot.json";
 export const API_EXTRACTOR_PACKAGE = "@microsoft/api-extractor";
+
+/**
+ * Version of snapi's entry-point discovery semantics. Bump this whenever a
+ * change alters *which* entry points are enumerated (e.g. #37's wildcard
+ * subpath expansion would have bumped it). `detect` refuses a baseline whose
+ * recorded discovery version is older than the running one, because the two
+ * snapshots no longer cover the same surface and the diff would report newly
+ * enumerated subpaths as phantom additions. This is independent of the
+ * package version bump in package.json.
+ */
+export const DISCOVERY_VERSION = 1;
 
 const requireFromHere = createRequire(import.meta.url);
 
@@ -142,7 +153,8 @@ export class ApiExtractorRunner {
   }
 
   /**
-   * Write the per-package metadata file (schema v2) listing all generated entries.
+   * Write the per-package metadata file listing all generated entries, the
+   * producing snapi / API Extractor versions, and the discovery version.
    */
   writePackageMetadata(
     packageInfo: PackageInfo,
@@ -157,6 +169,7 @@ export class ApiExtractorRunner {
     const payload = {
       schemaVersion: SNAPSHOT_METADATA_VERSION,
       snapiVersion: getSnapiVersion(),
+      discoveryVersion: DISCOVERY_VERSION,
       apiExtractorPackage: API_EXTRACTOR_PACKAGE,
       apiExtractorVersion: getApiExtractorVersion(),
       packageName: packageInfo.name,

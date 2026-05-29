@@ -13,6 +13,7 @@ import {
 import {
   ApiExtractorRunner,
   API_EXTRACTOR_PACKAGE,
+  DISCOVERY_VERSION,
   getApiExtractorVersion,
   readPackageInfo,
 } from "../utils/api-extractor.js";
@@ -341,10 +342,12 @@ export class BreakingChangesDetector {
     const metadata = this.readSnapshotMetadata(metadataPath);
 
     this.assertCompatibleProducer(metadata, packageName, metadataPath);
+    this.assertCompatibleDiscovery(metadata, packageName, metadataPath);
 
     if (
       metadata &&
-      (metadata.schemaVersion === 2 || metadata.schemaVersion === 3) &&
+      typeof metadata.schemaVersion === "number" &&
+      metadata.schemaVersion >= 2 &&
       metadata.entries
     ) {
       return metadata.entries
@@ -394,6 +397,7 @@ export class BreakingChangesDetector {
   private readSnapshotMetadata(metadataPath: string): {
     schemaVersion?: number;
     snapiVersion?: string;
+    discoveryVersion?: number;
     apiExtractorPackage?: string;
     apiExtractorVersion?: string;
     packagePath?: string;
@@ -411,6 +415,7 @@ export class BreakingChangesDetector {
       const parsed = JSON.parse(fs.readFileSync(metadataPath, "utf-8")) as {
         schemaVersion?: unknown;
         snapiVersion?: unknown;
+        discoveryVersion?: unknown;
         apiExtractorPackage?: unknown;
         apiExtractorVersion?: unknown;
         packagePath?: unknown;
@@ -422,6 +427,7 @@ export class BreakingChangesDetector {
       const result: {
         schemaVersion?: number;
         snapiVersion?: string;
+        discoveryVersion?: number;
         apiExtractorPackage?: string;
         apiExtractorVersion?: string;
         packagePath?: string;
@@ -439,6 +445,9 @@ export class BreakingChangesDetector {
       }
       if (typeof parsed.snapiVersion === "string") {
         result.snapiVersion = parsed.snapiVersion;
+      }
+      if (typeof parsed.discoveryVersion === "number") {
+        result.discoveryVersion = parsed.discoveryVersion;
       }
       if (typeof parsed.apiExtractorPackage === "string") {
         result.apiExtractorPackage = parsed.apiExtractorPackage;
@@ -543,6 +552,59 @@ export class BreakingChangesDetector {
   }
 
   /**
+   * Refuse a baseline whose entry-point discovery semantics differ from the
+   * running snapi. When discovery changes which subpaths are enumerated (e.g.
+   * #37's wildcard expansion), an older baseline covers a smaller surface, so
+   * the diff reports every newly discovered subpath as a phantom addition.
+   * Failing fast forces a regeneration against the baseline ref, mirroring the
+   * API Extractor major gate above.
+   *
+   * Baselines that predate discovery-version stamping but still carry the
+   * producer stamp (schemaVersion >= 3) are also refused: we cannot prove
+   * their surface matches. Truly old baselines (schemaVersion < 3) fall
+   * through to the producer-stamp warning instead, since breaking every
+   * legacy baseline would be hostile and the per-subpath guard keeps their
+   * reports from ballooning.
+   */
+  private assertCompatibleDiscovery(
+    metadata: ReturnType<typeof this.readSnapshotMetadata>,
+    packageName: string,
+    metadataPath: string,
+  ): void {
+    if (!metadata) return;
+
+    const baselineDiscovery = metadata.discoveryVersion;
+
+    if (typeof baselineDiscovery === "number") {
+      if (baselineDiscovery < DISCOVERY_VERSION) {
+        throw new Error(
+          `Baseline for ${packageName} was produced with snapi discovery ` +
+            `version ${baselineDiscovery}; this snapi uses discovery version ` +
+            `${DISCOVERY_VERSION}. Entry-point discovery changed between them, ` +
+            `so the baseline enumerates a different API surface and the diff ` +
+            `would report newly discovered subpaths as phantom additions. ` +
+            `Regenerate the baseline with \`snapi snapshot\` against the ` +
+            `baseline ref, then retry.`,
+        );
+      }
+      return;
+    }
+
+    if (
+      typeof metadata.schemaVersion === "number" &&
+      metadata.schemaVersion >= SCHEMA_VERSION_WITH_PRODUCER_STAMP
+    ) {
+      throw new Error(
+        `Baseline for ${packageName} (schemaVersion ${metadata.schemaVersion} ` +
+          `at ${metadataPath}) predates snapi discovery-version stamping, so ` +
+          `its API surface cannot be guaranteed to match this snapi's ` +
+          `discovery (version ${DISCOVERY_VERSION}). Regenerate the baseline ` +
+          `with \`snapi snapshot\` against the baseline ref, then retry.`,
+      );
+    }
+  }
+
+  /**
    * Run per-entry diffs and aggregate them into a single PackageAnalysis.
    */
   private async analyzePackage(
@@ -577,9 +639,7 @@ export class BreakingChangesDetector {
       this.log(`No baseline for ${packageInfo.name}, treating as new package`);
     }
 
-    // 1. Diff every current subpath. A subpath with no baseline diffs against
-    // an empty surface so its public members surface as additions (and feed
-    // into the recommended version bump).
+    // 1. Diff every current subpath against its baseline entry.
     for (const entry of currentEntries) {
       const currentSnap = currentSnapshots.get(
         snapshotKey(packageInfo.name, entry.subpath),
@@ -588,24 +648,40 @@ export class BreakingChangesDetector {
 
       const baselineSnap = baselineBySubpath.get(entry.subpath);
 
-      // Skip the new-subpath addition path when there's no baseline at all
-      // for this package; reporting hundreds of "added" items the first time
-      // snapi runs against a package is just noise.
-      if (!baselineSnap && visibleBaselineEntries.length === 0) {
+      // A current subpath with no baseline entry.
+      if (!baselineSnap) {
+        // No baseline at all for this package: it's the first run against a
+        // new package, so reporting hundreds of "added" members is just
+        // noise. Stay silent.
+        if (visibleBaselineEntries.length === 0) {
+          continue;
+        }
+        // The package IS baselined but this specific subpath is new (a
+        // genuine new export, a coverage bump, or a discovery change that
+        // newly enumerates it). Collapse it to a single "new subpath"
+        // addition instead of diffing every member against an empty surface
+        // and flooding the report with one addition per exported member.
+        // Symmetric with the subpath-removal handling below.
+        const memberCount = this.diffAnalyzer.analyze(
+          null,
+          currentSnap.apiJsonPath,
+        ).length;
+        const addition = this.buildSubpathAdditionChange(
+          entry.subpath,
+          memberCount,
+        );
+        allChanges.push(addition);
         continue;
       }
 
       this.log(`Comparing ${packageInfo.name} ${entry.subpath}...`);
       let entryChanges = this.diffAnalyzer.analyze(
-        baselineSnap ? baselineSnap.apiJsonPath : null,
+        baselineSnap.apiJsonPath,
         currentSnap.apiJsonPath,
       );
 
       const ai = this.ensureAiAnalyzer();
-      // Skip AI review when this is a brand-new subpath (no baseline to
-      // diff against). The reviewer expects both sides for context, and an
-      // all-additions diff is exactly the case we already short-circuit.
-      if (ai && entryChanges.length > 0 && baselineSnap) {
+      if (ai && entryChanges.length > 0) {
         const hasNonAdditionChange = entryChanges.some(
           (c) => c.type !== ChangeType.ADDITION,
         );
@@ -675,6 +751,40 @@ export class BreakingChangesDetector {
         .slice(0, 12),
       type: ChangeType.BREAKING,
       severity: ChangeSeverity.MAJOR,
+      category: "export" as ChangeCategory,
+      name: subpath,
+      description,
+      subpath,
+    };
+  }
+
+  /**
+   * Synthesize a single ADDITION for a subpath that exists in the current
+   * build but has no baseline entry. We deliberately do NOT enumerate the
+   * subpath's members: when a package gains a subpath (genuine new export, a
+   * coverage bump, or a discovery change that newly enumerates a surface),
+   * diffing every member against an empty baseline floods the report with
+   * one addition per export. Collapsing to a single change keeps the report
+   * reviewable and the recommended bump (ADDITION -> minor) correct.
+   */
+  private buildSubpathAdditionChange(
+    subpath: string,
+    memberCount: number,
+  ): ApiChange {
+    const suffix =
+      memberCount > 0
+        ? ` (${memberCount} exported member${memberCount === 1 ? "" : "s"})`
+        : "";
+    const description = `New subpath export \`${subpath}\`${suffix}`;
+    const idSource = ["subpath-added", subpath].join("|");
+    return {
+      id: crypto
+        .createHash("sha256")
+        .update(idSource)
+        .digest("hex")
+        .slice(0, 12),
+      type: ChangeType.ADDITION,
+      severity: ChangeSeverity.MINOR,
       category: "export" as ChangeCategory,
       name: subpath,
       description,

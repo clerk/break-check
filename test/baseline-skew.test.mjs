@@ -80,10 +80,11 @@ test("snapshot metadata records snapi and API Extractor producer versions", () =
     assert.ok(existsSync(metadataPath));
     const metadata = JSON.parse(readFileSync(metadataPath, "utf-8"));
 
-    assert.equal(metadata.schemaVersion, 3);
+    assert.equal(metadata.schemaVersion, 4);
     assert.equal(metadata.apiExtractorPackage, "@microsoft/api-extractor");
     assert.match(metadata.apiExtractorVersion, /^\d+\.\d+\.\d+/);
     assert.match(metadata.snapiVersion, /^\d+\.\d+\.\d+/);
+    assert.equal(typeof metadata.discoveryVersion, "number");
   } finally {
     rmSync(workspace, { recursive: true, force: true });
   }
@@ -130,6 +131,96 @@ test("detect refuses a baseline whose API Extractor major differs", () => {
       detect.stderr,
       /major version mismatch|@microsoft\/api-extractor/i,
     );
+    assert.match(detect.stderr, /Regenerate the baseline/i);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("detect refuses a baseline whose discovery version is older", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    writeMinimalPackage(workspace, {
+      version: "1.0.0",
+      body: "export declare const root: number;\n",
+    });
+
+    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    assert.equal(baseline.status, 0, baseline.stderr);
+
+    // Rewrite the baseline metadata to claim an older discovery version,
+    // simulating a baseline produced before a discovery-semantics change
+    // (e.g. before wildcard subpath expansion enumerated more subpaths).
+    const metadataPath = join(
+      workspace,
+      "baseline",
+      "demo__pkg",
+      "snapi.snapshot.json",
+    );
+    const metadata = JSON.parse(readFileSync(metadataPath, "utf-8"));
+    metadata.discoveryVersion = 0;
+    writeJson(metadataPath, metadata);
+
+    const detect = runSnapi([
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "baseline",
+      "--format",
+      "json",
+      "--no-ai",
+    ]);
+
+    assert.notEqual(detect.status, 0);
+    assert.match(detect.stderr, /discovery version/i);
+    assert.match(detect.stderr, /Regenerate the baseline/i);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("detect refuses a producer-stamped baseline that predates discovery stamping", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    writeMinimalPackage(workspace, {
+      version: "1.0.0",
+      body: "export declare const root: number;\n",
+    });
+
+    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    assert.equal(baseline.status, 0, baseline.stderr);
+
+    // Simulate a baseline from the producer-stamp era (schemaVersion 3) that
+    // predates discovery-version stamping: keep the API Extractor stamp but
+    // drop the discovery stamp and downgrade schemaVersion to 3. We cannot
+    // prove its surface matches the running discovery, so it must be refused.
+    const metadataPath = join(
+      workspace,
+      "baseline",
+      "demo__pkg",
+      "snapi.snapshot.json",
+    );
+    const metadata = JSON.parse(readFileSync(metadataPath, "utf-8"));
+    delete metadata.discoveryVersion;
+    metadata.schemaVersion = 3;
+    writeJson(metadataPath, metadata);
+
+    const detect = runSnapi([
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "baseline",
+      "--format",
+      "json",
+      "--no-ai",
+    ]);
+
+    assert.notEqual(detect.status, 0);
+    assert.match(detect.stderr, /predates snapi discovery-version stamping/i);
     assert.match(detect.stderr, /Regenerate the baseline/i);
   } finally {
     rmSync(workspace, { recursive: true, force: true });

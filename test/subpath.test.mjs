@@ -110,10 +110,11 @@ test("snapshot generates one .api.json per non-wildcard subpath", () => {
     const metadata = JSON.parse(
       readFileSync(join(pkgDir, "snapi.snapshot.json"), "utf-8"),
     );
-    assert.equal(metadata.schemaVersion, 3);
+    assert.equal(metadata.schemaVersion, 4);
     assert.equal(metadata.apiExtractorPackage, "@microsoft/api-extractor");
     assert.match(metadata.apiExtractorVersion, /^\d+\.\d+\.\d+/);
     assert.match(metadata.snapiVersion, /^\d+\.\d+\.\d+/);
+    assert.equal(typeof metadata.discoveryVersion, "number");
     assert.equal(metadata.entries.length, 3);
     const subpaths = metadata.entries.map((e) => e.subpath).sort();
     assert.deepEqual(subpaths, [".", "./errors", "./react"]);
@@ -288,6 +289,73 @@ test("detect reports a newly added subpath as additions, not breaking", () => {
       "minor",
       "additions in a new subpath should require at least a minor bump",
     );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("detect collapses a newly enumerated subpath to a single addition, not one per member", () => {
+  // Regression for issue #40: an already-baselined package that gains a
+  // subpath (coverage bump or a discovery change that newly enumerates it)
+  // must not diff every member against an empty baseline and flood the report
+  // with one addition per export.
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+
+    writeSubpathOnlyPackage(workspace, {
+      version: "1.0.0",
+      surfaces: {
+        dts: { ".": "export declare const root: number;\n" },
+      },
+    });
+
+    const baseline = runSnapi(["snapshot", "-c", configPath, "-o", "baseline"]);
+    assert.equal(baseline.status, 0, baseline.stderr);
+
+    const manyMembers =
+      Array.from(
+        { length: 30 },
+        (_, i) => `export declare const member${i}: number;`,
+      ).join("\n") + "\n";
+
+    writeSubpathOnlyPackage(workspace, {
+      version: "1.1.0",
+      surfaces: {
+        dts: {
+          ".": "export declare const root: number;\n",
+          "./big": manyMembers,
+        },
+      },
+    });
+
+    const detect = runSnapi([
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "baseline",
+      "--format",
+      "json",
+      "--no-ai",
+    ]);
+    assert.equal(detect.status, 0, detect.stderr);
+
+    const result = JSON.parse(detect.stdout);
+    assert.equal(result.summary.breakingChanges, 0);
+    assert.equal(
+      result.summary.additions,
+      1,
+      "the 30-member subpath should produce exactly one addition, not a flood",
+    );
+
+    const bigChanges = result.packages[0].changes.filter(
+      (c) => c.subpath === "./big",
+    );
+    assert.equal(bigChanges.length, 1);
+    assert.equal(bigChanges[0].type, "addition");
+    assert.match(bigChanges[0].description, /New subpath export `\.\/big`/);
+    assert.equal(result.packages[0].recommendedVersionBump, "minor");
   } finally {
     rmSync(workspace, { recursive: true, force: true });
   }
