@@ -46,8 +46,20 @@ jobs:
           pnpm build
           node dist/cli.js snapshot --output "$GITHUB_WORKSPACE/.api-baseline-main"
 
-      - name: Install and build PR
+      - name: Build current checkout from PR head
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
+          # Pin the "current" side to the PR head commit, not the
+          # refs/pull/N/merge ref actions/checkout resolves by default. The
+          # merge ref is the PR head merged into the moving tip of the base
+          # branch, so once main advances the merged tree absorbs unrelated
+          # changes and break-check reports them as the PR's (issue #32).
+          # fetch-depth: 0 + persist-credentials: false means the SHA is already
+          # in local history, so check it out directly (a fresh fetch would fail
+          # without auth). Symmetric with the baseline worktree above.
+          git worktree add --detach /tmp/head-checkout "$HEAD_SHA"
+          cd /tmp/head-checkout
           pnpm install --frozen-lockfile
           pnpm build
 
@@ -58,8 +70,14 @@ jobs:
         continue-on-error: true
         run: |
           set -uo pipefail
+          # Diff from the PR head worktree. The baseline dir and report path live
+          # in the workspace, so pass them as absolute paths since cwd is now the
+          # worktree, not the workspace.
+          cd /tmp/head-checkout
           run_detect() {
-            node dist/cli.js detect --baseline .api-baseline-main --output api-report.md
+            node dist/cli.js detect \
+              --baseline "$GITHUB_WORKSPACE/.api-baseline-main" \
+              --output "$GITHUB_WORKSPACE/api-report.md"
           }
 
           # The baseline above is produced by the BASE ref's break-check, while this
