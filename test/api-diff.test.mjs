@@ -357,3 +357,100 @@ test("changing a property type is breaking", () => {
   assert.equal(counts(result).breaking, 1);
   assert.match(changesFor(result)[0].description, /Type changed/);
 });
+
+test("equivalent import notation is not a breaking change", () => {
+  // Regression for #44. API Extractor resolves a namespace-import alias
+  // (`_dep.Foo`) and an inline import type (`import("@demo/dep").Foo`) to the
+  // same canonical reference; only the spelling differs, and which spelling
+  // appears depends on how a package builds its `.d.ts`. The static differ
+  // must treat the two as identical rather than leaning on the AI reviewer.
+  const workspace = mkdtempSync(join(tmpdir(), "break-check-notation-"));
+  try {
+    const pkgDir = join(workspace, "packages", "pkg");
+    const depDir = join(workspace, "node_modules", "@demo", "dep");
+    mkdirSync(join(pkgDir, "dist"), { recursive: true });
+    mkdirSync(depDir, { recursive: true });
+
+    // A resolvable dependency so API Extractor attaches a canonicalReference
+    // to the imported type (the field the differ canonicalizes against).
+    writeFileSync(
+      join(depDir, "package.json"),
+      JSON.stringify({
+        name: "@demo/dep",
+        version: "1.0.0",
+        types: "index.d.ts",
+      }),
+    );
+    writeFileSync(
+      join(depDir, "index.d.ts"),
+      "export interface Foo { id: string; }\n",
+    );
+
+    writeFileSync(
+      join(workspace, "break-check.config.json"),
+      JSON.stringify({
+        packages: ["packages/pkg"],
+        snapshotDir: "current",
+        mainBranch: "main",
+      }),
+    );
+    writeFileSync(
+      join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "@demo/pkg",
+        version: "1.0.0",
+        types: "dist/index.d.ts",
+      }),
+    );
+
+    // Baseline: namespace-import alias spelling.
+    writeFileSync(
+      join(pkgDir, "dist", "index.d.ts"),
+      'import * as _dep from "@demo/dep";\n' +
+        "export declare const a: _dep.Foo;\n" +
+        "export declare function make(): _dep.Foo;\n" +
+        "export declare function use(opt: _dep.Foo): void;\n",
+    );
+    const snapshot = runBreakCheck(
+      [
+        "snapshot",
+        "-c",
+        join(workspace, "break-check.config.json"),
+        "-o",
+        "baseline",
+      ],
+      workspace,
+    );
+    assert.equal(snapshot.status, 0, snapshot.stderr || snapshot.stdout);
+
+    // Current: inline import type spelling for the same, unchanged types.
+    writeFileSync(
+      join(pkgDir, "dist", "index.d.ts"),
+      'export declare const a: import("@demo/dep").Foo;\n' +
+        'export declare function make(): import("@demo/dep").Foo;\n' +
+        'export declare function use(opt: import("@demo/dep").Foo): void;\n',
+    );
+    const detect = runBreakCheck(
+      [
+        "detect",
+        "-c",
+        join(workspace, "break-check.config.json"),
+        "--baseline",
+        "baseline",
+        "--format",
+        "json",
+        "--no-ai",
+      ],
+      workspace,
+    );
+    assert.equal(detect.status, 0, detect.stderr || detect.stdout);
+    const result = JSON.parse(detect.stdout);
+    assert.deepEqual(counts(result), {
+      breaking: 0,
+      nonBreaking: 0,
+      additions: 0,
+    });
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});

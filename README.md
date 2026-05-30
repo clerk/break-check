@@ -293,6 +293,10 @@ structurally. The following are deliberately **not** flagged:
 - container-level diffs that are already explained by their member-level diffs
   (e.g., adding a property to an interface produces one addition, not an
   addition plus an interface modification)
+- equivalent import-reference notation: a namespace-import alias (`_ns.Foo`)
+  and an inline import type (`import("pkg").Foo`) resolve to the same type, so
+  the difference in spelling (which depends on how a package builds its
+  `.d.ts`) is normalized away before diffing
 
 What Break Check does **not** yet do:
 
