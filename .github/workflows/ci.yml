@@ -61,4 +61,17 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Verify changeset is present
-        run: pnpm changeset status --since=origin/${{ github.base_ref }}
+        # Dependabot here only bumps the github-actions group (CI-only, no
+        # published-package impact), so its grouped PRs don't need a changeset.
+        # The job still runs and exits 0, satisfying this required check without
+        # leaving the PR stuck. Actor/base ref go through env to keep the value
+        # out of the shell-command string.
+        env:
+          ACTOR: ${{ github.actor }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "$ACTOR" = "dependabot[bot]" ]; then
+            echo "Dependabot PR: changeset not required (action bumps are CI-only)."
+            exit 0
+          fi
+          pnpm changeset status --since="origin/$BASE_REF"
