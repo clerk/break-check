@@ -1,7 +1,7 @@
 name: AI Smoke
 
 # Runs the AI-verdict tests that talk to the real Anthropic API. Kept out of
-# the required-checks matrix (publish-preview.yml) so a flaky model call or
+# the required-checks matrix (ci.yml) so a flaky model call or
 # Anthropic outage cannot block PRs. Triggers:
 #   - workflow_dispatch (run manually from the Actions tab)
 #   - nightly schedule (catches regressions in main against the live API)
