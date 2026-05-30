@@ -65,8 +65,13 @@ jobs:
 
       - name: Detect API changes
         id: detect
-        env:
-          BREAK_CHECK_ANTHROPIC_API_KEY: ${{ secrets.BREAK_CHECK_ANTHROPIC_API_KEY }}
+        # Deliberately no BREAK_CHECK_ANTHROPIC_API_KEY here. This step runs the
+        # dist/cli.js built from the PR head, which is untrusted on same-repo
+        # branch PRs (forks never receive secrets). Putting the Anthropic key in
+        # this env would let a malicious PR's build exfiltrate it. The structural
+        # diff is all this self-dogfood check needs; the AI reviewer is exercised
+        # separately in ai-smoke.yml, which only runs in trusted contexts
+        # (workflow_dispatch + nightly schedule on main).
         continue-on-error: true
         run: |
           set -uo pipefail
