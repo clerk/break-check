@@ -222,18 +222,17 @@ export class ApiDiffAnalyzer {
         kind: "callable",
         params: (member.parameters ?? []).map((p) => ({
           name: p.parameterName,
-          type: this.normalizeType(
-            this.sliceTokens(member.excerptTokens, p.parameterTypeTokenRange),
+          type: this.canonicalType(
+            member.excerptTokens,
+            p.parameterTypeTokenRange,
           ),
           isOptional: Boolean(p.isOptional),
           isRest: Boolean(p.isRest),
         })),
         returnType: member.returnTypeTokenRange
-          ? this.normalizeType(
-              this.sliceTokens(
-                member.excerptTokens,
-                member.returnTypeTokenRange,
-              ),
+          ? this.canonicalType(
+              member.excerptTokens,
+              member.returnTypeTokenRange,
             )
           : "",
       };
@@ -243,10 +242,8 @@ export class ApiDiffAnalyzer {
       return {
         kind: "typed",
         type: member.typeTokenRange
-          ? this.normalizeType(
-              this.sliceTokens(member.excerptTokens, member.typeTokenRange),
-            )
-          : this.normalizeType(this.tokensToText(member.excerptTokens)),
+          ? this.canonicalType(member.excerptTokens, member.typeTokenRange)
+          : this.canonicalType(member.excerptTokens),
         isReadonly: Boolean(member.isReadonly),
       };
     }
@@ -255,11 +252,9 @@ export class ApiDiffAnalyzer {
       return {
         kind: "enumMember",
         initializer: member.initializerTokenRange
-          ? this.normalizeType(
-              this.sliceTokens(
-                member.excerptTokens,
-                member.initializerTokenRange,
-              ),
+          ? this.canonicalType(
+              member.excerptTokens,
+              member.initializerTokenRange,
             )
           : "",
       };
@@ -269,10 +264,8 @@ export class ApiDiffAnalyzer {
       return {
         kind: "typed",
         type: member.typeTokenRange
-          ? this.normalizeType(
-              this.sliceTokens(member.excerptTokens, member.typeTokenRange),
-            )
-          : this.normalizeType(this.tokensToText(member.excerptTokens)),
+          ? this.canonicalType(member.excerptTokens, member.typeTokenRange)
+          : this.canonicalType(member.excerptTokens),
         isReadonly: false,
       };
     }
@@ -283,7 +276,7 @@ export class ApiDiffAnalyzer {
 
     return {
       kind: "opaque",
-      signature: this.tokensToText(member.excerptTokens),
+      signature: this.canonicalType(member.excerptTokens),
     };
   }
 
@@ -347,9 +340,17 @@ export class ApiDiffAnalyzer {
       );
     }
 
-    // Opaque fallback: normalized signature compare
-    const a = this.normalizeType(baseline.snippet);
-    const b = this.normalizeType(current.snippet);
+    // Opaque fallback: canonical signature compare. The opaque shape already
+    // carries an import-reference-canonicalized signature; fall back to the
+    // raw snippet for any shape that does not.
+    const a =
+      baseline.shape.kind === "opaque"
+        ? baseline.shape.signature
+        : this.normalizeType(baseline.snippet);
+    const b =
+      current.shape.kind === "opaque"
+        ? current.shape.signature
+        : this.normalizeType(current.snippet);
     if (a === b) {
       return null;
     }
@@ -639,15 +640,62 @@ export class ApiDiffAnalyzer {
     return tokens.map((t) => t.text).join("");
   }
 
-  private sliceTokens(
+  /**
+   * Build a comparison string for a type excerpt, canonicalizing import
+   * references so equivalent notations compare equal. API Extractor resolves a
+   * namespace-import alias (`_ns.Foo`) and an inline import type
+   * (`import("pkg").Foo`) to the same canonical reference; both spellings show
+   * up depending on how the package built its `.d.ts`. Without this, a package
+   * that switches its declaration-build strategy surfaces every imported type
+   * as a spurious breaking change (see issue #44). We rewrite each resolved
+   * reference token to a single `import("pkg").Name` spelling and drop API
+   * Extractor's redundant `import("pkg").` content prefix that precedes it.
+   */
+  private canonicalType(
     tokens: ExcerptToken[] | undefined,
-    range: TokenRange,
+    range?: TokenRange,
   ): string {
     if (!tokens) return "";
-    return tokens
-      .slice(range.startIndex, range.endIndex)
-      .map((t) => t.text)
+    const slice = range
+      ? tokens.slice(range.startIndex, range.endIndex)
+      : tokens;
+    const text = slice
+      .map((t) =>
+        t.kind === "Reference" && t.canonicalReference
+          ? this.canonicalizeReference(t.canonicalReference)
+          : t.text,
+      )
       .join("");
+    return this.normalizeType(this.collapseImportQualifiers(text));
+  }
+
+  /**
+   * Convert an API Extractor canonical reference (`pkg!Symbol:meaning`) into a
+   * stable `import("pkg").Symbol` spelling. The trailing `:meaning` is dropped;
+   * package + symbol is the identity that distinguishes one reference from
+   * another. Returns the raw reference unchanged when it is not in the expected
+   * shape (e.g. a reference with no package component).
+   */
+  private canonicalizeReference(ref: string): string {
+    const bang = ref.indexOf("!");
+    if (bang === -1) return ref;
+    const pkg = ref.slice(0, bang);
+    let symbol = ref.slice(bang + 1);
+    const colon = symbol.lastIndexOf(":");
+    if (colon !== -1) symbol = symbol.slice(0, colon);
+    if (!pkg || !symbol) return ref;
+    return `import("${pkg}").${symbol}`;
+  }
+
+  /**
+   * After a reference token is rewritten to `import("pkg").Name`, API
+   * Extractor's own `import("pkg").` content prefix (emitted for the inline
+   * spelling) is left dangling in front of it. Drop a leading import qualifier
+   * that immediately precedes another one so the inline spelling collapses to
+   * the same string as the namespace-alias spelling, which carries no prefix.
+   */
+  private collapseImportQualifiers(text: string): string {
+    return text.replace(/import\((["'])[^"']*\1\)\.(?=import\(["'])/g, "");
   }
 
   /**
