@@ -37,6 +37,27 @@ import {
 import * as crypto from "node:crypto";
 
 /**
+ * Guard against path traversal in baseline metadata. `writeSnapshotMetadata`
+ * always records `apiJsonFile` / `apiReportFile` as bare `path.basename`
+ * filenames, so any value carrying a path separator, a `.`/`..` segment, or a
+ * NUL is malformed (or a tampered/committed baseline trying to escape the
+ * package directory once it is `path.join`ed). Reject anything that is not a
+ * single contained path segment so a crafted snapshot can't read an arbitrary
+ * file off disk.
+ */
+function isContainedFilename(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name !== "." &&
+    name !== ".." &&
+    !name.includes("/") &&
+    !name.includes("\\") &&
+    !name.includes("\0") &&
+    path.basename(name) === name
+  );
+}
+
+/**
  * Options for the detector
  */
 export interface DetectorOptions {
@@ -505,13 +526,20 @@ export class BreakingChangesDetector {
             typeof (e as Record<string, unknown>).apiJsonFile === "string"
           ) {
             const cast = e as Record<string, unknown>;
+            const apiJsonFile = cast.apiJsonFile as string;
+            // Drop entries whose recorded filenames aren't plain, contained
+            // names; see isContainedFilename. Defends against a tampered or
+            // committed baseline traversing out of the package directory.
+            if (!isContainedFilename(apiJsonFile)) continue;
+            const apiReportFile =
+              typeof cast.apiReportFile === "string" &&
+              isContainedFilename(cast.apiReportFile)
+                ? cast.apiReportFile
+                : null;
             entries.push({
               subpath: cast.subpath as string,
-              apiJsonFile: cast.apiJsonFile as string,
-              apiReportFile:
-                typeof cast.apiReportFile === "string"
-                  ? (cast.apiReportFile as string)
-                  : null,
+              apiJsonFile,
+              apiReportFile,
             });
           }
         }
