@@ -27,7 +27,49 @@ jobs:
           node-version: "24"
           cache: "pnpm"
 
+      - name: Try fetching baseline artifact
+        id: fetch-baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_REF: ${{ github.base_ref }}
+          ARTIFACT_NAME: break-check-baseline-main
+          REPO: ${{ github.repository }}
+          BASELINE_DIR: ${{ github.workspace }}/.api-baseline-main
+        run: |
+          set -euo pipefail
+
+          fallback() {
+            echo "::notice::$1 Falling back to base-ref rebuild."
+            echo "fetched=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+
+          ARTIFACT=$(gh api \
+            "repos/$REPO/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" \
+            --jq "[.artifacts[] | select(.workflow_run.head_branch == \"$BASE_REF\" and .expired == false)] | .[0]") \
+            || fallback "Artifact lookup failed."
+
+          if [ -z "$ARTIFACT" ] || [ "$ARTIFACT" = "null" ]; then
+            fallback "No baseline artifact '$ARTIFACT_NAME' on '$BASE_REF'."
+          fi
+
+          ARTIFACT_ID=$(echo "$ARTIFACT" | jq -r '.id')
+          RUN_ID=$(echo "$ARTIFACT" | jq -r '.workflow_run.id')
+
+          rm -rf "$BASELINE_DIR"
+          mkdir -p "$BASELINE_DIR"
+          ZIP_PATH="$RUNNER_TEMP/break-check-baseline.zip"
+          gh api "repos/$REPO/actions/artifacts/$ARTIFACT_ID/zip" > "$ZIP_PATH" \
+            || fallback "Artifact download failed."
+          unzip -q "$ZIP_PATH" -d "$BASELINE_DIR" \
+            || fallback "Artifact unzip failed."
+          rm -f "$ZIP_PATH"
+
+          echo "fetched=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::Using baseline artifact '$ARTIFACT_NAME' from run $RUN_ID."
+
       - name: Snapshot baseline from base branch
+        if: steps.fetch-baseline.outputs.fetched != 'true'
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
