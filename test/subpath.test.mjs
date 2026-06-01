@@ -646,6 +646,249 @@ test("detect surfaces a breaking change under a wildcard subpath", () => {
   }
 });
 
+/**
+ * Build a package whose surface lives behind a `./*` wildcard pointing into
+ * `dist/runtime`, mirroring a rolldown/tsdown layout. `runtime` maps a file
+ * basename (e.g. `index-Dq-_K2VH`) to its `.d.mts` body; `root`, when given,
+ * is the `.` entry body.
+ */
+function writeRuntimeWildcardPackage(
+  workspace,
+  { version = "1.0.0", root, runtime },
+) {
+  const packageDir = join(workspace, "packages", "pkg");
+  mkdirSync(packageDir, { recursive: true });
+
+  const exports = {};
+  if (root !== undefined) {
+    writeDts(join(packageDir, "dist/index.d.ts"), root);
+    exports["."] = { import: { types: "./dist/index.d.ts" } };
+  }
+  for (const [name, body] of Object.entries(runtime)) {
+    writeDts(join(packageDir, `dist/runtime/${name}.d.mts`), body);
+  }
+  exports["./*"] = { import: { types: "./dist/runtime/*.d.mts" } };
+  exports["./package.json"] = "./package.json";
+
+  writeJson(join(packageDir, "package.json"), {
+    name: "@demo/pkg",
+    version,
+    exports,
+  });
+  return packageDir;
+}
+
+function snapshotSubpaths(workspace, dir = "snapshots") {
+  const metadata = JSON.parse(
+    readFileSync(
+      join(workspace, dir, "demo__pkg", "break-check.snapshot.json"),
+      "utf-8",
+    ),
+  );
+  return metadata.entries.map((e) => e.subpath).sort();
+}
+
+test("snapshot drops content-hashed chunks under a wildcard subpath", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    // Two hash-named shared chunks plus one real flat entry, all caught by the
+    // same `./*` glob. The chunks must not become public subpaths.
+    writeRuntimeWildcardPackage(workspace, {
+      root: "export declare const root: number;\n",
+      runtime: {
+        "index-Dq-_K2VH": "export declare function chunkA(): void;\n",
+        "url-CcPzUbGM": "export declare function chunkB(): void;\n",
+        helpers: "export declare function help(): string;\n",
+      },
+    });
+
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+
+    assert.deepEqual(snapshotSubpaths(workspace), [".", "./helpers"]);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("detect reports no phantom change when a chunk hash flips", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    writeRuntimeWildcardPackage(workspace, {
+      root: "export declare const root: number;\n",
+      runtime: {
+        "index-AAAA1111": "export declare function chunk(): void;\n",
+        helpers: "export declare function help(): string;\n",
+      },
+    });
+
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
+    assert.equal(baseline.status, 0, baseline.stderr);
+
+    // Rebuild: the chunk's hash changes (its content shifted), so the file is
+    // renamed. The real surface (`.`, `./helpers`) is untouched.
+    rmSync(join(workspace, "packages", "pkg"), {
+      recursive: true,
+      force: true,
+    });
+    writeRuntimeWildcardPackage(workspace, {
+      root: "export declare const root: number;\n",
+      runtime: {
+        "index-BBBB2222": "export declare function chunk(): void;\n",
+        helpers: "export declare function help(): string;\n",
+      },
+    });
+
+    const detect = runBreakCheck([
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "baseline",
+      "--format",
+      "json",
+      "--no-ai",
+    ]);
+    assert.equal(detect.status, 0, detect.stderr);
+
+    const result = JSON.parse(detect.stdout);
+    assert.equal(result.summary.breakingChanges, 0);
+    const chunkChanges = result.packages[0].changes.filter((c) =>
+      /index-(AAAA1111|BBBB2222)/.test(c.subpath ?? c.name ?? ""),
+    );
+    assert.equal(
+      chunkChanges.length,
+      0,
+      "no add/remove should be reported for the renamed chunk",
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("detect reconciles an older baseline that recorded chunk subpaths", () => {
+  const workspace = workspaceDir();
+  try {
+    // Snapshot with the heuristic OFF so the baseline records the chunk as a
+    // real subpath, mimicking a baseline committed before this filter existed.
+    const configPath = writeConfig(workspace, { ignoreHashedChunks: false });
+    writeRuntimeWildcardPackage(workspace, {
+      root: "export declare const root: number;\n",
+      runtime: {
+        "index-AAAA1111": "export declare function chunk(): void;\n",
+        helpers: "export declare function help(): string;\n",
+      },
+    });
+
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
+    assert.equal(baseline.status, 0, baseline.stderr);
+    assert.ok(
+      snapshotSubpaths(workspace, "baseline").includes("./index-AAAA1111"),
+      "baseline should have recorded the chunk while the heuristic was off",
+    );
+
+    // Flip the heuristic back on (the default) and rebuild with a new chunk
+    // hash. The baseline's chunk entry must be dropped on read, not reported
+    // as a removed subpath.
+    writeConfig(workspace, { ignoreHashedChunks: true });
+    rmSync(join(workspace, "packages", "pkg"), {
+      recursive: true,
+      force: true,
+    });
+    writeRuntimeWildcardPackage(workspace, {
+      root: "export declare const root: number;\n",
+      runtime: {
+        "index-BBBB2222": "export declare function chunk(): void;\n",
+        helpers: "export declare function help(): string;\n",
+      },
+    });
+
+    const detect = runBreakCheck([
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "baseline",
+      "--format",
+      "json",
+      "--no-ai",
+    ]);
+    assert.equal(detect.status, 0, detect.stderr);
+
+    const result = JSON.parse(detect.stdout);
+    assert.equal(
+      result.summary.breakingChanges,
+      0,
+      "an old baseline's chunk entry must not surface as a phantom removal",
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("ignoreSubpaths accepts globs during wildcard discovery", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace, {
+      ignoreSubpaths: ["./internal-*"],
+    });
+    writeRuntimeWildcardPackage(workspace, {
+      root: "export declare const root: number;\n",
+      runtime: {
+        "internal-foo": "export declare function foo(): void;\n",
+        "internal-bar": "export declare function bar(): void;\n",
+        public: "export declare function pub(): string;\n",
+      },
+    });
+
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+
+    assert.deepEqual(snapshotSubpaths(workspace), [".", "./public"]);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("ignoreHashedChunks:false keeps chunk subpaths (preserves #26)", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace, { ignoreHashedChunks: false });
+    writeRuntimeWildcardPackage(workspace, {
+      root: "export declare const root: number;\n",
+      runtime: {
+        "index-AAAA1111": "export declare function chunk(): void;\n",
+        helpers: "export declare function help(): string;\n",
+      },
+    });
+
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+
+    assert.deepEqual(snapshotSubpaths(workspace), [
+      ".",
+      "./helpers",
+      "./index-AAAA1111",
+    ]);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("snapshot warns and continues when one subpath fails extraction", () => {
   const workspace = workspaceDir();
   try {

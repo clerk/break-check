@@ -123,15 +123,26 @@ stderr so stdout remains parseable JSON.
 
 ## Configuration
 
-| Option             | Type     | Default          | Description                                  |
-| ------------------ | -------- | ---------------- | -------------------------------------------- |
-| `packages`         | string[] | required         | Package paths to analyze                     |
-| `snapshotDir`      | string   | `.api-snapshots` | Snapshot output directory                    |
-| `mainBranch`       | string   | `main`           | Base branch name for repo-specific workflows |
-| `checkVersionBump` | boolean  | `true`           | Mark insufficient version bumps in reports   |
-| `outputFormat`     | string   | `markdown`       | Default report format                        |
-| `ignoreSubpaths`   | string[] | `[]`             | Subpath exports to skip during discovery     |
-| `ai`               | object   | unset            | AI reviewer options (see below)              |
+| Option               | Type     | Default          | Description                                            |
+| -------------------- | -------- | ---------------- | ------------------------------------------------------ |
+| `packages`           | string[] | required         | Package paths to analyze                               |
+| `snapshotDir`        | string   | `.api-snapshots` | Snapshot output directory                              |
+| `mainBranch`         | string   | `main`           | Base branch name for repo-specific workflows           |
+| `checkVersionBump`   | boolean  | `true`           | Mark insufficient version bumps in reports             |
+| `outputFormat`       | string   | `markdown`       | Default report format                                  |
+| `ignoreSubpaths`     | string[] | `[]`             | Subpath exports to skip (exact, or glob with `*`/`**`) |
+| `ignoreHashedChunks` | boolean  | `true`           | Drop content-hashed bundler chunks matched by `./*`    |
+| `ai`                 | object   | unset            | AI reviewer options (see below)                        |
+
+A `"./*"` export that points into a bundler output dir will glob in the shared
+chunks emitted by rolldown/tsdown/esbuild/rollup (`index-Dq-_K2VH.mjs`,
+`url-CcPzUbGM.mjs`, ...). Those chunks are not public API, and their content
+hash changes every build, so left alone they show up as a removed subpath plus
+an added subpath on every meaningful change. `ignoreHashedChunks` (on by
+default) drops wildcard matches whose basename ends in a `-<8-char hash>`
+suffix. For anything the heuristic misses, `ignoreSubpaths` accepts globs
+(`./internal-*`, `./chunk-*`). Set `ignoreHashedChunks: false` to treat every
+wildcard match as a real subpath.
 
 ### AI reviewer config
 

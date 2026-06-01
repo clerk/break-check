@@ -120,6 +120,18 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   through `package.json#exports`, not just `.`. A package with
   `exports["./foo"]` produces a separate snapshot file. See
   `test/subpath.test.mjs` for the contract.
+- **Hashed bundler chunks under `./*` are filtered.** When a wildcard export
+  globs into a bundler output dir, the shared content-hashed chunks
+  (`index-Dq-_K2VH`, `url-CcPzUbGM`) are not public API but their hash flips
+  every build, so naive expansion reports phantom remove+add subpaths.
+  `isHashedChunkSubpath` (in `utils/api-extractor.ts`) drops wildcard matches
+  whose basename ends in a high-entropy `-<8 base64url chars>` suffix; it is on
+  by default and toggled via the `ignoreHashedChunks` config field. The filter
+  is applied symmetrically, both in `discoverEntries` (current build) and on the
+  baseline read in `detector.ts#analyzePackage`, so an older baseline that
+  recorded chunk subpaths reconciles without a `DISCOVERY_VERSION` bump.
+  `ignoreSubpaths` is now glob-aware (`makeSubpathMatcher`) as the explicit
+  escape hatch for anything the heuristic misses.
 - **Type variance is intentionally pessimistic**: any type change is
   flagged as breaking, even when the new type is strictly wider. The
   AI reviewer is currently the only thing that can downgrade those.

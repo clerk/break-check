@@ -78,8 +78,96 @@ export interface ApiExtractorRunnerOptions {
  * Options for entry-point discovery
  */
 export interface FindEntryPointsOptions {
-  /** Subpath keys to drop from discovery (exact match, e.g. `./internal`). */
+  /**
+   * Subpath keys to drop from discovery. An entry without `*` is matched
+   * exactly (e.g. `./internal`); an entry containing `*` is treated as a glob
+   * (`*` matches within a path segment, `**` across segments) so unstable or
+   * unpredictable subpaths can be suppressed without enumerating them.
+   */
   ignoreSubpaths?: string[];
+  /**
+   * Drop wildcard-expanded subpaths whose basename looks like a content-hashed
+   * bundler chunk (e.g. `./index-Dq-_K2VH`). Defaults to `true`. See
+   * `isHashedChunkSubpath`.
+   */
+  ignoreHashedChunks?: boolean;
+}
+
+/**
+ * Heuristic: does a wildcard-expanded subpath look like a content-hashed
+ * bundler chunk (rolldown / tsdown / esbuild / rollup) rather than a real,
+ * importable public entry point?
+ *
+ * Those bundlers name shared chunks `<name>-<hash>` where the hash is an
+ * 8-character base64url token (`A-Za-z0-9_-`). The hash flips whenever the
+ * chunk's contents change, so when such a file is exposed through a `./*`
+ * wildcard it produces a different subpath every build, which the diff reads
+ * as a removed + added subpath (a phantom breaking change). These chunks are
+ * not public API; the real entry points that reference them already roll their
+ * contents in via API Extractor's `includeForgottenExports`.
+ *
+ * To avoid misclassifying legitimate dictionary-word subpaths (e.g.
+ * `./use-callback`, whose `callback` suffix is also 8 characters), the 8-char
+ * suffix must look high-entropy: contain a digit, an uppercase letter, or a
+ * `_`. The real hashes (`Dq-_K2VH`, `CcPzUbGM`, `ZibUt-Ji`, `Dvy3tJz6`) all
+ * satisfy this; an all-lowercase English word does not.
+ */
+export function isHashedChunkSubpath(subpath: string): boolean {
+  const segment = subpath.replace(/^\.\//, "").split("/").pop() ?? "";
+  const match = /-([A-Za-z0-9_-]{8})$/.exec(segment);
+  if (!match) return false;
+  const hash = match[1];
+  return /[0-9]/.test(hash) || /[A-Z]/.test(hash) || /_/.test(hash);
+}
+
+/**
+ * Convert an `ignoreSubpaths` glob to a regex source: `**` matches across path
+ * segments (`.*`), a single `*` matches within one segment (`[^/]*`), and every
+ * other character is taken literally (regex metacharacters escaped). Scanned
+ * left to right so `**` is consumed before the single-`*` case.
+ */
+function globToRegExpSource(pattern: string): string {
+  let source = "";
+  for (let i = 0; i < pattern.length; i++) {
+    const ch = pattern[i];
+    if (ch === "*") {
+      if (pattern[i + 1] === "*") {
+        source += ".*";
+        i++;
+      } else {
+        source += "[^/]*";
+      }
+      continue;
+    }
+    source += /[.+?^${}()|[\]\\]/.test(ch) ? `\\${ch}` : ch;
+  }
+  return source;
+}
+
+/**
+ * Build a predicate that tests a subpath against a list of `ignoreSubpaths`
+ * patterns. Patterns without `*` match exactly (the historical behavior);
+ * patterns with `*` are compiled to a regex where `*` matches any run of
+ * non-`/` characters and `**` matches across `/`. Match is against the full
+ * subpath key (e.g. `./index-Dq-_K2VH`). An empty list never matches.
+ */
+export function makeSubpathMatcher(
+  patterns: string[],
+): (subpath: string) => boolean {
+  if (patterns.length === 0) return () => false;
+
+  const exact = new Set<string>();
+  const regexes: RegExp[] = [];
+  for (const pattern of patterns) {
+    if (!pattern.includes("*")) {
+      exact.add(pattern);
+      continue;
+    }
+    regexes.push(new RegExp(`^${globToRegExpSource(pattern)}$`));
+  }
+
+  return (subpath: string): boolean =>
+    exact.has(subpath) || regexes.some((re) => re.test(subpath));
 }
 
 interface DiscoveryResult {
@@ -251,7 +339,8 @@ export class ApiExtractorRunner {
       return result;
     }
 
-    const ignore = new Set(options.ignoreSubpaths ?? []);
+    const ignoreMatch = makeSubpathMatcher(options.ignoreSubpaths ?? []);
+    const dropHashedChunks = options.ignoreHashedChunks ?? true;
     const exports = packageJson.exports;
 
     if (exports && typeof exports === "object" && !Array.isArray(exports)) {
@@ -260,7 +349,7 @@ export class ApiExtractorRunner {
         exports as Record<string, unknown>,
       )) {
         if (!subpath.startsWith(".")) continue;
-        if (ignore.has(subpath)) continue;
+        if (ignoreMatch(subpath)) continue;
         if (subpath === "./package.json") continue;
 
         if (subpath.includes("*")) {
@@ -274,7 +363,11 @@ export class ApiExtractorRunner {
             continue;
           }
           for (const e of expanded) {
-            if (ignore.has(e.subpath)) continue;
+            if (ignoreMatch(e.subpath)) continue;
+            // Content-hashed bundler chunks caught by a `./*` glob are not
+            // public API and their names change every build; dropping them
+            // keeps the diff from churning. See `isHashedChunkSubpath`.
+            if (dropHashedChunks && isHashedChunkSubpath(e.subpath)) continue;
             if (seen.has(e.subpath)) continue;
             seen.add(e.subpath);
             result.entries.push(e);
@@ -301,7 +394,7 @@ export class ApiExtractorRunner {
 
     // Fallback path: no exports map (or it produced no usable entries).
     // Resolve a single root entry from `types`/`typings`/`main` + sensible defaults.
-    if (ignore.has(".")) return result;
+    if (ignoreMatch(".")) return result;
 
     const rootTypes = resolveRootTypes(packageJson, packagePath);
     if (rootTypes) {

@@ -18,6 +18,8 @@ import {
   LEGACY_METADATA_FILENAME,
   getApiExtractorVersion,
   readPackageInfo,
+  isHashedChunkSubpath,
+  makeSubpathMatcher,
 } from "../utils/api-extractor.js";
 import { ApiDiffAnalyzer } from "../analyzers/api-diff.js";
 import { VersionAnalyzer } from "../analyzers/version.js";
@@ -253,6 +255,7 @@ export class BreakingChangesDetector {
     for (const packagePath of packagePaths) {
       const packageInfo = readPackageInfo(packagePath, {
         ignoreSubpaths: this.config.ignoreSubpaths,
+        ignoreHashedChunks: this.config.ignoreHashedChunks,
       });
 
       if (!packageInfo) {
@@ -334,6 +337,7 @@ export class BreakingChangesDetector {
     for (const packagePath of packagePaths) {
       const packageInfo = readPackageInfo(packagePath, {
         ignoreSubpaths: this.config.ignoreSubpaths,
+        ignoreHashedChunks: this.config.ignoreHashedChunks,
       });
       if (!packageInfo) continue;
 
@@ -671,12 +675,18 @@ export class BreakingChangesDetector {
     let previousVersion = "0.0.0";
     let aiReviewedBy: string | undefined;
 
-    // Drop baseline entries whose subpath is now in `ignoreSubpaths`. The
-    // user has opted out of tracking these surfaces, so we must not surface
-    // removal noise for them.
-    const ignored = new Set(this.config.ignoreSubpaths ?? []);
+    // Drop baseline entries the user has opted out of (`ignoreSubpaths`, now
+    // glob-aware) so we don't surface removal noise for them. Also drop
+    // content-hashed bundler chunks: an older baseline produced before the
+    // hashed-chunk filter still records them, and the current discovery no
+    // longer enumerates them, so without this they'd read as phantom removals.
+    // Filtering both sides identically reconciles old baselines without a
+    // discovery-version bump.
+    const ignoreMatch = makeSubpathMatcher(this.config.ignoreSubpaths ?? []);
     const visibleBaselineEntries = baselineEntries.filter(
-      (s) => !ignored.has(s.subpath),
+      (s) =>
+        !ignoreMatch(s.subpath) &&
+        !(this.config.ignoreHashedChunks && isHashedChunkSubpath(s.subpath)),
     );
 
     const baselineBySubpath = new Map<string, ApiSnapshot>(
