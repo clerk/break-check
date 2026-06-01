@@ -69,11 +69,22 @@ export const ConfigSchema = z.object({
   outputFormat: z.enum(["markdown", "json"]).default("markdown"),
 
   /**
-   * Subpath exports to skip during discovery. Exact-match against `exports`
-   * map keys (`./internal`, `./types`, etc.). Wildcards in the export map are
-   * always skipped regardless of this setting.
+   * Subpath exports to skip during discovery. An entry without `*` is matched
+   * exactly against `exports` map keys (`./internal`, `./types`, etc.); an
+   * entry containing `*` is treated as a glob (`*` within a path segment, `**`
+   * across segments), e.g. `./internal-*`. This is the explicit escape hatch
+   * for surfaces the hashed-chunk heuristic doesn't cover.
    */
   ignoreSubpaths: z.array(z.string()).default([]),
+
+  /**
+   * Drop wildcard-expanded subpaths whose basename looks like a content-hashed
+   * bundler chunk (e.g. `./index-Dq-_K2VH`, emitted by rolldown/tsdown/esbuild/
+   * rollup). On by default: such chunks are not public API and their names flip
+   * every build, which would otherwise read as phantom add/remove subpaths.
+   * Set to `false` to treat every wildcard match as a real subpath.
+   */
+  ignoreHashedChunks: z.boolean().default(true),
 
   /** Optional AI analyzer configuration. */
   ai: AiConfigSchema.optional(),
@@ -100,6 +111,7 @@ export function createDefaultConfig(): BreakCheckConfig {
     checkVersionBump: true,
     outputFormat: "markdown",
     ignoreSubpaths: [],
+    ignoreHashedChunks: true,
   };
 }
 
