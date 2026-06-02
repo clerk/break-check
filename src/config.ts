@@ -50,11 +50,11 @@ export const AiConfigSchema = z.object({
   applyDowngrades: z.boolean().default(false),
 
   /**
-   * Run the open-ended "what did the rule-based pass miss?" audit. Sends the
-   * full current surface and reviews additions-only diffs too, so it costs more
-   * tokens and extra calls. Off by default; the verdict path ships only the
-   * focused set of types each change references. Also enabled via `--ai-scan`
-   * or `BREAK_CHECK_AI_SCAN=1`.
+   * Run the open-ended "what did the rule-based pass miss?" audit. Sends both
+   * the baseline and current surfaces (the audit must diff old vs new) and
+   * reviews additions-only diffs too, so it costs more tokens and extra calls.
+   * Off by default; the verdict path ships only the focused set of types each
+   * change references. Also enabled via `--ai-scan` or `BREAK_CHECK_AI_SCAN=1`.
    */
   scanForMissed: z.boolean().default(false),
 });

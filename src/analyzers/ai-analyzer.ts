@@ -43,9 +43,10 @@ export interface AiAnalyzerOptions {
   applyDowngrades?: boolean;
   /**
    * Run the open-ended "what did the rule-based pass miss?" audit. When true the
-   * prompt ships the full current surface (the audit needs breadth) and the
-   * reviewer also runs on additions-only diffs. Off by default: the verdict
-   * path ships only the focused set of types each change references.
+   * prompt ships both the baseline and current surfaces (the audit must diff old
+   * vs new to find an unflagged break) and the reviewer also runs on
+   * additions-only diffs. Off by default: the verdict path ships only the
+   * focused set of types each change references.
    */
   scanForMissed?: boolean;
   /**
@@ -286,12 +287,13 @@ export class AiChangeAnalyzer {
 
     let surface: string;
     try {
-      // The audit needs breadth, so it gets the full current surface. The
-      // verdict path instead gets a focused context: only the definitions of
-      // the types each change references, which is all the model needs to judge
-      // (and confidently relax) a verdict, at a fraction of the tokens.
+      // The audit has to diff old against new to find an unflagged break, so it
+      // gets both full surfaces. The verdict path instead gets a focused
+      // context: only the definitions of the types each change references, which
+      // is all the model needs to judge (and confidently relax) a verdict, at a
+      // fraction of the tokens.
       surface = this.scanForMissed
-        ? buildFullSurfaceBlock(ctx)
+        ? buildAuditSurfaceBlock(ctx)
         : buildFocusedSurfaceBlock(ctx, reviewable);
     } catch (error) {
       this.warn(
@@ -495,7 +497,7 @@ export class AiChangeAnalyzer {
     if (includeMissedScan) {
       parts.push(
         "",
-        "After verdicting those, scan the current API surface above for any consumer-observable breaking change the rule-based pass did NOT flag, and report each under `missed`. Be conservative: omit anything you are unsure about. Do not re-report a change already listed above" +
+        "After verdicting those, compare the Baseline and Current API surfaces above and report under `missed` any consumer-observable breaking change the rule-based pass did NOT flag (a removed or renamed export, a changed signature, etc.). Be conservative: omit anything you are unsure about. Do not re-report a change already listed above" +
           (otherChangesSummary ? " or in the list below:" : "."),
       );
       if (otherChangesSummary) {
@@ -661,18 +663,27 @@ function extractSurface(apiJsonPath: string): string {
 }
 
 /**
- * Full current surface, used by the missed-breaks audit which needs to see
- * every export to spot something the rule pass didn't flag.
+ * Both full surfaces, used by the missed-breaks audit. To find a break the rule
+ * pass didn't flag at all, the model has to diff old against new itself, so it
+ * needs the baseline surface as well as the current one (the focused verdict
+ * path, by contrast, gets each change's previous shape inline and only the
+ * referenced type defs). The baseline is omitted only when there is none (a new
+ * package), in which case the audit can inspect the current surface alone.
  */
-function buildFullSurfaceBlock(ctx: AiPackageContext): string {
+function buildAuditSurfaceBlock(ctx: AiPackageContext): string {
   const current = extractSurface(ctx.currentApiJsonPath);
-  return [
-    `# Current API surface for ${ctx.packageName}`,
-    "(The previous signature for each reviewed change is in its beforeSnippet, in the review list below.)",
-    "```ts",
-    current,
-    "```",
-  ].join("\n");
+  let baseline = "";
+  try {
+    baseline = extractSurface(ctx.baselineApiJsonPath);
+  } catch {
+    // No baseline (new package): the audit can only see the current surface.
+  }
+  const parts = [`# API surface for ${ctx.packageName}`, ""];
+  if (baseline) {
+    parts.push("## Baseline", "```ts", baseline, "```", "");
+  }
+  parts.push("## Current", "```ts", current, "```");
+  return parts.join("\n");
 }
 
 /** One node in the walked surface tree. */

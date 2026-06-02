@@ -109,7 +109,7 @@ Options:
   --no-ai                 Disable the AI reviewer even if BREAK_CHECK_ANTHROPIC_API_KEY is set
   --ai-model <model>      Override the AI model (e.g. claude-opus-4-7)
   --ai-apply-downgrades   Apply the AI's breaking->non-breaking downgrades (default: record as suggestions)
-  --ai-scan               Run the missed-breaks audit (full surface; reviews additions-only diffs)
+  --ai-scan               Run the missed-breaks audit (both surfaces; reviews additions-only diffs)
   -v, --verbose           Show verbose output
 ```
 
@@ -153,7 +153,7 @@ wildcard match as a real subpath.
 | `model`             | string  | `claude-sonnet-4-6` | Anthropic model identifier                                                                |
 | `maxChangesPerCall` | number  | `80`                | Maximum rule-based changes batched into a single AI call                                  |
 | `applyDowngrades`   | boolean | `false`             | Apply the AI's breaking->non-breaking downgrades instead of recording them as suggestions |
-| `scanForMissed`     | boolean | `false`             | Run the missed-breaks audit (full surface; also reviews additions-only diffs)             |
+| `scanForMissed`     | boolean | `false`             | Run the missed-breaks audit (both surfaces; also reviews additions-only diffs)            |
 
 ## AI Review
 
@@ -180,10 +180,10 @@ type can't be resolved, the model is told to keep "breaking", so a thin context
 costs a missed downgrade (noise), never a shipped break.
 
 `--ai-scan` (or `BREAK_CHECK_AI_SCAN=1`, `ai.scanForMissed: true`) adds the
-opposite, paranoid pass: it ships the full current surface and asks the model
-to find breaks the rule pass didn't flag at all, reviewing additions-only diffs
-too. It is independent of `--ai-apply-downgrades`; combine them for the most
-thorough run.
+opposite, paranoid pass: it ships both the baseline and current surfaces (the
+model has to diff old against new to find a break the rule pass missed entirely)
+and reviews additions-only diffs too. It is independent of
+`--ai-apply-downgrades`; combine them for the most thorough run.
 
 Enable it by exporting an API key:
 

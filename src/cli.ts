@@ -157,7 +157,7 @@ program
   )
   .option(
     "--ai-scan",
-    "Run the missed-breaks audit: send the full surface and review additions-only diffs (equivalent to BREAK_CHECK_AI_SCAN=1).",
+    "Run the missed-breaks audit: send both surfaces and review additions-only diffs (equivalent to BREAK_CHECK_AI_SCAN=1).",
   )
   .option("-v, --verbose", "Show verbose output")
   .action(async (options) => {

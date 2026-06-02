@@ -253,7 +253,7 @@ export class BreakingChangesDetector {
       // Two orthogonal knobs. applyDowngrades decides whether a
       // breaking -> non-breaking verdict is acted on or just recorded as a
       // suggestion. scanForMissed runs the audit and swaps the focused verdict
-      // context for the full surface it needs.
+      // context for the both-surface diff that audit needs.
       applyDowngrades: this.aiApplyDowngrades,
       scanForMissed: this.aiScanForMissed,
     });

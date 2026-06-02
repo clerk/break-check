@@ -484,7 +484,7 @@ test("ai-analyzer: lean path ships the focused context, no missed scan", async (
   }
 });
 
-test("ai-analyzer: scanForMissed sends the full surface and requests the audit", async () => {
+test("ai-analyzer: scanForMissed sends both surfaces and requests the audit", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = ruleBasedBreakingChange();
   const { client, calls } = stubClient({
@@ -514,11 +514,23 @@ test("ai-analyzer: scanForMissed sends the full surface and requests the audit",
     });
 
     const [surfaceBlock, instruction] = calls[0].messages[0].content;
-    // The audit needs breadth, so it gets the full current surface (every
-    // export), not the focused referenced-type set.
-    assert.ok(surfaceBlock.text.includes("Current API surface"));
-    assert.ok(surfaceBlock.text.includes("greet"));
-    assert.ok(instruction.text.toLowerCase().includes("scan the current api"));
+    // The audit must diff old vs new, so it ships BOTH surfaces, not the
+    // focused referenced-type set.
+    assert.ok(surfaceBlock.text.includes("## Baseline"));
+    assert.ok(surfaceBlock.text.includes("## Current"));
+    // Both signatures are present so the model can spot an unflagged break.
+    assert.ok(
+      surfaceBlock.text.includes("string"),
+      "baseline (old) signature must be present",
+    );
+    assert.ok(
+      surfaceBlock.text.includes("number"),
+      "current (new) signature must be present",
+    );
+    assert.ok(
+      instruction.text.toLowerCase().includes("baseline and current"),
+      "audit instruction should ask the model to compare both surfaces",
+    );
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

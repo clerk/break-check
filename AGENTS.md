@@ -170,8 +170,10 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   to keep "breaking" when it cannot resolve a type, so a thin context fails
   safe. `submit_review` asks for one-sentence rationales, and the surface only
   takes a prompt-cache breakpoint when more than one chunk will read it. The
-  missed-breaks audit is the exception: it needs breadth, so it sends the full
-  current surface (`buildFullSurfaceBlock`). Note `walkSurface` indexes every
+  missed-breaks audit is the exception: to find a break the rule pass didn't
+  flag at all it must diff old against new itself, so it sends both the baseline
+  and current full surfaces (`buildAuditSurfaceBlock`), not the focused set.
+  Note `walkSurface` indexes every
   member under BOTH its full-chain name and api-diff's immediate-parent name
   (`Inner.a` as well as `Outer.Inner.a`), because the rule-based differ names a
   change by its immediate parent only; without that alias a namespace-nested
