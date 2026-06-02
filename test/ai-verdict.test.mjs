@@ -215,3 +215,90 @@ test(
     );
   },
 );
+
+// Widening a parameter type is input contravariance: a caller still satisfies
+// the new type, so it is non-breaking. The rule pass is pessimistic and flags
+// it breaking; the AI should downgrade it. These two tests pin the
+// apply-downgrades gate against the live model.
+const WIDENING = {
+  baseline: {
+    version: "1.0.0",
+    dts: "export declare function fetchUser(id: string): { name: string };\n",
+  },
+  current: {
+    version: "1.1.0",
+    dts: "export declare function fetchUser(id: string | number): { name: string };\n",
+  },
+};
+
+test(
+  "ai-verdict: --ai-apply-downgrades applies a safe parameter-widening downgrade",
+  { skip: skipReason },
+  () => {
+    const { result } = setup({
+      ...WIDENING,
+      extraDetectArgs: ["--ai-apply-downgrades"],
+    });
+
+    const change = result.packages[0]?.changes.find(
+      (c) => c.name === "fetchUser",
+    );
+    assert.ok(change, "expected a change for fetchUser");
+    assert.equal(
+      change.type,
+      "non-breaking",
+      "input widening should be downgraded and applied under --ai-apply-downgrades",
+    );
+    assert.equal(change.ruleBasedType, "breaking");
+    assert.equal(change.aiAnalysis.source, "rule-overridden");
+  },
+);
+
+test(
+  "ai-verdict: a safe widening is suggested but kept breaking by default",
+  { skip: skipReason },
+  () => {
+    const { result } = setup(WIDENING);
+
+    const change = result.packages[0]?.changes.find(
+      (c) => c.name === "fetchUser",
+    );
+    assert.ok(change, "expected a change for fetchUser");
+    // No --ai-apply-downgrades: the model's downgrade is recorded, not applied.
+    assert.equal(change.type, "breaking");
+    assert.equal(change.aiAnalysis.source, "ai-suggested-downgrade");
+  },
+);
+
+test(
+  "ai-verdict: --ai-scan finds a required-field addition the rule pass missed",
+  { skip: skipReason },
+  () => {
+    // The rule pass classifies a new interface property as a (non-breaking)
+    // addition. But `Options` is an input to `run`, so adding a required field
+    // breaks callers that construct it. Only the audit, comparing both
+    // surfaces, can catch this.
+    const { result } = setup({
+      baseline: {
+        version: "1.0.0",
+        dts: "export interface Options { a: string; }\nexport declare function run(o: Options): void;\n",
+      },
+      current: {
+        version: "2.0.0",
+        dts: "export interface Options { a: string; b: number; }\nexport declare function run(o: Options): void;\n",
+      },
+      extraDetectArgs: ["--ai-scan"],
+    });
+
+    const pkg = result.packages[0];
+    assert.ok(pkg, "expected a package analysis");
+    const discovered = pkg.changes.find(
+      (c) => c.aiAnalysis?.source === "ai-discovered",
+    );
+    assert.ok(
+      discovered,
+      "the audit should surface the missed required-field break",
+    );
+    assert.equal(discovered.type, "breaking");
+  },
+);
