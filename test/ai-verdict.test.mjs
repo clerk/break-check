@@ -275,6 +275,83 @@ test(
   },
 );
 
+// Regression tests for #56: two backwards-compatible changes the reviewer used
+// to confirm as breaking. A correct verdict is a downgrade, which in the default
+// (no --ai-apply-downgrades) mode is recorded as `ai-suggested-downgrade` (the
+// change stays breaking but the model's non-breaking opinion is captured). These
+// are model judgment calls, so a miss is a non-gating diagnostic unless
+// BREAK_CHECK_STRICT_AI_TESTS=1, matching the missed-field test below.
+function expectSuggestedDowngrade(t, change, label) {
+  assert.ok(change, `expected a change for ${label}`);
+  assert.ok(change.aiAnalysis, `expected aiAnalysis for ${label}`);
+  if (change.aiAnalysis.source !== "ai-suggested-downgrade") {
+    const message = `reviewer did not relax ${label} (source=${change.aiAnalysis.source}, type=${change.type})`;
+    if (strictAiTests) assert.fail(message);
+    t.diagnostic(`${message} (model-dependent, non-gating)`);
+    return;
+  }
+  // Recorded, not applied, since these run without --ai-apply-downgrades.
+  assert.equal(change.type, "breaking");
+}
+
+test(
+  "ai-verdict: #56 adding an optional Pick'd field is not breaking",
+  { skip: skipReason },
+  (t) => {
+    // UseOAuthConsentParams case: `c?` is optional in Src, so widening the Pick
+    // to include it adds an optional property. Src is in the forced context, so
+    // the model can resolve that Pick preserves optionality.
+    const { result } = setup({
+      baseline: {
+        version: "1.0.0",
+        dts:
+          "export interface Src { a: string; b: string; c?: string; }\n" +
+          "export type R = Pick<Src, 'a' | 'b'>;\n",
+      },
+      current: {
+        version: "1.1.0",
+        dts:
+          "export interface Src { a: string; b: string; c?: string; }\n" +
+          "export type R = Pick<Src, 'a' | 'b' | 'c'>;\n",
+      },
+    });
+    const change = result.packages[0]?.changes.find((c) => c.name === "R");
+    expectSuggestedDowngrade(t, change, "R (added optional Pick'd field)");
+  },
+);
+
+test(
+  "ai-verdict: #56 adding a required field to an output-only type is not breaking",
+  { skip: skipReason },
+  (t) => {
+    // OAuthConsentInfo case: ConsentInfo is only ever read (the resolved value of
+    // getConsentInfo's Promise), so adding a required field is non-breaking. The
+    // usage-site block surfaces getConsentInfo so the model can judge direction.
+    const { result } = setup({
+      baseline: {
+        version: "1.0.0",
+        dts:
+          "export type ConsentInfo = { id: string };\n" +
+          "export declare function getConsentInfo(): Promise<ConsentInfo>;\n",
+      },
+      current: {
+        version: "1.1.0",
+        dts:
+          "export type ConsentInfo = { id: string; domain: string };\n" +
+          "export declare function getConsentInfo(): Promise<ConsentInfo>;\n",
+      },
+    });
+    const change = result.packages[0]?.changes.find(
+      (c) => c.name === "ConsentInfo",
+    );
+    expectSuggestedDowngrade(
+      t,
+      change,
+      "ConsentInfo (added required output-only field)",
+    );
+  },
+);
+
 test(
   "ai-verdict: --ai-scan finds a required-field addition the rule pass missed",
   { skip: skipReason },

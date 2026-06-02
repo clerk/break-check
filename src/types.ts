@@ -96,6 +96,13 @@ export interface ApiChange {
   };
   /** Original classification from the rule-based analyzer, set only if AI changed `type` */
   ruleBasedType?: ChangeType;
+  /**
+   * Set when a `acknowledgedChanges` config entry greened this change: the
+   * maintainer asserts it is safe, so a `breaking` classification is flipped to
+   * `non-breaking` (with `ruleBasedType` recording the original). Unlike an AI
+   * downgrade this is unconditional and not gated behind `--ai-apply-downgrades`.
+   */
+  acknowledged?: boolean;
   /** Present when the AI analyzer reviewed (or produced) this change */
   aiAnalysis?: AiAnalysis;
 }

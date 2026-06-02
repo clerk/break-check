@@ -124,16 +124,17 @@ stderr so stdout remains parseable JSON.
 
 ## Configuration
 
-| Option               | Type     | Default          | Description                                            |
-| -------------------- | -------- | ---------------- | ------------------------------------------------------ |
-| `packages`           | string[] | required         | Package paths to analyze                               |
-| `snapshotDir`        | string   | `.api-snapshots` | Snapshot output directory                              |
-| `mainBranch`         | string   | `main`           | Base branch name for repo-specific workflows           |
-| `checkVersionBump`   | boolean  | `true`           | Mark insufficient version bumps in reports             |
-| `outputFormat`       | string   | `markdown`       | Default report format                                  |
-| `ignoreSubpaths`     | string[] | `[]`             | Subpath exports to skip (exact, or glob with `*`/`**`) |
-| `ignoreHashedChunks` | boolean  | `true`           | Drop content-hashed bundler chunks matched by `./*`    |
-| `ai`                 | object   | unset            | AI reviewer options (see below)                        |
+| Option                | Type     | Default          | Description                                                 |
+| --------------------- | -------- | ---------------- | ----------------------------------------------------------- |
+| `packages`            | string[] | required         | Package paths to analyze                                    |
+| `snapshotDir`         | string   | `.api-snapshots` | Snapshot output directory                                   |
+| `mainBranch`          | string   | `main`           | Base branch name for repo-specific workflows                |
+| `checkVersionBump`    | boolean  | `true`           | Mark insufficient version bumps in reports                  |
+| `outputFormat`        | string   | `markdown`       | Default report format                                       |
+| `ignoreSubpaths`      | string[] | `[]`             | Subpath exports to skip (exact, or glob with `*`/`**`)      |
+| `ignoreHashedChunks`  | boolean  | `true`           | Drop content-hashed bundler chunks matched by `./*`         |
+| `acknowledgedChanges` | string[] | `[]`             | Breaking changes you've verified safe (downgraded + tagged) |
+| `ai`                  | object   | unset            | AI reviewer options (see below)                             |
 
 A `"./*"` export that points into a bundler output dir will glob in the shared
 chunks emitted by rolldown/tsdown/esbuild/rollup (`index-Dq-_K2VH.mjs`,
@@ -144,6 +145,15 @@ default) drops wildcard matches whose basename ends in a `-<8-char hash>`
 suffix. For anything the heuristic misses, `ignoreSubpaths` accepts globs
 (`./internal-*`, `./chunk-*`). Set `ignoreHashedChunks: false` to treat every
 wildcard match as a real subpath.
+
+`acknowledgedChanges` is the escape hatch for a change the differ flags as
+breaking that you have verified is safe. Each entry is the change's qualified
+name (`OAuthConsentInfo`, `User.email`), optionally prefixed with the package
+(`@clerk/shared#OAuthConsentInfo`), and the name may use `*` globs
+(`Clerk.__internal_*`). A matched breaking change is downgraded to non-breaking,
+tagged `acknowledged` in the report, and dropped from the recommended version
+bump. Unlike an AI downgrade this is unconditional: it always applies and does
+not need `--ai-apply-downgrades`. Use it sparingly, and for one symbol at a time.
 
 ### AI reviewer config
 
@@ -175,9 +185,17 @@ its signature references (resolved transitively through API Extractor's
 canonical references), with a referenced type's baseline definition included
 where it changed so equivalence can be judged old-vs-new. On a large package
 that is a handful of types instead of the whole surface. The previous signature
-of each change itself rides along inline in its diff snippet. If a referenced
-type can't be resolved, the model is told to keep "breaking", so a thin context
-costs a missed downgrade (noise), never a shipped break.
+of each change itself rides along inline in its diff snippet. The context also
+lists each changed type's **usage sites**, the signatures that reference it,
+gathered across the package's subpath surfaces (the changed type and the
+function that returns it often live in different subpath rollups), so the model
+can tell a consumer-constructed input type from a read-only output type: adding
+a required field to a type consumers only read (the resolved value of a
+`Promise<T>` return, a hook result field) is non-breaking, while adding it to a
+type they construct is not. If a referenced type can't be resolved, or a type's
+usage is invisible (used only by another package, or unresolved), the model is
+told to keep "breaking", so a thin context costs a missed downgrade (noise),
+never a shipped break.
 
 `--ai-scan` (or `BREAK_CHECK_AI_SCAN=1`, `ai.scanForMissed: true`) adds the
 opposite, paranoid pass: it ships both the baseline and current surfaces (the

@@ -16,7 +16,7 @@ function runBreakCheck(args, cwd) {
   });
 }
 
-function setup({ baseline, current }) {
+function setup({ baseline, current, acknowledgedChanges }) {
   const workspace = mkdtempSync(join(tmpdir(), "break-check-diff-"));
   const pkgDir = join(workspace, "packages", "pkg");
   mkdirSync(join(pkgDir, "dist"), { recursive: true });
@@ -30,6 +30,7 @@ function setup({ baseline, current }) {
         mainBranch: "main",
         checkVersionBump: true,
         outputFormat: "json",
+        ...(acknowledgedChanges ? { acknowledgedChanges } : {}),
       },
       null,
       2,
@@ -341,6 +342,49 @@ test("type alias description summarizes large type literals", () => {
     ch.description.includes("…"),
     "expected ellipsis marking a truncated type literal",
   );
+});
+
+test("acknowledgedChanges greens a breaking change by bare name", () => {
+  const result = setup({
+    baseline: { version: "1.0.0", dts: "export type R = { a: string };\n" },
+    current: {
+      version: "1.0.1",
+      dts: "export type R = { a: string; b: number };\n",
+    },
+    acknowledgedChanges: ["R"],
+  });
+  assert.equal(counts(result).breaking, 0);
+  assert.equal(counts(result).nonBreaking, 1);
+  const ch = changesFor(result)[0];
+  assert.equal(ch.type, "non-breaking");
+  assert.equal(ch.acknowledged, true);
+  assert.equal(ch.ruleBasedType, "breaking");
+});
+
+test("acknowledgedChanges matches the package#name form", () => {
+  const result = setup({
+    baseline: { version: "1.0.0", dts: "export type R = { a: string };\n" },
+    current: {
+      version: "1.0.1",
+      dts: "export type R = { a: string; b: number };\n",
+    },
+    acknowledgedChanges: ["@demo/pkg#R"],
+  });
+  assert.equal(counts(result).breaking, 0);
+  assert.equal(changesFor(result)[0].acknowledged, true);
+});
+
+test("acknowledgedChanges does not match an unrelated name", () => {
+  const result = setup({
+    baseline: { version: "1.0.0", dts: "export type R = { a: string };\n" },
+    current: {
+      version: "2.0.0",
+      dts: "export type R = { a: string; b: number };\n",
+    },
+    acknowledgedChanges: ["SomethingElse"],
+  });
+  assert.equal(counts(result).breaking, 1);
+  assert.ok(!changesFor(result)[0].acknowledged);
 });
 
 test("changing a property type is breaking", () => {

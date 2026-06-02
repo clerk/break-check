@@ -173,11 +173,27 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   missed-breaks audit is the exception: to find a break the rule pass didn't
   flag at all it must diff old against new itself, so it sends both the baseline
   and current full surfaces (`buildAuditSurfaceBlock`), not the focused set.
-  Note `walkSurface` indexes every
+  The focused context also carries a **"Usage sites"** block: for each changed
+  named type, the signatures that reference it (`collectUsageSites`), so the
+  model can judge input vs output direction (adding a required field to a
+  read-only output type is non-breaking; system-prompt rule 11). Referrers are
+  gathered across the package's OTHER subpath surfaces too, threaded in via
+  `AiPackageContext.siblingCurrentApiJsonPaths` from `detector.ts` (a changed
+  type and the function returning it frequently live in different subpath
+  rollups, and the analyzer otherwise sees one subpath at a time). Matching is
+  by `canonicalReference`, which is stable across rollups; an unresolved/diverging
+  ref just yields fewer usage sites, which fails safe (rule 11 keeps "breaking"
+  when no usage sites are shown). Usage sites are collected BEFORE the
+  empty-forward-refs early return, since a `type R = {...}` with no references
+  can still have usage sites. `walkSurface` is memoized by path+mtime
+  (`walkSurfaceCached`) so the per-subpath calls don't re-parse the same sibling
+  `.api.json` repeatedly. Note `walkSurface` indexes every
   member under BOTH its full-chain name and api-diff's immediate-parent name
   (`Inner.a` as well as `Outer.Inner.a`), because the rule-based differ names a
   change by its immediate parent only; without that alias a namespace-nested
-  change would seed an empty closure. Keep both keys.
+  change would seed an empty closure. Keep both keys. It also keeps `allNodes`
+  (a flat list) so `collectUsageSites` can scan referrers including members
+  without a `canonicalReference`.
 - **Two orthogonal opt-ins, both default off; the default cannot clear a
   break.** `applyDowngrades` decides whether a `breaking -> non-breaking`
   verdict (the only one that can hide a break) is acted on or recorded as an
@@ -189,6 +205,18 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   (paranoid, safe), so a single flag for both is wrong. Escalations
   (`-> breaking`) and confirmations always apply. An additions-only diff makes
   zero API calls unless `scanForMissed` is on.
+- **`acknowledgedChanges` is a config-level override, not an AI knob.**
+  `makeAcknowledgedMatcher` (`utils/acknowledged.ts`) compiles the config
+  patterns (`"<name>"` or `"<packageName>#<name>"`, `*` glob in the name part,
+  reusing `globToRegExpSource`). `detector.ts#analyzePackage` applies it as a
+  final pass over the assembled `allChanges`, flipping any matched `breaking`
+  change to `non-breaking` (recording `ruleBasedType`, setting
+  `acknowledged: true`). It runs whether or not the AI is on, after the AI, so
+  the maintainer's override always wins; it is unconditional (not gated behind
+  `--ai-apply-downgrades`). Counts, `hasBreakingChanges`, and the recommended
+  bump all key off `type`, so the flip is sufficient. The markdown reporter tags
+  acknowledged changes and suppresses the "re-run with --ai-apply-downgrades"
+  nudge for them.
 - **Action is preview**: it ships from this repo but isn't usable
   until `@clerk/break-check` is on npm and a `v1` tag exists. The README
   has the disclaimer; keep it in sync if the status changes.

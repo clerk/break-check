@@ -103,6 +103,19 @@ export const ConfigSchema = z.object({
    */
   ignoreHashedChunks: z.boolean().default(true),
 
+  /**
+   * Maintainer-acknowledged changes: a breaking change matching any entry is
+   * flipped to non-breaking (and marked `acknowledged` in the report), so a
+   * verified-safe change can be greened without a tool fix. This is an explicit,
+   * unconditional override, distinct from the AI's downgrade suggestions.
+   *
+   * Each entry is `"<name>"` or `"<packageName>#<name>"`, where `<name>` is the
+   * change's qualified name (`OAuthConsentInfo`, `User.email`) and may use `*`
+   * globs (`Clerk.__internal_*`). The package part, when present, is matched
+   * exactly against the package name.
+   */
+  acknowledgedChanges: z.array(z.string()).default([]),
+
   /** Optional AI analyzer configuration. */
   ai: AiConfigSchema.optional(),
 });
@@ -129,6 +142,7 @@ export function createDefaultConfig(): BreakCheckConfig {
     outputFormat: "markdown",
     ignoreSubpaths: [],
     ignoreHashedChunks: true,
+    acknowledgedChanges: [],
   };
 }
 
