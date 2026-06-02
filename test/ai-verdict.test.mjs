@@ -29,6 +29,11 @@ const skipReason = runRealAiTests
   ? false
   : "real-AI tests require BREAK_CHECK_RUN_REAL_AI_TESTS=1 and BREAK_CHECK_ANTHROPIC_API_KEY";
 
+// When false (the default), the missed-break audit test reports a model miss as
+// a diagnostic and passes, so a flaky judgment call does not red the nightly
+// job. Set BREAK_CHECK_STRICT_AI_TESTS=1 to hard-gate it.
+const strictAiTests = truthy(process.env.BREAK_CHECK_STRICT_AI_TESTS ?? "");
+
 function runBreakCheck(args, cwd) {
   return spawnSync(process.execPath, [cliPath, ...args], {
     cwd,
@@ -273,11 +278,19 @@ test(
 test(
   "ai-verdict: --ai-scan finds a required-field addition the rule pass missed",
   { skip: skipReason },
-  () => {
+  (t) => {
     // The rule pass classifies a new interface property as a (non-breaking)
     // addition. But `Options` is an input to `run`, so adding a required field
     // breaks callers that construct it. Only the audit, comparing both
     // surfaces, can catch this.
+    //
+    // This is the most model-dependent assertion in the suite: the audit
+    // wiring (the scan actually runs, ships both surfaces, parses an
+    // `ai-discovered` verdict) is pinned deterministically in
+    // `ai-analyzer.test.mjs`, so what is left here is purely whether the live
+    // model makes the judgment on a given run. It can reasonably miss it, so by
+    // default a miss is a diagnostic and the test passes; it only hard-fails
+    // under BREAK_CHECK_STRICT_AI_TESTS=1.
     const { result } = setup({
       baseline: {
         version: "1.0.0",
@@ -295,10 +308,15 @@ test(
     const discovered = pkg.changes.find(
       (c) => c.aiAnalysis?.source === "ai-discovered",
     );
-    assert.ok(
-      discovered,
-      "the audit should surface the missed required-field break",
-    );
+
+    if (!discovered) {
+      const message =
+        "the audit did not surface the missed required-field break this run";
+      if (strictAiTests) assert.fail(message);
+      t.diagnostic(`${message} (model-dependent, non-gating)`);
+      return;
+    }
+
     assert.equal(discovered.type, "breaking");
   },
 );

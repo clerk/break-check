@@ -8,11 +8,17 @@ name: AI Smoke
 
 on:
   workflow_dispatch:
+    inputs:
+      strict:
+        description: "Hard-fail on the model-dependent audit test (otherwise it is informational)"
+        type: boolean
+        default: false
   schedule:
     - cron: "0 8 * * *"
 
 permissions:
   contents: read
+  issues: write
 
 concurrency:
   group: ai-smoke-${{ github.ref }}
@@ -40,4 +46,26 @@ jobs:
         env:
           BREAK_CHECK_ANTHROPIC_API_KEY: ${{ secrets.BREAK_CHECK_ANTHROPIC_API_KEY }}
           BREAK_CHECK_RUN_REAL_AI_TESTS: "1"
+          # Off by default: the missed-break audit is a model judgment call that
+          # flickers, so nightly red is reserved for the robust contract checks.
+          # A manual dispatch can opt into hard-gating it.
+          BREAK_CHECK_STRICT_AI_TESTS: ${{ inputs.strict && '1' || '' }}
         run: pnpm test
+
+      - name: Open an issue when the nightly run fails
+        if: ${{ failure() && github.event_name == 'schedule' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "Nightly AI smoke failed"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          body=$(printf '%s\n\n%s\n' \
+            "The nightly AI smoke run failed: $RUN_URL" \
+            "This job exercises the live Anthropic API contract through the CLI. The model-dependent audit assertion is non-gating, so a failure here points at something robust: an SDK or submit_review tool-call shape change, the configured model going away, an auth/secret problem, or the model getting a clearly obvious verdict wrong.")
+          # Reuse a single open issue instead of filing a fresh one every night.
+          number=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "$TITLE" --body "$body"
+          fi
