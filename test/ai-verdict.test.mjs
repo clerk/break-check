@@ -191,7 +191,7 @@ test(
 );
 
 test(
-  "ai-verdict: --ai-strict forces AI to run on additions-only diffs",
+  "ai-verdict: --ai-scan forces AI to run on additions-only diffs",
   { skip: skipReason },
   () => {
     const { result } = setup({
@@ -203,7 +203,7 @@ test(
         version: "1.1.0",
         dts: "export declare function existing(): void;\nexport declare function added(): void;\n",
       },
-      extraDetectArgs: ["--ai-strict"],
+      extraDetectArgs: ["--ai-scan"],
     });
 
     const pkg = result.packages[0];
@@ -211,7 +211,7 @@ test(
     assert.equal(
       pkg.aiReviewedBy,
       "claude-sonnet-4-6",
-      "--ai-strict should have caused AI to run",
+      "--ai-scan should have caused AI to run",
     );
   },
 );

@@ -160,28 +160,29 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   set, unless `ai.enabled` is explicitly `false`. Model resolution
   priority is `--ai-model` > `BREAK_CHECK_AI_MODEL` > `ai.model` config >
   `claude-sonnet-4-6`. Preserve that priority order when editing.
-- **The reviewer prompt is lean in both modes.** It ships only the _current_
-  API surface; the previous shape of each change rides along in its
-  `beforeSnippet`, so the baseline dump (which roughly doubled the prompt) is
-  never sent, not even under `strict`. The change list is compact JSON,
-  `submit_review` asks for one-sentence rationales, and the surface only takes a
-  prompt-cache breakpoint when more than one chunk will read it. An
-  additions-only diff makes zero API calls in the lean path.
-- **Downgrades are gated behind `strict`; the lean default cannot clear a
-  break.** A `breaking -> non-breaking` verdict is the only operation that can
-  hide a real break, so the analyzer applies it only when `strict` is set
-  (wired from the detector's `aiStrict` through the analyzer's `strict`
-  option). In the lean default such a verdict is recorded as an
-  `ai-suggested-downgrade`: the change stays breaking and the report tells the
-  user to re-run `--ai-strict` to apply it. Escalations (`-> breaking`) and
-  confirmations always apply, in both modes. Keep this gating, it is what makes
-  the safety property real ("the default reviewer never turns a flagged break
-  into a non-break") instead of a hope about model behavior. `strict` also
-  enables the open-ended missed-breaks audit and runs the reviewer on
-  additions-only diffs. Do not reintroduce the baseline surface to "strengthen"
-  strict downgrades: the inline before/after snippets plus the current surface
-  are sufficient, and rule 8 of the system prompt tells the model to keep
-  "breaking" for any type it cannot resolve, so a missing definition fails safe.
+- **The verdict call ships a focused context, not the whole surface.**
+  `buildFocusedSurfaceBlock` resolves, per change, the type definitions its
+  signature references (transitively, via API Extractor `canonicalReference`
+  tokens, capped at `MAX_FOCUSED_SYMBOLS`), including a referenced type's
+  baseline definition where it changed. The changed members are not re-emitted;
+  their before/after signatures ride inline in the compact-JSON review list.
+  Unresolvable references are dropped, and system-prompt rule 8 tells the model
+  to keep "breaking" when it cannot resolve a type, so a thin context fails
+  safe. `submit_review` asks for one-sentence rationales, and the surface only
+  takes a prompt-cache breakpoint when more than one chunk will read it. The
+  missed-breaks audit is the exception: it needs breadth, so it sends the full
+  current surface (`buildFullSurfaceBlock`).
+- **Two orthogonal opt-ins, both default off; the default cannot clear a
+  break.** `applyDowngrades` decides whether a `breaking -> non-breaking`
+  verdict (the only one that can hide a break) is acted on or recorded as an
+  `ai-suggested-downgrade` (change stays breaking, report points the user at
+  `--ai-apply-downgrades`). `scanForMissed` runs the audit and reviews
+  additions-only diffs. Both are resolved in `detector.ts` (`resolveAiFlag`:
+  option > env > config) and threaded into the analyzer. Keep them separate:
+  one relaxes verdicts (lenient, risky), the other hunts for more breaks
+  (paranoid, safe), so a single flag for both is wrong. Escalations
+  (`-> breaking`) and confirmations always apply. An additions-only diff makes
+  zero API calls unless `scanForMissed` is on.
 - **Action is preview**: it ships from this repo but isn't usable
   until `@clerk/break-check` is on npm and a `v1` tag exists. The README
   has the disclaimer; keep it in sync if the status changes.

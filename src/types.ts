@@ -42,9 +42,9 @@ export type ChangeCategory =
  * Where the AI verdict places a change relative to the rule-based analyzer.
  *
  * `ai-suggested-downgrade` is the lean-mode-only state: the model judged a
- * rule-based breaking change to be non-breaking, but the default (non-strict)
- * path does not apply downgrades, so the change is kept breaking and the
- * model's suggestion is recorded for a human to apply via `--ai-strict`.
+ * rule-based breaking change to be non-breaking, but downgrades are not applied
+ * by default, so the change is kept breaking and the model's suggestion is
+ * recorded for a human to apply via `--ai-apply-downgrades`.
  */
 export type AiAnalysisSource =
   | "rule-confirmed"

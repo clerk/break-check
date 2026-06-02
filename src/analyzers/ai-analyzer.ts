@@ -34,17 +34,20 @@ export interface AiAnalyzerOptions {
   /** Print info/debug messages to stderr. */
   verbose?: boolean;
   /**
-   * Thorough mode. Two effects, both off by default:
-   *   1. Downgrades are applied. A `breaking -> non-breaking` verdict is the
-   *      only one that can clear a flagged break, so it is the only risky
-   *      operation. In the lean default it is recorded as a suggestion but the
-   *      change stays breaking; only strict mode actually relaxes the verdict.
-   *   2. The open-ended "what did the rule-based pass miss?" audit runs.
-   * Wired from the detector's `strict` resolution. The prompt surface is
-   * current-only in both modes; the previous signature of each change rides
-   * along in its inline beforeSnippet.
+   * Apply the model's `breaking -> non-breaking` downgrades. A downgrade is the
+   * only verdict that can clear a flagged break, so off by default it is
+   * recorded as an `ai-suggested-downgrade` and the change stays breaking. When
+   * true the verdict is applied. Does not change the prompt; the model reasons
+   * the same either way.
    */
-  strict?: boolean;
+  applyDowngrades?: boolean;
+  /**
+   * Run the open-ended "what did the rule-based pass miss?" audit. When true the
+   * prompt ships the full current surface (the audit needs breadth) and the
+   * reviewer also runs on additions-only diffs. Off by default: the verdict
+   * path ships only the focused set of types each change references.
+   */
+  scanForMissed?: boolean;
   /**
    * Optional structural Anthropic client for tests. When omitted the real
    * `@anthropic-ai/sdk` is lazily imported on first use.
@@ -232,7 +235,8 @@ export class AiChangeAnalyzer {
   private readonly maxChangesPerCall: number;
   private readonly timeoutMs: number;
   private readonly verbose: boolean;
-  private readonly strict: boolean;
+  private readonly applyDowngrades: boolean;
+  private readonly scanForMissed: boolean;
   private readonly apiKey: string;
   private readonly logger: Pick<Console, "warn" | "log">;
   private clientPromise: Promise<AiClient> | null = null;
@@ -252,7 +256,8 @@ export class AiChangeAnalyzer {
     this.maxChangesPerCall = opts.maxChangesPerCall ?? 80;
     this.timeoutMs = opts.timeoutMs ?? 60_000;
     this.verbose = opts.verbose ?? false;
-    this.strict = opts.strict ?? false;
+    this.applyDowngrades = opts.applyDowngrades ?? false;
+    this.scanForMissed = opts.scanForMissed ?? false;
     this.logger = opts.logger ?? console;
     if (opts.client) {
       this.clientPromise = Promise.resolve(opts.client);
@@ -275,16 +280,19 @@ export class AiChangeAnalyzer {
 
     // Lean path: nothing to re-classify and the caller didn't ask for the
     // open-ended missed-breaks audit, so there is no reason to spend a call.
-    if (reviewable.length === 0 && !this.strict) {
+    if (reviewable.length === 0 && !this.scanForMissed) {
       return changes;
     }
 
     let surface: string;
     try {
-      // Current surface only, in both modes: the previous shape of each change
-      // rides along in its inline beforeSnippet, so the baseline dump is
-      // redundant. Keeps strict mode as lean as the default.
-      surface = this.buildSurfaceBlock(ctx);
+      // The audit needs breadth, so it gets the full current surface. The
+      // verdict path instead gets a focused context: only the definitions of
+      // the types each change references, which is all the model needs to judge
+      // (and confidently relax) a verdict, at a fraction of the tokens.
+      surface = this.scanForMissed
+        ? buildFullSurfaceBlock(ctx)
+        : buildFocusedSurfaceBlock(ctx, reviewable);
     } catch (error) {
       this.warn(
         `[ai] could not load API surface for ${ctx.packageName}: ${describe(error)}. Skipping AI review.`,
@@ -324,7 +332,7 @@ export class AiChangeAnalyzer {
     const missedAggregate: AiVerdict["missed"] = [];
 
     for (let i = 0; i < chunks.length; i++) {
-      const includeMissedScan = i === 0 && this.strict;
+      const includeMissedScan = i === 0 && this.scanForMissed;
       // For the scan, brief the model on every OTHER change so it doesn't
       // re-report one under `missed`. The current chunk's changes are already
       // in this call's JSON payload, so they're excluded here, which means a
@@ -379,15 +387,16 @@ export class AiChangeAnalyzer {
       this.reviewedCount += 1;
 
       // A downgrade (breaking -> non-breaking) is the only verdict that can
-      // clear a flagged break, so it is the only risky one. The lean default
-      // does NOT apply it: the change stays breaking and the model's opinion is
-      // recorded so a human can re-run with --ai-strict to relax it under full
-      // context. Escalations (-> breaking) and confirmations always apply, in
-      // both modes. This makes the default path unable to hide a real break.
+      // clear a flagged break, so it is the only risky one. Unless the caller
+      // opted into applying downgrades, we do NOT apply it: the change stays
+      // breaking and the model's opinion is recorded so a human can re-run with
+      // --ai-apply-downgrades to relax it. Escalations (-> breaking) and
+      // confirmations always apply. This makes the default path unable to hide
+      // a real break.
       const isDowngrade =
         change.type === ChangeType.BREAKING &&
         verdictType === ChangeType.NON_BREAKING;
-      if (isDowngrade && !this.strict) {
+      if (isDowngrade && !this.applyDowngrades) {
         enriched.push({
           ...change,
           aiAnalysis: {
@@ -595,22 +604,6 @@ export class AiChangeAnalyzer {
     return this.clientPromise;
   }
 
-  private buildSurfaceBlock(ctx: AiPackageContext): string {
-    // Current surface only. The previous shape of each reviewed change rides
-    // along in its inline beforeSnippet, so the model only needs the current
-    // surface to resolve named types referenced by the new signatures. The
-    // baselineApiJsonPath is still carried on the context for callers that may
-    // diff it directly, but the prompt does not ship the baseline dump.
-    const current = extractSurface(ctx.currentApiJsonPath);
-    return [
-      `# Current API surface for ${ctx.packageName}`,
-      "(The previous signature for each reviewed change is in its beforeSnippet, in the review list below.)",
-      "```ts",
-      current,
-      "```",
-    ].join("\n");
-  }
-
   private warn(message: string): void {
     this.logger.warn(message);
   }
@@ -619,12 +612,15 @@ export class AiChangeAnalyzer {
 /* -------------------------------------------------------------- helpers -- */
 
 interface ExcerptToken {
+  kind?: string;
   text: string;
+  canonicalReference?: string;
 }
 
 interface ApiJsonMember {
   kind: string;
   name: string;
+  canonicalReference?: string;
   excerptTokens?: ExcerptToken[];
   members?: ApiJsonMember[];
 }
@@ -662,6 +658,203 @@ function extractSurface(apiJsonPath: string): string {
   for (const m of json.members) walk(m);
   lines.sort();
   return lines.join("\n");
+}
+
+/**
+ * Full current surface, used by the missed-breaks audit which needs to see
+ * every export to spot something the rule pass didn't flag.
+ */
+function buildFullSurfaceBlock(ctx: AiPackageContext): string {
+  const current = extractSurface(ctx.currentApiJsonPath);
+  return [
+    `# Current API surface for ${ctx.packageName}`,
+    "(The previous signature for each reviewed change is in its beforeSnippet, in the review list below.)",
+    "```ts",
+    current,
+    "```",
+  ].join("\n");
+}
+
+/** One node in the walked surface tree. */
+interface SurfaceNode {
+  qualified: string;
+  kind: string;
+  canonicalRef?: string;
+  /** This member's own signature line ("" when it has no excerpt). */
+  line: string;
+  /** canonicalReferences named directly in this member's own excerpt. */
+  ownRefs: string[];
+  children: SurfaceNode[];
+}
+
+interface WalkedSurface {
+  /** Every member keyed by its canonicalReference (resolves references). */
+  byRef: Map<string, SurfaceNode>;
+  /** Every member keyed by its parent-qualified name (seeds from changes). */
+  byName: Map<string, SurfaceNode>;
+}
+
+function normalizeExcerpt(tokens?: ExcerptToken[]): string {
+  return (tokens ?? [])
+    .map((t) => t.text)
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Walk an api-extractor JSON into an indexed tree: each member carries its own
+ * signature line, the canonicalReferences named in its excerpt, and its
+ * children. Indexed by canonicalReference (to resolve a reference to its
+ * definition) and by qualified name (to seed from a rule-based change).
+ */
+function walkSurface(apiJsonPath: string): WalkedSurface {
+  const raw = fs.readFileSync(apiJsonPath, "utf-8");
+  const json: ApiJsonRoot = JSON.parse(raw);
+  const byRef = new Map<string, SurfaceNode>();
+  const byName = new Map<string, SurfaceNode>();
+
+  const build = (m: ApiJsonMember, parent?: string): SurfaceNode | null => {
+    if (m.kind === "EntryPoint") {
+      for (const child of m.members ?? []) build(child, parent);
+      return null;
+    }
+    const qualified = parent ? `${parent}.${m.name}` : m.name;
+    const ownRefs: string[] = [];
+    for (const t of m.excerptTokens ?? []) {
+      if (t.kind === "Reference" && t.canonicalReference) {
+        ownRefs.push(t.canonicalReference);
+      }
+    }
+    const text = normalizeExcerpt(m.excerptTokens);
+    const node: SurfaceNode = {
+      qualified,
+      kind: m.kind,
+      canonicalRef: m.canonicalReference,
+      line: text ? `${m.kind} ${qualified}: ${text}` : "",
+      ownRefs,
+      children: [],
+    };
+    byName.set(qualified, node);
+    if (m.canonicalReference) byRef.set(m.canonicalReference, node);
+    for (const child of m.members ?? []) {
+      const c = build(child, qualified);
+      if (c) node.children.push(c);
+    }
+    return node;
+  };
+
+  for (const m of json.members) build(m);
+  return { byRef, byName };
+}
+
+function subtreeLines(node: SurfaceNode): string[] {
+  const out: string[] = [];
+  const visit = (n: SurfaceNode): void => {
+    if (n.line) out.push(n.line);
+    for (const c of n.children) visit(c);
+  };
+  visit(node);
+  return out;
+}
+
+function collectSubtreeRefs(node: SurfaceNode, acc: Set<string>): void {
+  for (const r of node.ownRefs) acc.add(r);
+  for (const c of node.children) collectSubtreeRefs(c, acc);
+}
+
+/**
+ * Cap the breadth of the referenced-type closure so a pathological change (a
+ * type that transitively touches half the package) can't reinflate the prompt.
+ * Hitting the cap just means the model sees fewer definitions and, per
+ * system-prompt rule 8, keeps "breaking" where it can't resolve: the safe side.
+ */
+const MAX_FOCUSED_SYMBOLS = 200;
+
+/**
+ * Focused verdict context: for the changes under review, the definitions of the
+ * types their signatures reference (transitively), from the current surface,
+ * plus the baseline definition of any referenced type that itself changed so a
+ * downgrade can be judged against old-vs-new. Everything else is omitted. The
+ * changed members are not re-emitted; their before/after signatures already
+ * ride inline in the review list.
+ */
+function buildFocusedSurfaceBlock(
+  ctx: AiPackageContext,
+  changes: ApiChange[],
+): string {
+  const current = walkSurface(ctx.currentApiJsonPath);
+  let baseline: WalkedSurface = { byRef: new Map(), byName: new Map() };
+  try {
+    baseline = walkSurface(ctx.baselineApiJsonPath);
+  } catch {
+    // New package or unreadable baseline: focus on the current side only.
+  }
+
+  // Seed with the references named directly in each changed member's signature,
+  // on BOTH sides: a changed signature may reference a type in its old form
+  // that the new form drops (and vice versa), and a downgrade needs to see both.
+  const queue: string[] = [];
+  for (const change of changes) {
+    const cur = current.byName.get(change.name);
+    const base = baseline.byName.get(change.name);
+    if (cur) queue.push(...cur.ownRefs);
+    if (base) queue.push(...base.ownRefs);
+  }
+
+  // BFS over referenced symbols, pulling in each one's transitive refs.
+  const visited = new Set<string>();
+  while (queue.length > 0 && visited.size < MAX_FOCUSED_SYMBOLS) {
+    const ref = queue.shift() as string;
+    if (visited.has(ref)) continue;
+    const curNode = current.byRef.get(ref);
+    const baseNode = baseline.byRef.get(ref);
+    if (!curNode && !baseNode) continue; // external / unresolvable: skip
+    visited.add(ref);
+    const refs = new Set<string>();
+    if (curNode) collectSubtreeRefs(curNode, refs);
+    if (baseNode) collectSubtreeRefs(baseNode, refs);
+    for (const r of refs) if (!visited.has(r)) queue.push(r);
+  }
+  const truncated = visited.size >= MAX_FOCUSED_SYMBOLS && queue.length > 0;
+
+  // Emit each referenced type's current definition, and its baseline definition
+  // when it changed (that delta is exactly what a downgrade hinges on).
+  const blocks: { name: string; text: string }[] = [];
+  for (const ref of visited) {
+    const curNode = current.byRef.get(ref);
+    const baseNode = baseline.byRef.get(ref);
+    const curDef = curNode ? subtreeLines(curNode).join("\n") : "";
+    const baseDef = baseNode ? subtreeLines(baseNode).join("\n") : "";
+    const parts: string[] = [];
+    if (curDef) parts.push(curDef);
+    if (baseDef && baseDef !== curDef) parts.push(`// previously:\n${baseDef}`);
+    if (parts.length > 0) {
+      blocks.push({
+        name: curNode?.qualified ?? baseNode?.qualified ?? ref,
+        text: parts.join("\n"),
+      });
+    }
+  }
+  blocks.sort((a, b) => a.name.localeCompare(b.name));
+
+  const header = [
+    `# Referenced type definitions for ${ctx.packageName}`,
+    "(Only the types the changes under review reference. The previous signature of each change is in its beforeSnippet; `// previously:` shows a referenced type's baseline definition where it changed.)",
+  ];
+  if (blocks.length === 0) {
+    header.push(
+      "(none: the changes reference no named package types; judge from the before/after snippets.)",
+    );
+    return header.join("\n");
+  }
+  const body = ["```ts", blocks.map((b) => b.text).join("\n\n"), "```"];
+  if (truncated) {
+    body.push(
+      `(referenced-type context truncated at ${MAX_FOCUSED_SYMBOLS} symbols.)`,
+    );
+  }
+  return [...header, ...body].join("\n");
 }
 
 function parseVerdict(input: unknown): AiVerdict | null {

@@ -128,7 +128,7 @@ test("ai-analyzer: AI confirms rule-based verdict", async () => {
   }
 });
 
-test("ai-analyzer: strict applies a BREAKING -> NON_BREAKING downgrade", async () => {
+test("ai-analyzer: applyDowngrades applies a BREAKING -> NON_BREAKING downgrade", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = ruleBasedBreakingChange();
   const { client } = stubClient({
@@ -145,7 +145,7 @@ test("ai-analyzer: strict applies a BREAKING -> NON_BREAKING downgrade", async (
   const analyzer = new AiChangeAnalyzer({
     apiKey: "test-key",
     client,
-    strict: true,
+    applyDowngrades: true,
     logger: SILENT_LOGGER,
   });
 
@@ -253,7 +253,7 @@ test("ai-analyzer: AI escalates NON_BREAKING -> BREAKING", async () => {
   }
 });
 
-test("ai-analyzer: AI discovers a missed break (strict)", async () => {
+test("ai-analyzer: AI discovers a missed break (scanForMissed)", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const { client } = stubClient({
     verdicts: [],
@@ -270,12 +270,12 @@ test("ai-analyzer: AI discovers a missed break (strict)", async () => {
       },
     ],
   });
-  // The missed-breaks audit is opt-in (strict); without it an empty change
-  // list makes no call at all (see the dedicated test below).
+  // The missed-breaks audit is opt-in (scanForMissed); without it an empty
+  // change list makes no call at all (see the dedicated test below).
   const analyzer = new AiChangeAnalyzer({
     apiKey: "test-key",
     client,
-    strict: true,
+    scanForMissed: true,
     logger: SILENT_LOGGER,
   });
 
@@ -406,7 +406,7 @@ test("ai-analyzer: ADDITION changes pass through without a verdict needed", asyn
   }
 });
 
-test("ai-analyzer: additions-only still calls once under strict", async () => {
+test("ai-analyzer: additions-only still calls once under scanForMissed", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = {
     id: "add1",
@@ -421,7 +421,7 @@ test("ai-analyzer: additions-only still calls once under strict", async () => {
   const analyzer = new AiChangeAnalyzer({
     apiKey: "test-key",
     client,
-    strict: true,
+    scanForMissed: true,
     logger: SILENT_LOGGER,
   });
 
@@ -441,7 +441,7 @@ test("ai-analyzer: additions-only still calls once under strict", async () => {
   }
 });
 
-test("ai-analyzer: lean path ships the current surface only, no missed scan", async () => {
+test("ai-analyzer: lean path ships the focused context, no missed scan", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = ruleBasedBreakingChange();
   const { client, calls } = stubClient({
@@ -471,12 +471,10 @@ test("ai-analyzer: lean path ships the current surface only, no missed scan", as
 
     assert.equal(calls.length, 1);
     const [surfaceBlock, instruction] = calls[0].messages[0].content;
-    // No baseline dump: the previous shape rides along in beforeSnippet.
-    assert.ok(
-      !surfaceBlock.text.includes("## Baseline"),
-      "lean path must not ship the baseline surface dump",
-    );
-    assert.ok(surfaceBlock.text.includes("Current API surface"));
+    // Focused, not the full surface dump: the default ships only referenced
+    // type defs (here none, since greet's signature is primitives only).
+    assert.ok(surfaceBlock.text.includes("Referenced type definitions"));
+    assert.ok(!surfaceBlock.text.includes("Current API surface"));
     // Single call: no cache breakpoint to amortize.
     assert.equal(surfaceBlock.cache_control, undefined);
     // Verdict-only: the model is told to return an empty missed array.
@@ -486,7 +484,7 @@ test("ai-analyzer: lean path ships the current surface only, no missed scan", as
   }
 });
 
-test("ai-analyzer: strict requests the missed audit but stays current-only", async () => {
+test("ai-analyzer: scanForMissed sends the full surface and requests the audit", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = ruleBasedBreakingChange();
   const { client, calls } = stubClient({
@@ -504,7 +502,7 @@ test("ai-analyzer: strict requests the missed audit but stays current-only", asy
   const analyzer = new AiChangeAnalyzer({
     apiKey: "test-key",
     client,
-    strict: true,
+    scanForMissed: true,
     logger: SILENT_LOGGER,
   });
 
@@ -516,17 +514,168 @@ test("ai-analyzer: strict requests the missed audit but stays current-only", asy
     });
 
     const [surfaceBlock, instruction] = calls[0].messages[0].content;
-    // Strict is as lean as the default: still no baseline dump.
-    assert.ok(!surfaceBlock.text.includes("## Baseline"));
+    // The audit needs breadth, so it gets the full current surface (every
+    // export), not the focused referenced-type set.
     assert.ok(surfaceBlock.text.includes("Current API surface"));
-    // But it does ask the model to audit for missed breaks.
+    assert.ok(surfaceBlock.text.includes("greet"));
     assert.ok(instruction.text.toLowerCase().includes("scan the current api"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("ai-analyzer: strict coerces a bogus ADDITION verdict to NON_BREAKING", async () => {
+// --- focused-context resolution (needs real Reference tokens) ---
+
+const C = (text) => ({ kind: "Content", text });
+const R = (text, canonicalReference) => ({
+  kind: "Reference",
+  text,
+  canonicalReference,
+});
+const iface = (name, props) => ({
+  kind: "Interface",
+  name,
+  canonicalReference: `@demo/pkg!${name}:interface`,
+  excerptTokens: [C(`export interface ${name} `)],
+  members: props,
+});
+const prop = (parent, name, typeTokens) => ({
+  kind: "PropertySignature",
+  name,
+  canonicalReference: `@demo/pkg!${parent}#${name}`,
+  excerptTokens: [C(`${name}: `), ...typeTokens, C(";")],
+});
+
+// Capture the surface text the analyzer sends for a single function change.
+async function focusedSurfaceFor(members, changeName) {
+  const dir = mkdtempSync(join(tmpdir(), "break-check-focus-"));
+  const baseline = join(dir, "baseline.api.json");
+  const current = join(dir, "current.api.json");
+  writeApiJson(baseline, members);
+  writeApiJson(current, members);
+  let surfaceText = "";
+  const client = {
+    messages: {
+      async create(params) {
+        surfaceText = params.messages[0].content[0].text;
+        return {
+          content: [
+            {
+              type: "tool_use",
+              name: "submit_review",
+              input: {
+                verdicts: [
+                  {
+                    id: "c1",
+                    type: "breaking",
+                    confidence: 0.9,
+                    rationale: "x",
+                  },
+                ],
+                missed: [],
+              },
+            },
+          ],
+        };
+      },
+    },
+  };
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "k",
+    client,
+    logger: SILENT_LOGGER,
+  });
+  try {
+    await analyzer.analyze(
+      [
+        {
+          id: "c1",
+          type: ChangeType.BREAKING,
+          severity: ChangeSeverity.MAJOR,
+          category: "function",
+          name: changeName,
+          description: "changed",
+          beforeSnippet: "x",
+          afterSnippet: "y",
+        },
+      ],
+      {
+        packageName: "@demo/pkg",
+        baselineApiJsonPath: baseline,
+        currentApiJsonPath: current,
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return surfaceText;
+}
+
+test("ai-analyzer: focused context includes referenced types, excludes unrelated", async () => {
+  const members = [
+    iface("Opts", [prop("Opts", "a", [C("string")])]),
+    {
+      kind: "TypeAlias",
+      name: "Id",
+      canonicalReference: "@demo/pkg!Id:type",
+      excerptTokens: [C("export type Id = string;")],
+    },
+    iface("Other", [prop("Other", "z", [C("number")])]),
+    {
+      kind: "Function",
+      name: "make",
+      canonicalReference: "@demo/pkg!make:function(1)",
+      excerptTokens: [
+        C("export declare function make(opts: "),
+        R("Opts", "@demo/pkg!Opts:interface"),
+        C("): "),
+        R("Id", "@demo/pkg!Id:type"),
+        C(";"),
+      ],
+    },
+  ];
+
+  const surface = await focusedSurfaceFor(members, "make");
+  // The types `make` references are present...
+  assert.ok(
+    surface.includes("Opts"),
+    "should include referenced interface Opts",
+  );
+  assert.ok(surface.includes("Opts.a"), "should include Opts members");
+  assert.ok(surface.includes("Id"), "should include referenced type Id");
+  // ...the unrelated export is not.
+  assert.ok(!surface.includes("Other"), "must not include unrelated Other");
+});
+
+test("ai-analyzer: focused context resolves transitive references", async () => {
+  const members = [
+    iface("Inner", [prop("Inner", "deep", [C("string")])]),
+    iface("Wrapper", [
+      prop("Wrapper", "inner", [R("Inner", "@demo/pkg!Inner:interface")]),
+    ]),
+    iface("Unrelated", [prop("Unrelated", "q", [C("number")])]),
+    {
+      kind: "Function",
+      name: "use",
+      canonicalReference: "@demo/pkg!use:function(1)",
+      excerptTokens: [
+        C("export declare function use(w: "),
+        R("Wrapper", "@demo/pkg!Wrapper:interface"),
+        C("): void;"),
+      ],
+    },
+  ];
+
+  const surface = await focusedSurfaceFor(members, "use");
+  assert.ok(surface.includes("Wrapper"), "direct reference Wrapper present");
+  assert.ok(
+    surface.includes("Inner"),
+    "transitive reference Inner (via Wrapper.inner) present",
+  );
+  assert.ok(!surface.includes("Unrelated"), "unrelated type excluded");
+});
+
+test("ai-analyzer: applyDowngrades coerces a bogus ADDITION verdict to NON_BREAKING", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = ruleBasedBreakingChange();
   const warnings = [];
@@ -544,7 +693,7 @@ test("ai-analyzer: strict coerces a bogus ADDITION verdict to NON_BREAKING", asy
   const analyzer = new AiChangeAnalyzer({
     apiKey: "test-key",
     client,
-    strict: true,
+    applyDowngrades: true,
     logger: {
       warn: (m) => warnings.push(m),
       log: () => {},
@@ -559,8 +708,8 @@ test("ai-analyzer: strict coerces a bogus ADDITION verdict to NON_BREAKING", asy
     });
 
     // ADDITION is reserved for brand-new exports; the model violated the
-    // protocol on an in-place modification, so we coerce to NON_BREAKING. Under
-    // strict, that downgrade is then applied.
+    // protocol on an in-place modification, so we coerce to NON_BREAKING. With
+    // applyDowngrades on, that downgrade is then applied.
     assert.equal(result.type, ChangeType.NON_BREAKING);
     assert.equal(result.severity, ChangeSeverity.MINOR);
     assert.equal(result.ruleBasedType, ChangeType.BREAKING);

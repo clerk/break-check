@@ -41,12 +41,22 @@ export const AiConfigSchema = z.object({
   maxChangesPerCall: z.number().int().positive().default(80),
 
   /**
-   * When true, also invoke the AI reviewer for diffs that the rule-based pass
-   * classified as pure additions. Useful for paranoid scans; costs an extra
-   * model call per such package. May also be enabled via `BREAK_CHECK_AI_STRICT=1`
-   * or `--ai-strict`.
+   * Apply the model's `breaking -> non-breaking` downgrades. A downgrade is the
+   * only verdict that can clear a flagged break, so by default it is recorded
+   * as a suggestion in the report and the change stays breaking; set this (or
+   * `--ai-apply-downgrades` / `BREAK_CHECK_AI_APPLY_DOWNGRADES`) to actually
+   * relax those verdicts.
    */
-  strict: z.boolean().default(false),
+  applyDowngrades: z.boolean().default(false),
+
+  /**
+   * Run the open-ended "what did the rule-based pass miss?" audit. Sends the
+   * full current surface and reviews additions-only diffs too, so it costs more
+   * tokens and extra calls. Off by default; the verdict path ships only the
+   * focused set of types each change references. Also enabled via `--ai-scan`
+   * or `BREAK_CHECK_AI_SCAN=1`.
+   */
+  scanForMissed: z.boolean().default(false),
 });
 
 /**

@@ -427,7 +427,7 @@ export class MarkdownReporter {
       lines.push(`> 🤖 **${label}** (${confidence}%): ${ai.rationale}\n`);
       if (ai.source === "ai-suggested-downgrade") {
         lines.push(
-          `> Kept breaking by the lean reviewer; re-run with \`--ai-strict\` to relax this under full context.\n`,
+          `> Kept breaking by the reviewer; re-run with \`--ai-apply-downgrades\` to apply this relaxation.\n`,
         );
       }
       if (ai.migration) {
