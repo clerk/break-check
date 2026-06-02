@@ -12,6 +12,11 @@ dist/
 *.swp
 *.swo
 
+# Local agent tooling
+.beads/
+.conductor/
+.context/
+
 # OS
 .DS_Store
 Thumbs.db
