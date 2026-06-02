@@ -62,6 +62,16 @@ export interface AiPackageContext {
   packageName: string;
   baselineApiJsonPath: string;
   currentApiJsonPath: string;
+  /**
+   * Current `.api.json` paths for the package's OTHER subpaths. Used only to
+   * resolve a changed type's *usage sites* (referrers), which determine whether
+   * the type is consumer-input or read-only output. A type and the signatures
+   * that establish its direction (`getX(): Promise<T>`) frequently live in
+   * different subpath rollups, and the analyzer otherwise sees one subpath at a
+   * time. Optional; absent means usage sites are resolved from the current
+   * surface alone.
+   */
+  siblingCurrentApiJsonPaths?: string[];
 }
 
 /**
@@ -220,12 +230,16 @@ Reasoning rules:
 6. Generic constraint tightening is breaking; loosening is non-breaking.
 7. When uncertain, prefer "breaking" but lower confidence to reflect the uncertainty.
 8. Only relax a rule-based "breaking" verdict to "non-breaking" when you can fully resolve the relevant types from the current API surface or the change's before/after snippets. If a referenced type's definition is not available to you, keep "breaking".
+9. Adding a *new optional* property to an object type is non-breaking, for both input and output types: existing consumers neither passed it nor relied on reading it. (This is distinct from rule 4, which is about flipping an *existing* output field to optional.)
+10. \`Pick\`, \`Omit\`, \`Partial\`, \`Required\`, and other mapped types preserve each member's optionality from the source type. Resolve the member against the referenced source definition before judging; a property newly included by a \`Pick\` (or surviving an \`Omit\`) is optional in the result whenever the source declares it optional, so do not treat it as required unless the source does.
+11. Adding a *required* property to a type is breaking only when consumers construct or assign values of that type (a parameter / input position, or an object literal they author against the type). For a type consumers only read (a return / response / output type, e.g. the resolved value of a \`Promise<T>\` return or a hook result field), adding a property is non-breaking. Determine the direction from the "Usage sites" block: a \`Promise<T>\` result, a function return, or a result field is output. If any usage is an input position, or no usage sites are shown, keep "breaking".
 
 Output protocol:
 - Always respond by calling the submit_review tool. Never reply with plain text.
 - Provide exactly one verdict object per supplied rule-based change, keyed by its id.
 - Populate "missed" only when the user message explicitly asks you to scan for missed changes; otherwise return an empty array. Never invent changes; if unsure, leave it out.
 - Keep each rationale to one short, specific sentence (cite the type/parameter name).
+- Never leave a verdict's rationale conditional on a fact you can resolve from the provided surface or usage sites (whether a property is optional, whether a type is input or output). Resolve it first, then give a definite verdict.
 - For any verdict whose type is "breaking", include a one-sentence "migration" hint for consumers.`;
 
 /* --------------------------------------------------------------- analyzer -- */
@@ -703,6 +717,8 @@ interface WalkedSurface {
   byRef: Map<string, SurfaceNode>;
   /** Every member keyed by its parent-qualified name (seeds from changes). */
   byName: Map<string, SurfaceNode>;
+  /** Every member, flat, for scanning referrers (includes ones without a ref). */
+  allNodes: SurfaceNode[];
 }
 
 function normalizeExcerpt(tokens?: ExcerptToken[]): string {
@@ -724,6 +740,7 @@ function walkSurface(apiJsonPath: string): WalkedSurface {
   const json: ApiJsonRoot = JSON.parse(raw);
   const byRef = new Map<string, SurfaceNode>();
   const byName = new Map<string, SurfaceNode>();
+  const allNodes: SurfaceNode[] = [];
 
   const build = (
     m: ApiJsonMember,
@@ -751,6 +768,7 @@ function walkSurface(apiJsonPath: string): WalkedSurface {
       ownRefs,
       children: [],
     };
+    allNodes.push(node);
     // The full-chain qualified name is authoritative, so it always wins. The
     // rule-based differ (api-diff.ts) names a member with its IMMEDIATE parent
     // only (`Inner.a`, not `Outer.Inner.a` for a namespace-nested member), so
@@ -768,7 +786,34 @@ function walkSurface(apiJsonPath: string): WalkedSurface {
   };
 
   for (const m of json.members) build(m);
-  return { byRef, byName };
+  return { byRef, byName, allNodes };
+}
+
+/**
+ * Memoized `walkSurface`, keyed by path + mtime. The usage-site pass walks the
+ * same sibling surfaces once per subpath under review, so without a cache a
+ * package with N subpaths would parse each `.api.json` up to N times. Keying on
+ * mtime keeps it correct if a path is rewritten (e.g. across test runs that
+ * reuse a temp path).
+ */
+const walkCache = new Map<
+  string,
+  { mtimeMs: number; surface: WalkedSurface }
+>();
+
+function walkSurfaceCached(apiJsonPath: string): WalkedSurface {
+  let mtimeMs = 0;
+  try {
+    mtimeMs = fs.statSync(apiJsonPath).mtimeMs;
+  } catch {
+    // Missing/unreadable: fall through so walkSurface throws a readable error
+    // (callers that can tolerate it, like sibling scans, wrap this in try/catch).
+  }
+  const cached = walkCache.get(apiJsonPath);
+  if (cached && cached.mtimeMs === mtimeMs) return cached.surface;
+  const surface = walkSurface(apiJsonPath);
+  walkCache.set(apiJsonPath, { mtimeMs, surface });
+  return surface;
 }
 
 function subtreeLines(node: SurfaceNode): string[] {
@@ -806,10 +851,14 @@ function buildFocusedSurfaceBlock(
   ctx: AiPackageContext,
   changes: ApiChange[],
 ): string {
-  const current = walkSurface(ctx.currentApiJsonPath);
-  let baseline: WalkedSurface = { byRef: new Map(), byName: new Map() };
+  const current = walkSurfaceCached(ctx.currentApiJsonPath);
+  let baseline: WalkedSurface = {
+    byRef: new Map(),
+    byName: new Map(),
+    allNodes: [],
+  };
   try {
-    baseline = walkSurface(ctx.baselineApiJsonPath);
+    baseline = walkSurfaceCached(ctx.baselineApiJsonPath);
   } catch {
     // New package or unreadable baseline: focus on the current side only.
   }
@@ -861,23 +910,124 @@ function buildFocusedSurfaceBlock(
   }
   blocks.sort((a, b) => a.name.localeCompare(b.name));
 
+  // Usage sites: where each changed NAMED type is referenced across the package.
+  // Direction (input vs output) can't be read from a type's own definition, so
+  // its referrers are surfaced from the current surface plus the sibling subpath
+  // surfaces (the changed type and its usage sites often live in different
+  // rollups). This only ever helps the model relax a verdict; it is told to keep
+  // "breaking" when no usage sites are shown, so missing referrers fail safe.
+  const usageSites = collectUsageSites(ctx, changes, current);
+
   const header = [
     `# Referenced type definitions for ${ctx.packageName}`,
     "(Only the types the changes under review reference. The previous signature of each change is in its beforeSnippet; `// previously:` shows a referenced type's baseline definition where it changed.)",
   ];
-  if (blocks.length === 0) {
+  if (blocks.length === 0 && usageSites.length === 0) {
     header.push(
       "(none: the changes reference no named package types; judge from the before/after snippets.)",
     );
     return header.join("\n");
   }
-  const body = ["```ts", blocks.map((b) => b.text).join("\n\n"), "```"];
-  if (truncated) {
-    body.push(
-      `(referenced-type context truncated at ${MAX_FOCUSED_SYMBOLS} symbols.)`,
-    );
+
+  const out = [...header];
+  if (blocks.length > 0) {
+    out.push("```ts", blocks.map((b) => b.text).join("\n\n"), "```");
+    if (truncated) {
+      out.push(
+        `(referenced-type context truncated at ${MAX_FOCUSED_SYMBOLS} symbols.)`,
+      );
+    }
   }
-  return [...header, ...body].join("\n");
+  if (usageSites.length > 0) {
+    out.push(
+      "",
+      "## Usage sites",
+      "(Where each changed type is referenced in the current package surface, to judge input vs output direction. A `Promise<T>` result, a function return, or a result field is output; a parameter or input field is input.)",
+      "```ts",
+    );
+    for (const group of usageSites) {
+      out.push(`// ${group.typeName}:`);
+      for (const line of group.lines) out.push(line);
+      if (group.truncated) {
+        out.push(`// ... more usage sites of ${group.typeName} elided ...`);
+      }
+    }
+    out.push("```");
+  }
+  return out.join("\n");
+}
+
+/** Per-type usage-site listing for the focused context's "Usage sites" block. */
+interface UsageGroup {
+  typeName: string;
+  lines: string[];
+  truncated: boolean;
+}
+
+const MAX_USAGE_SITES_PER_TYPE = 25;
+const MAX_USAGE_SITES_TOTAL = 60;
+
+/**
+ * For each changed type that resolves to a named symbol, collect the signature
+ * lines of the members that reference it (its usage sites) across the current
+ * surface and any sibling subpath surfaces. Matched by canonicalReference, which
+ * is stable across a package's subpath rollups; an unresolvable/diverging ref
+ * just yields fewer usage sites, which fails safe (the model keeps "breaking"
+ * when direction is unclear). Bounded per-type and overall so a widely-used type
+ * can't reinflate the prompt.
+ */
+function collectUsageSites(
+  ctx: AiPackageContext,
+  changes: ApiChange[],
+  current: WalkedSurface,
+): UsageGroup[] {
+  // canonicalReference -> display name, for each changed symbol that has one.
+  const targets = new Map<string, string>();
+  for (const change of changes) {
+    const node = current.byName.get(change.name);
+    if (node?.canonicalRef && !targets.has(node.canonicalRef)) {
+      targets.set(node.canonicalRef, node.qualified || change.name);
+    }
+  }
+  if (targets.size === 0) return [];
+
+  const surfaces: WalkedSurface[] = [current];
+  for (const siblingPath of ctx.siblingCurrentApiJsonPaths ?? []) {
+    try {
+      surfaces.push(walkSurfaceCached(siblingPath));
+    } catch {
+      // Unreadable sibling: skip. Fewer usage sites just means more caution.
+    }
+  }
+
+  const linesByTarget = new Map<string, Set<string>>();
+  for (const ref of targets.keys()) linesByTarget.set(ref, new Set());
+  for (const surface of surfaces) {
+    for (const node of surface.allNodes) {
+      if (!node.line) continue;
+      for (const ref of node.ownRefs) {
+        // A type referencing itself (recursive shape) is not a usage site.
+        if (node.canonicalRef === ref) continue;
+        linesByTarget.get(ref)?.add(node.line);
+      }
+    }
+  }
+
+  const groups: UsageGroup[] = [];
+  let total = 0;
+  for (const [ref, typeName] of targets) {
+    if (total >= MAX_USAGE_SITES_TOTAL) break;
+    const all = Array.from(linesByTarget.get(ref) ?? []).sort();
+    if (all.length === 0) continue;
+    const budget = Math.min(
+      MAX_USAGE_SITES_PER_TYPE,
+      MAX_USAGE_SITES_TOTAL - total,
+    );
+    const lines = all.slice(0, budget);
+    total += lines.length;
+    groups.push({ typeName, lines, truncated: lines.length < all.length });
+  }
+  return groups;
 }
 
 function parseVerdict(input: unknown): AiVerdict | null {

@@ -24,6 +24,7 @@ import {
 import { ApiDiffAnalyzer } from "../analyzers/api-diff.js";
 import { VersionAnalyzer } from "../analyzers/version.js";
 import { AiChangeAnalyzer } from "../analyzers/ai-analyzer.js";
+import { makeAcknowledgedMatcher } from "../utils/acknowledged.js";
 import {
   AnalysisResult,
   ApiChange,
@@ -131,6 +132,10 @@ export class BreakingChangesDetector {
   private aiInitialized = false;
   private aiApplyDowngrades: boolean;
   private aiScanForMissed: boolean;
+  private acknowledgedMatcher: (
+    packageName: string,
+    change: ApiChange,
+  ) => boolean;
   private verbose: boolean;
   private configPath: string;
   private configDir: string;
@@ -164,6 +169,9 @@ export class BreakingChangesDetector {
       detectorOptions.aiScanForMissed,
       "BREAK_CHECK_AI_SCAN",
       this.config.ai?.scanForMissed,
+    );
+    this.acknowledgedMatcher = makeAcknowledgedMatcher(
+      this.config.acknowledgedChanges ?? [],
     );
   }
 
@@ -726,6 +734,17 @@ export class BreakingChangesDetector {
     );
     const currentEntries: PackageEntry[] = packageInfo.entries;
 
+    // Current `.api.json` per subpath, so the AI reviewer can resolve a changed
+    // type's usage sites (callers) across the package's other subpath rollups,
+    // not just the one being diffed. See `buildFocusedSurfaceBlock`.
+    const currentApiJsonBySubpath = new Map<string, string>();
+    for (const entry of currentEntries) {
+      const snap = currentSnapshots.get(
+        snapshotKey(packageInfo.name, entry.subpath),
+      );
+      if (snap) currentApiJsonBySubpath.set(entry.subpath, snap.apiJsonPath);
+    }
+
     if (baselineEntries.length > 0) {
       // Use the baseline's recorded version, falling back to a heuristic.
       previousVersion = baselineEntries[0].version;
@@ -793,10 +812,16 @@ export class BreakingChangesDetector {
           this.log(
             `Running AI review for ${packageInfo.name} ${entry.subpath}...`,
           );
+          const siblingCurrentApiJsonPaths = Array.from(
+            currentApiJsonBySubpath.entries(),
+          )
+            .filter(([subpath]) => subpath !== entry.subpath)
+            .map(([, apiJsonPath]) => apiJsonPath);
           entryChanges = await ai.analyze(entryChanges, {
             packageName: `${packageInfo.name} (${entry.subpath})`,
             baselineApiJsonPath: baselineSnap.apiJsonPath,
             currentApiJsonPath: currentSnap.apiJsonPath,
+            siblingCurrentApiJsonPaths,
           });
           aiReviewedBy = ai.model;
         }
@@ -816,10 +841,33 @@ export class BreakingChangesDetector {
       allChanges.push(this.buildSubpathRemovalChange(baseline.subpath));
     }
 
-    const hasBreakingChanges = allChanges.some(
+    // 3. Apply maintainer acknowledgements last: a breaking change the config
+    // greens is flipped to non-breaking (recording the rule-based verdict in
+    // `ruleBasedType`), unconditionally and regardless of the AI's opinion. This
+    // is the explicit escape hatch for a verified-safe change the differ (and
+    // even the AI) still flags. Running it over the assembled list covers
+    // rule-based, AI-escalated/discovered, and synthesized subpath changes.
+    const acknowledgedChanges = allChanges.map((change) => {
+      if (
+        change.type !== ChangeType.BREAKING ||
+        !this.acknowledgedMatcher(packageInfo.name, change)
+      ) {
+        return change;
+      }
+      return {
+        ...change,
+        type: ChangeType.NON_BREAKING,
+        severity: ChangeSeverity.MINOR,
+        ruleBasedType: change.ruleBasedType ?? change.type,
+        acknowledged: true,
+      };
+    });
+
+    const hasBreakingChanges = acknowledgedChanges.some(
       (c) => c.type === ChangeType.BREAKING,
     );
-    const recommendedBump = this.versionAnalyzer.getRecommendedBump(allChanges);
+    const recommendedBump =
+      this.versionAnalyzer.getRecommendedBump(acknowledgedChanges);
     const actualBump = this.versionAnalyzer.getActualBump(
       previousVersion,
       packageInfo.version,
@@ -835,7 +883,7 @@ export class BreakingChangesDetector {
         current: packageInfo.version,
         previous: previousVersion,
       },
-      changes: allChanges,
+      changes: acknowledgedChanges,
       hasBreakingChanges,
       recommendedVersionBump: recommendedBump,
       actualVersionBump: actualBump ?? undefined,

@@ -46,3 +46,24 @@ test("config: the replacement ai keys load", () => {
     },
   );
 });
+
+test("config: acknowledgedChanges loads as a string array", () => {
+  const patterns = ["R", "@demo/pkg#OAuthConsentInfo", "Clerk.__internal_*"];
+  withConfig({ packages: ["pkg"], acknowledgedChanges: patterns }, (file) => {
+    const cfg = loadConfig(file);
+    assert.deepEqual(cfg.acknowledgedChanges, patterns);
+  });
+});
+
+test("config: acknowledgedChanges defaults to an empty array", () => {
+  withConfig({ packages: ["pkg"] }, (file) => {
+    const cfg = loadConfig(file);
+    assert.deepEqual(cfg.acknowledgedChanges, []);
+  });
+});
+
+test("config: acknowledgedChanges rejects a non-string entry", () => {
+  withConfig({ packages: ["pkg"], acknowledgedChanges: [123] }, (file) => {
+    assert.throws(() => loadConfig(file), /acknowledgedChanges/);
+  });
+});

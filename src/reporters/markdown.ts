@@ -379,8 +379,9 @@ export class MarkdownReporter {
     // Change title
     const action = this.getChangeAction(change.type);
     const tag = this.aiHeadingTag(change);
+    const ackTag = change.acknowledged ? " _(acknowledged)_" : "";
     const hashes = "#".repeat(headingLevel);
-    lines.push(`${hashes} ${action}: \`${change.name}\`${tag}\n`);
+    lines.push(`${hashes} ${action}: \`${change.name}\`${tag}${ackTag}\n`);
 
     // Code diff
     if (change.beforeSnippet || change.afterSnippet) {
@@ -413,19 +414,29 @@ export class MarkdownReporter {
       }
     }
 
-    // Description. When the AI also reviewed this same change, label the
-    // rule-based description as the static analyzer's voice so the AI block
-    // below reads as a distinct opinion rather than a contradiction.
+    // Description. When the AI also reviewed this change, or a config
+    // acknowledgement overrode it, label the rule-based description as the
+    // static analyzer's voice so the block(s) below read as a distinct opinion
+    // rather than a contradiction.
     const ai = change.aiAnalysis;
-    const labelStatic = ai && ai.source !== "ai-discovered";
+    const labelStatic =
+      Boolean(change.acknowledged) || (ai && ai.source !== "ai-discovered");
     const prefix = labelStatic ? "**Static analyzer:** " : "";
     lines.push(`> ${prefix}${change.description}\n`);
+
+    if (change.acknowledged) {
+      lines.push(
+        `> ✅ **Acknowledged** in \`break-check.config.json\` (would otherwise be breaking); not counted toward the version bump.\n`,
+      );
+    }
 
     if (ai) {
       const confidence = Math.round(ai.confidence * 100);
       const label = this.aiReviewLabel(change);
       lines.push(`> 🤖 **${label}** (${confidence}%): ${ai.rationale}\n`);
-      if (ai.source === "ai-suggested-downgrade") {
+      // Once acknowledged the change is no longer kept breaking, so suppress the
+      // "re-run with --ai-apply-downgrades" nudge that would otherwise apply.
+      if (ai.source === "ai-suggested-downgrade" && !change.acknowledged) {
         lines.push(
           `> Kept breaking by the reviewer; re-run with \`--ai-apply-downgrades\` to apply this relaxation.\n`,
         );

@@ -181,6 +181,45 @@ test("markdown reporter: caps total report size and notes the overflow", () => {
   assert.ok(out.includes("@demo/pkg-0"), "first package should be included");
 });
 
+test("markdown reporter: acknowledged change shows the tag and note, no breaking warning", () => {
+  const change = {
+    id: "x",
+    // A config acknowledgement flips a rule-based breaking change to
+    // non-breaking, recording the original in ruleBasedType.
+    type: ChangeType.NON_BREAKING,
+    severity: ChangeSeverity.MINOR,
+    category: "type",
+    name: "OAuthConsentInfo",
+    description: "Breaking change in type `OAuthConsentInfo`: Type changed",
+    beforeSnippet: "type OAuthConsentInfo = { a: string };",
+    afterSnippet: "type OAuthConsentInfo = { a: string; b: string };",
+    ruleBasedType: ChangeType.BREAKING,
+    acknowledged: true,
+  };
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    makeResult(change),
+  );
+  assert.ok(
+    out.includes("_(acknowledged)_"),
+    "expected acknowledged heading tag",
+  );
+  assert.ok(out.includes("Acknowledged"), "expected the acknowledged note");
+  assert.ok(
+    out.includes("break-check.config.json"),
+    "note should point at the config file",
+  );
+  // It renders as a non-breaking change, so the breaking-changes section and
+  // major-bump warning must not appear.
+  assert.ok(
+    !out.includes("Breaking Changes"),
+    "acknowledged change must not appear under a Breaking Changes section",
+  );
+  assert.ok(
+    !out.includes("Major version bump required"),
+    "an acknowledged-only diff must not warn about a major bump",
+  );
+});
+
 test("markdown reporter: no truncation notice when the report fits", () => {
   const result = makeMultiPackageResult(2, 1);
   const out = new MarkdownReporter().generate(result);

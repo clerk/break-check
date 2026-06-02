@@ -126,7 +126,7 @@ export function isHashedChunkSubpath(subpath: string): boolean {
  * other character is taken literally (regex metacharacters escaped). Scanned
  * left to right so `**` is consumed before the single-`*` case.
  */
-function globToRegExpSource(pattern: string): string {
+export function globToRegExpSource(pattern: string): string {
   let source = "";
   for (let i = 0; i < pattern.length; i++) {
     const ch = pattern[i];

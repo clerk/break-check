@@ -623,6 +623,76 @@ async function focusedSurfaceFor(members, changeName) {
   return surfaceText;
 }
 
+// Like focusedSurfaceFor, but also writes a sibling subpath surface and threads
+// it through as siblingCurrentApiJsonPaths so usage-site (referrer) resolution
+// can reach across subpath rollups.
+async function focusedSurfaceWithSiblings(members, changeName, siblingMembers) {
+  const dir = mkdtempSync(join(tmpdir(), "break-check-usage-"));
+  const baseline = join(dir, "baseline.api.json");
+  const current = join(dir, "current.api.json");
+  const sibling = join(dir, "sibling.api.json");
+  writeApiJson(baseline, members);
+  writeApiJson(current, members);
+  writeApiJson(sibling, siblingMembers);
+  let surfaceText = "";
+  const client = {
+    messages: {
+      async create(params) {
+        surfaceText = params.messages[0].content[0].text;
+        return {
+          content: [
+            {
+              type: "tool_use",
+              name: "submit_review",
+              input: {
+                verdicts: [
+                  {
+                    id: "c1",
+                    type: "breaking",
+                    confidence: 0.9,
+                    rationale: "x",
+                  },
+                ],
+                missed: [],
+              },
+            },
+          ],
+        };
+      },
+    },
+  };
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "k",
+    client,
+    logger: SILENT_LOGGER,
+  });
+  try {
+    await analyzer.analyze(
+      [
+        {
+          id: "c1",
+          type: ChangeType.BREAKING,
+          severity: ChangeSeverity.MAJOR,
+          category: "type",
+          name: changeName,
+          description: "changed",
+          beforeSnippet: "x",
+          afterSnippet: "y",
+        },
+      ],
+      {
+        packageName: "@demo/pkg",
+        baselineApiJsonPath: baseline,
+        currentApiJsonPath: current,
+        siblingCurrentApiJsonPaths: [sibling],
+      },
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  return surfaceText;
+}
+
 test("ai-analyzer: focused context includes referenced types, excludes unrelated", async () => {
   const members = [
     iface("Opts", [prop("Opts", "a", [C("string")])]),
@@ -730,6 +800,120 @@ test("ai-analyzer: focused context seeds from a namespace-nested change", async 
   );
   assert.ok(surface.includes("Helper.x"), "and that type's members");
   assert.ok(!surface.includes("Unrelated"), "unrelated type excluded");
+});
+
+test("ai-analyzer: usage sites from a sibling subpath surface inform direction", async () => {
+  // The OAuthConsentInfo shape: the changed type lives in this subpath, but its
+  // only output-position usage (`get(): Promise<Info>`) lives in a sibling
+  // subpath rollup. The per-subpath analyzer would otherwise never see it.
+  const members = [
+    {
+      kind: "TypeAlias",
+      name: "Info",
+      canonicalReference: "@demo/pkg!Info:type",
+      excerptTokens: [C("export type Info = { a: string; };")],
+    },
+  ];
+  const siblingMembers = [
+    {
+      kind: "Function",
+      name: "get",
+      canonicalReference: "@demo/pkg!get:function(1)",
+      excerptTokens: [
+        C("export declare function get(): Promise<"),
+        R("Info", "@demo/pkg!Info:type"),
+        C(">;"),
+      ],
+    },
+  ];
+
+  const surface = await focusedSurfaceWithSiblings(
+    members,
+    "Info",
+    siblingMembers,
+  );
+  assert.ok(surface.includes("Usage sites"), "expected a Usage sites section");
+  assert.ok(
+    surface.includes("get"),
+    "the sibling referrer `get` must be listed",
+  );
+  assert.ok(
+    surface.includes("Promise<"),
+    "the output-position signature must be shown so direction is judgeable",
+  );
+});
+
+test("ai-analyzer: usage sites are also resolved within the same surface", async () => {
+  const members = [
+    {
+      kind: "TypeAlias",
+      name: "Info",
+      canonicalReference: "@demo/pkg!Info:type",
+      excerptTokens: [C("export type Info = { a: string; };")],
+    },
+    {
+      kind: "Function",
+      name: "get",
+      canonicalReference: "@demo/pkg!get:function(1)",
+      excerptTokens: [
+        C("export declare function get(): "),
+        R("Info", "@demo/pkg!Info:type"),
+        C(";"),
+      ],
+    },
+  ];
+
+  const surface = await focusedSurfaceFor(members, "Info");
+  assert.ok(
+    surface.includes("Usage sites"),
+    "same-surface referrers must be found",
+  );
+  assert.ok(surface.includes("get"), "the referrer `get` must be listed");
+});
+
+test("ai-analyzer: system prompt carries the new classification + protocol rules", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const change = ruleBasedBreakingChange();
+  const { client, calls } = stubClient({
+    verdicts: [
+      {
+        id: change.id,
+        type: ChangeType.BREAKING,
+        confidence: 0.9,
+        rationale: "x",
+        migration: "y",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "k",
+    client,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+    const systemText = calls[0].system[0].text;
+    assert.match(systemText, /optional/i, "optional-property rule present");
+    assert.match(systemText, /Pick/, "Pick/Omit optionality rule present");
+    assert.match(
+      systemText,
+      /Usage sites/,
+      "directionality rule references usage sites",
+    );
+    assert.match(
+      systemText,
+      /conditional/i,
+      "output protocol forbids conditional verdicts",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test("ai-analyzer: applyDowngrades coerces a bogus ADDITION verdict to NON_BREAKING", async () => {
