@@ -26,28 +26,45 @@ export const DEFAULT_AI_MODEL = "claude-sonnet-4-6";
 /**
  * Zod schema for the AI analyzer block
  */
-export const AiConfigSchema = z.object({
-  /**
-   * When true: AI runs (errors if BREAK_CHECK_ANTHROPIC_API_KEY is missing).
-   * When false: AI never runs even if the key is set.
-   * When unset (default): AI runs iff BREAK_CHECK_ANTHROPIC_API_KEY is in the environment.
-   */
-  enabled: z.boolean().optional(),
+export const AiConfigSchema = z
+  .object({
+    /**
+     * When true: AI runs (errors if BREAK_CHECK_ANTHROPIC_API_KEY is missing).
+     * When false: AI never runs even if the key is set.
+     * When unset (default): AI runs iff BREAK_CHECK_ANTHROPIC_API_KEY is in the environment.
+     */
+    enabled: z.boolean().optional(),
 
-  /** Model identifier (Anthropic API). Defaults to DEFAULT_AI_MODEL when neither config nor BREAK_CHECK_AI_MODEL is set. */
-  model: z.string().optional(),
+    /** Model identifier (Anthropic API). Defaults to DEFAULT_AI_MODEL when neither config nor BREAK_CHECK_AI_MODEL is set. */
+    model: z.string().optional(),
 
-  /** Maximum rule-based changes batched into a single AI call per package. */
-  maxChangesPerCall: z.number().int().positive().default(80),
+    /** Maximum rule-based changes batched into a single AI call per package. */
+    maxChangesPerCall: z.number().int().positive().default(80),
 
-  /**
-   * When true, also invoke the AI reviewer for diffs that the rule-based pass
-   * classified as pure additions. Useful for paranoid scans; costs an extra
-   * model call per such package. May also be enabled via `BREAK_CHECK_AI_STRICT=1`
-   * or `--ai-strict`.
-   */
-  strict: z.boolean().default(false),
-});
+    /**
+     * Apply the model's `breaking -> non-breaking` downgrades. A downgrade is the
+     * only verdict that can clear a flagged break, so by default it is recorded
+     * as a suggestion in the report and the change stays breaking; set this (or
+     * `--ai-apply-downgrades` / `BREAK_CHECK_AI_APPLY_DOWNGRADES`) to actually
+     * relax those verdicts.
+     */
+    applyDowngrades: z.boolean().default(false),
+
+    /**
+     * Run the open-ended "what did the rule-based pass miss?" audit. Sends both
+     * the baseline and current surfaces (the audit must diff old vs new) and
+     * reviews additions-only diffs too, so it costs more tokens and extra calls.
+     * Off by default; the verdict path ships only the focused set of types each
+     * change references. Also enabled via `--ai-scan` or `BREAK_CHECK_AI_SCAN=1`.
+     */
+    scanForMissed: z.boolean().default(false),
+  })
+  // Reject unknown keys rather than silently dropping them. Without this, a
+  // removed key like the old `strict` (now split into `applyDowngrades` and
+  // `scanForMissed`) would be quietly ignored, leaving a user who set it
+  // believing the audit was on while the lean path actually ran. A typo earns
+  // the same loud error.
+  .strict();
 
 /**
  * Zod schema for break-check configuration

@@ -160,6 +160,35 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   set, unless `ai.enabled` is explicitly `false`. Model resolution
   priority is `--ai-model` > `BREAK_CHECK_AI_MODEL` > `ai.model` config >
   `claude-sonnet-4-6`. Preserve that priority order when editing.
+- **The verdict call ships a focused context, not the whole surface.**
+  `buildFocusedSurfaceBlock` resolves, per change, the type definitions its
+  signature references (transitively, via API Extractor `canonicalReference`
+  tokens, capped at `MAX_FOCUSED_SYMBOLS`), including a referenced type's
+  baseline definition where it changed. The changed members are not re-emitted;
+  their before/after signatures ride inline in the compact-JSON review list.
+  Unresolvable references are dropped, and system-prompt rule 8 tells the model
+  to keep "breaking" when it cannot resolve a type, so a thin context fails
+  safe. `submit_review` asks for one-sentence rationales, and the surface only
+  takes a prompt-cache breakpoint when more than one chunk will read it. The
+  missed-breaks audit is the exception: to find a break the rule pass didn't
+  flag at all it must diff old against new itself, so it sends both the baseline
+  and current full surfaces (`buildAuditSurfaceBlock`), not the focused set.
+  Note `walkSurface` indexes every
+  member under BOTH its full-chain name and api-diff's immediate-parent name
+  (`Inner.a` as well as `Outer.Inner.a`), because the rule-based differ names a
+  change by its immediate parent only; without that alias a namespace-nested
+  change would seed an empty closure. Keep both keys.
+- **Two orthogonal opt-ins, both default off; the default cannot clear a
+  break.** `applyDowngrades` decides whether a `breaking -> non-breaking`
+  verdict (the only one that can hide a break) is acted on or recorded as an
+  `ai-suggested-downgrade` (change stays breaking, report points the user at
+  `--ai-apply-downgrades`). `scanForMissed` runs the audit and reviews
+  additions-only diffs. Both are resolved in `detector.ts` (`resolveAiFlag`:
+  option > env > config) and threaded into the analyzer. Keep them separate:
+  one relaxes verdicts (lenient, risky), the other hunts for more breaks
+  (paranoid, safe), so a single flag for both is wrong. Escalations
+  (`-> breaking`) and confirmations always apply. An additions-only diff makes
+  zero API calls unless `scanForMissed` is on.
 - **Action is preview**: it ships from this repo but isn't usable
   until `@clerk/break-check` is on npm and a `v1` tag exists. The README
   has the disclaimer; keep it in sync if the status changes.

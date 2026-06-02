@@ -78,11 +78,18 @@ export interface DetectorOptions {
    */
   aiModel?: string;
   /**
-   * Force-enable (true) or force-disable (false) strict mode. Strict mode
-   * runs the AI reviewer even for pure-additions diffs. When undefined,
-   * `BREAK_CHECK_AI_STRICT` env var and `config.ai.strict` are consulted.
+   * Force-enable (true) or force-disable (false) applying the model's
+   * `breaking -> non-breaking` downgrades. When undefined,
+   * `BREAK_CHECK_AI_APPLY_DOWNGRADES` and `config.ai.applyDowngrades` are
+   * consulted.
    */
-  aiStrict?: boolean;
+  aiApplyDowngrades?: boolean;
+  /**
+   * Force-enable (true) or force-disable (false) the missed-breaks audit (which
+   * also reviews additions-only diffs). When undefined, `BREAK_CHECK_AI_SCAN`
+   * and `config.ai.scanForMissed` are consulted.
+   */
+  aiScanForMissed?: boolean;
   /** Inject a pre-built AI analyzer (used by tests). Overrides all other AI config. */
   aiAnalyzer?: AiChangeAnalyzer;
 }
@@ -122,7 +129,8 @@ export class BreakingChangesDetector {
   private versionAnalyzer: VersionAnalyzer;
   private aiAnalyzer: AiChangeAnalyzer | null = null;
   private aiInitialized = false;
-  private aiStrict: boolean;
+  private aiApplyDowngrades: boolean;
+  private aiScanForMissed: boolean;
   private verbose: boolean;
   private configPath: string;
   private configDir: string;
@@ -147,7 +155,16 @@ export class BreakingChangesDetector {
     );
     this.diffAnalyzer = new ApiDiffAnalyzer();
     this.versionAnalyzer = new VersionAnalyzer();
-    this.aiStrict = this.resolveStrict(detectorOptions);
+    this.aiApplyDowngrades = this.resolveAiFlag(
+      detectorOptions.aiApplyDowngrades,
+      "BREAK_CHECK_AI_APPLY_DOWNGRADES",
+      this.config.ai?.applyDowngrades,
+    );
+    this.aiScanForMissed = this.resolveAiFlag(
+      detectorOptions.aiScanForMissed,
+      "BREAK_CHECK_AI_SCAN",
+      this.config.ai?.scanForMissed,
+    );
   }
 
   private ensureAiAnalyzer(): AiChangeAnalyzer | null {
@@ -157,13 +174,22 @@ export class BreakingChangesDetector {
     return this.aiAnalyzer;
   }
 
-  private resolveStrict(options: DetectorOptions): boolean {
-    if (typeof options.aiStrict === "boolean") return options.aiStrict;
-    const envFlag = process.env.BREAK_CHECK_AI_STRICT;
+  /**
+   * Resolve a tri-state AI toggle: explicit option wins, then a truthy env var,
+   * then the config value, defaulting to false. Shared by the
+   * apply-downgrades and missed-audit flags.
+   */
+  private resolveAiFlag(
+    optionValue: boolean | undefined,
+    envName: string,
+    configValue: boolean | undefined,
+  ): boolean {
+    if (typeof optionValue === "boolean") return optionValue;
+    const envFlag = process.env[envName];
     if (envFlag && envFlag !== "0" && envFlag.toLowerCase() !== "false") {
       return true;
     }
-    return this.config.ai?.strict ?? false;
+    return configValue ?? false;
   }
 
   get aiEnabled(): boolean {
@@ -224,6 +250,12 @@ export class BreakingChangesDetector {
       model,
       maxChangesPerCall: aiCfg?.maxChangesPerCall ?? 80,
       verbose: this.verbose,
+      // Two orthogonal knobs. applyDowngrades decides whether a
+      // breaking -> non-breaking verdict is acted on or just recorded as a
+      // suggestion. scanForMissed runs the audit and swaps the focused verdict
+      // context for the both-surface diff that audit needs.
+      applyDowngrades: this.aiApplyDowngrades,
+      scanForMissed: this.aiScanForMissed,
     });
   }
 
@@ -746,11 +778,18 @@ export class BreakingChangesDetector {
       );
 
       const ai = this.ensureAiAnalyzer();
+      // No rule-based changes means baseline and current matched for this
+      // entry, so there is nothing to review. We deliberately do not invoke the
+      // AI here, even with the missed-breaks audit on: with no change to anchor
+      // against there is nothing for it to find. The audit runs alongside an
+      // entry that does have changes.
       if (ai && entryChanges.length > 0) {
         const hasNonAdditionChange = entryChanges.some(
           (c) => c.type !== ChangeType.ADDITION,
         );
-        if (hasNonAdditionChange || this.aiStrict) {
+        // Additions-only diffs are only worth a call for the missed-breaks
+        // audit; there is nothing to confirm, escalate, or downgrade otherwise.
+        if (hasNonAdditionChange || this.aiScanForMissed) {
           this.log(
             `Running AI review for ${packageInfo.name} ${entry.subpath}...`,
           );

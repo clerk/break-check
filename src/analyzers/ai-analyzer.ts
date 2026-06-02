@@ -34,6 +34,22 @@ export interface AiAnalyzerOptions {
   /** Print info/debug messages to stderr. */
   verbose?: boolean;
   /**
+   * Apply the model's `breaking -> non-breaking` downgrades. A downgrade is the
+   * only verdict that can clear a flagged break, so off by default it is
+   * recorded as an `ai-suggested-downgrade` and the change stays breaking. When
+   * true the verdict is applied. Does not change the prompt; the model reasons
+   * the same either way.
+   */
+  applyDowngrades?: boolean;
+  /**
+   * Run the open-ended "what did the rule-based pass miss?" audit. When true the
+   * prompt ships both the baseline and current surfaces (the audit must diff old
+   * vs new to find an unflagged break) and the reviewer also runs on
+   * additions-only diffs. Off by default: the verdict path ships only the
+   * focused set of types each change references.
+   */
+  scanForMissed?: boolean;
+  /**
    * Optional structural Anthropic client for tests. When omitted the real
    * `@anthropic-ai/sdk` is lazily imported on first use.
    */
@@ -203,12 +219,13 @@ Reasoning rules:
 5. Class member visibility going from public to protected/private is breaking. The other direction is non-breaking.
 6. Generic constraint tightening is breaking; loosening is non-breaking.
 7. When uncertain, prefer "breaking" but lower confidence to reflect the uncertainty.
+8. Only relax a rule-based "breaking" verdict to "non-breaking" when you can fully resolve the relevant types from the current API surface or the change's before/after snippets. If a referenced type's definition is not available to you, keep "breaking".
 
 Output protocol:
 - Always respond by calling the submit_review tool. Never reply with plain text.
 - Provide exactly one verdict object per supplied rule-based change, keyed by its id.
-- In "missed", include only changes you can justify from the API surface. Do not invent changes. If unsure, leave it out.
-- Keep rationales to 1-3 sentences. Be specific (cite the type/parameter name).
+- Populate "missed" only when the user message explicitly asks you to scan for missed changes; otherwise return an empty array. Never invent changes; if unsure, leave it out.
+- Keep each rationale to one short, specific sentence (cite the type/parameter name).
 - For any verdict whose type is "breaking", include a one-sentence "migration" hint for consumers.`;
 
 /* --------------------------------------------------------------- analyzer -- */
@@ -219,6 +236,8 @@ export class AiChangeAnalyzer {
   private readonly maxChangesPerCall: number;
   private readonly timeoutMs: number;
   private readonly verbose: boolean;
+  private readonly applyDowngrades: boolean;
+  private readonly scanForMissed: boolean;
   private readonly apiKey: string;
   private readonly logger: Pick<Console, "warn" | "log">;
   private clientPromise: Promise<AiClient> | null = null;
@@ -238,6 +257,8 @@ export class AiChangeAnalyzer {
     this.maxChangesPerCall = opts.maxChangesPerCall ?? 80;
     this.timeoutMs = opts.timeoutMs ?? 60_000;
     this.verbose = opts.verbose ?? false;
+    this.applyDowngrades = opts.applyDowngrades ?? false;
+    this.scanForMissed = opts.scanForMissed ?? false;
     this.logger = opts.logger ?? console;
     if (opts.client) {
       this.clientPromise = Promise.resolve(opts.client);
@@ -252,9 +273,28 @@ export class AiChangeAnalyzer {
     changes: ApiChange[],
     ctx: AiPackageContext,
   ): Promise<ApiChange[]> {
+    // The rule-based "addition" entries don't need re-classification (they're
+    // by definition non-breaking). They're stripped from the chunked verdict
+    // list and re-appended untouched at the end.
+    const reviewable = changes.filter((c) => c.type !== ChangeType.ADDITION);
+    const passThrough = changes.filter((c) => c.type === ChangeType.ADDITION);
+
+    // Lean path: nothing to re-classify and the caller didn't ask for the
+    // open-ended missed-breaks audit, so there is no reason to spend a call.
+    if (reviewable.length === 0 && !this.scanForMissed) {
+      return changes;
+    }
+
     let surface: string;
     try {
-      surface = this.buildSurfaceBlock(ctx);
+      // The audit has to diff old against new to find an unflagged break, so it
+      // gets both full surfaces. The verdict path instead gets a focused
+      // context: only the definitions of the types each change references, which
+      // is all the model needs to judge (and confidently relax) a verdict, at a
+      // fraction of the tokens.
+      surface = this.scanForMissed
+        ? buildAuditSurfaceBlock(ctx)
+        : buildFocusedSurfaceBlock(ctx, reviewable);
     } catch (error) {
       this.warn(
         `[ai] could not load API surface for ${ctx.packageName}: ${describe(error)}. Skipping AI review.`,
@@ -272,18 +312,9 @@ export class AiChangeAnalyzer {
       return changes;
     }
 
-    // The rule-based "addition" entries don't need re-classification (they're
-    // by definition non-breaking), but the model still benefits from seeing
-    // the surface to scan for missed breaks. We strip additions from the
-    // chunked verdict list but still issue at least one call for the scan.
-    const reviewable = changes.filter((c) => c.type !== ChangeType.ADDITION);
-    const passThrough = changes.filter((c) => c.type === ChangeType.ADDITION);
-
-    // Keys that the rule-based pass already accounts for. Used both to brief
-    // the model (so its "missed" scan can ignore them) and to defensively
-    // de-dup if the model reports one anyway.
+    // Keys the rule-based pass already accounts for. Used to defensively de-dup
+    // if the model reports a "missed" entry that duplicates a known change.
     const knownKeys = new Set(changes.map((c) => `${c.category}:${c.name}`));
-    const knownSummary = formatKnownSummary(changes);
 
     const chunks: ApiChange[][] = [];
     if (reviewable.length === 0) {
@@ -294,18 +325,35 @@ export class AiChangeAnalyzer {
       }
     }
 
+    // A cache breakpoint on the surface only pays off when more than one call
+    // will read it; a lone call would eat the 1.25x cache-write with nothing
+    // to amortize against, so the single-chunk path sends it as plain input.
+    const cacheSurface = chunks.length > 1;
+
     const verdictMap = new Map<string, AiVerdict["verdicts"][number]>();
     const missedAggregate: AiVerdict["missed"] = [];
 
     for (let i = 0; i < chunks.length; i++) {
-      const includeMissedScan = i === 0;
+      const includeMissedScan = i === 0 && this.scanForMissed;
+      // For the scan, brief the model on every OTHER change so it doesn't
+      // re-report one under `missed`. The current chunk's changes are already
+      // in this call's JSON payload, so they're excluded here, which means a
+      // single-chunk package sends no redundant summary at all.
+      let otherChangesSummary = "";
+      if (includeMissedScan) {
+        const chunkIds = new Set(chunks[i].map((c) => c.id));
+        otherChangesSummary = formatKnownSummary(
+          changes.filter((c) => !chunkIds.has(c.id)),
+        );
+      }
       const verdict = await this.runOneCall(
         client,
         chunks[i],
         surface,
         ctx,
         includeMissedScan,
-        knownSummary,
+        otherChangesSummary,
+        cacheSurface,
       );
       if (!verdict) {
         // Hard fail-soft for this chunk; the affected changes will keep their
@@ -339,6 +387,31 @@ export class AiChangeAnalyzer {
         verdictType = ChangeType.NON_BREAKING;
       }
       this.reviewedCount += 1;
+
+      // A downgrade (breaking -> non-breaking) is the only verdict that can
+      // clear a flagged break, so it is the only risky one. Unless the caller
+      // opted into applying downgrades, we do NOT apply it: the change stays
+      // breaking and the model's opinion is recorded so a human can re-run with
+      // --ai-apply-downgrades to relax it. Escalations (-> breaking) and
+      // confirmations always apply. This makes the default path unable to hide
+      // a real break.
+      const isDowngrade =
+        change.type === ChangeType.BREAKING &&
+        verdictType === ChangeType.NON_BREAKING;
+      if (isDowngrade && !this.applyDowngrades) {
+        enriched.push({
+          ...change,
+          aiAnalysis: {
+            source: "ai-suggested-downgrade",
+            confidence: clamp01(v.confidence),
+            rationale: v.rationale,
+            migration: undefined,
+            model: this.model,
+          },
+        });
+        continue;
+      }
+
       const overrode = verdictType !== change.type;
       if (overrode) this.overriddenCount += 1;
       const aiAnalysis: AiAnalysis = {
@@ -396,7 +469,8 @@ export class AiChangeAnalyzer {
     surface: string,
     ctx: AiPackageContext,
     includeMissedScan: boolean,
-    knownSummary: string,
+    otherChangesSummary: string,
+    cacheSurface: boolean,
   ): Promise<AiVerdict | null> {
     const ruleListPayload = chunk.map((c) => ({
       id: c.id,
@@ -408,25 +482,37 @@ export class AiChangeAnalyzer {
       afterSnippet: c.afterSnippet,
     }));
 
-    const userInstruction = [
+    // Compact JSON (no indentation): this block is in the non-cached part of
+    // the request, so every byte of pretty-print whitespace is paid on each
+    // call.
+    const parts: string[] = [
       `Package: ${ctx.packageName}`,
       "",
-      "Rule-based changes to review (JSON):",
+      "Rule-based changes to review (compact JSON, exactly one verdict required per id):",
       "```json",
-      JSON.stringify(ruleListPayload, null, 2),
+      JSON.stringify(ruleListPayload),
       "```",
-      "",
-      "All changes the rule-based pass already produced (do NOT re-report any of these under `missed`):",
-      "```",
-      knownSummary || "(none)",
-      "```",
-      "",
-      includeMissedScan
-        ? "Scan the API surface block above for any consumer-observable breaking changes that are NOT in the list above, and report them under `missed`. Be conservative: omit anything you are unsure about."
-        : "Do not populate `missed` in this call; return an empty `missed` array.",
+    ];
+
+    if (includeMissedScan) {
+      parts.push(
+        "",
+        "After verdicting those, compare the Baseline and Current API surfaces above and report under `missed` any consumer-observable breaking change the rule-based pass did NOT flag (a removed or renamed export, a changed signature, etc.). Be conservative: omit anything you are unsure about. Do not re-report a change already listed above" +
+          (otherChangesSummary ? " or in the list below:" : "."),
+      );
+      if (otherChangesSummary) {
+        parts.push("```", otherChangesSummary, "```");
+      }
+    } else {
+      parts.push("", "Return an empty `missed` array.");
+    }
+
+    parts.push(
       "",
       `Return exactly ${chunk.length} verdict object(s), one per supplied id.`,
-    ].join("\n");
+    );
+
+    const userInstruction = parts.join("\n");
 
     const params: AiMessagesCreateParams = {
       model: this.model,
@@ -456,7 +542,10 @@ export class AiChangeAnalyzer {
             {
               type: "text",
               text: surface,
-              cache_control: { type: "ephemeral" },
+              // Only a cache breakpoint when more than one call reads it.
+              ...(cacheSurface
+                ? { cache_control: { type: "ephemeral" as const } }
+                : {}),
             },
             { type: "text", text: userInstruction },
           ],
@@ -517,24 +606,6 @@ export class AiChangeAnalyzer {
     return this.clientPromise;
   }
 
-  private buildSurfaceBlock(ctx: AiPackageContext): string {
-    const baseline = extractSurface(ctx.baselineApiJsonPath);
-    const current = extractSurface(ctx.currentApiJsonPath);
-    return [
-      `# API surface for ${ctx.packageName}`,
-      "",
-      "## Baseline",
-      "```ts",
-      baseline,
-      "```",
-      "",
-      "## Current",
-      "```ts",
-      current,
-      "```",
-    ].join("\n");
-  }
-
   private warn(message: string): void {
     this.logger.warn(message);
   }
@@ -543,12 +614,15 @@ export class AiChangeAnalyzer {
 /* -------------------------------------------------------------- helpers -- */
 
 interface ExcerptToken {
+  kind?: string;
   text: string;
+  canonicalReference?: string;
 }
 
 interface ApiJsonMember {
   kind: string;
   name: string;
+  canonicalReference?: string;
   excerptTokens?: ExcerptToken[];
   members?: ApiJsonMember[];
 }
@@ -586,6 +660,224 @@ function extractSurface(apiJsonPath: string): string {
   for (const m of json.members) walk(m);
   lines.sort();
   return lines.join("\n");
+}
+
+/**
+ * Both full surfaces, used by the missed-breaks audit. To find a break the rule
+ * pass didn't flag at all, the model has to diff old against new itself, so it
+ * needs the baseline surface as well as the current one (the focused verdict
+ * path, by contrast, gets each change's previous shape inline and only the
+ * referenced type defs). The baseline is omitted only when there is none (a new
+ * package), in which case the audit can inspect the current surface alone.
+ */
+function buildAuditSurfaceBlock(ctx: AiPackageContext): string {
+  const current = extractSurface(ctx.currentApiJsonPath);
+  let baseline = "";
+  try {
+    baseline = extractSurface(ctx.baselineApiJsonPath);
+  } catch {
+    // No baseline (new package): the audit can only see the current surface.
+  }
+  const parts = [`# API surface for ${ctx.packageName}`, ""];
+  if (baseline) {
+    parts.push("## Baseline", "```ts", baseline, "```", "");
+  }
+  parts.push("## Current", "```ts", current, "```");
+  return parts.join("\n");
+}
+
+/** One node in the walked surface tree. */
+interface SurfaceNode {
+  qualified: string;
+  kind: string;
+  canonicalRef?: string;
+  /** This member's own signature line ("" when it has no excerpt). */
+  line: string;
+  /** canonicalReferences named directly in this member's own excerpt. */
+  ownRefs: string[];
+  children: SurfaceNode[];
+}
+
+interface WalkedSurface {
+  /** Every member keyed by its canonicalReference (resolves references). */
+  byRef: Map<string, SurfaceNode>;
+  /** Every member keyed by its parent-qualified name (seeds from changes). */
+  byName: Map<string, SurfaceNode>;
+}
+
+function normalizeExcerpt(tokens?: ExcerptToken[]): string {
+  return (tokens ?? [])
+    .map((t) => t.text)
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Walk an api-extractor JSON into an indexed tree: each member carries its own
+ * signature line, the canonicalReferences named in its excerpt, and its
+ * children. Indexed by canonicalReference (to resolve a reference to its
+ * definition) and by qualified name (to seed from a rule-based change).
+ */
+function walkSurface(apiJsonPath: string): WalkedSurface {
+  const raw = fs.readFileSync(apiJsonPath, "utf-8");
+  const json: ApiJsonRoot = JSON.parse(raw);
+  const byRef = new Map<string, SurfaceNode>();
+  const byName = new Map<string, SurfaceNode>();
+
+  const build = (
+    m: ApiJsonMember,
+    parentQualified?: string,
+    parentName?: string,
+  ): SurfaceNode | null => {
+    if (m.kind === "EntryPoint") {
+      for (const child of m.members ?? [])
+        build(child, parentQualified, parentName);
+      return null;
+    }
+    const qualified = parentQualified ? `${parentQualified}.${m.name}` : m.name;
+    const ownRefs: string[] = [];
+    for (const t of m.excerptTokens ?? []) {
+      if (t.kind === "Reference" && t.canonicalReference) {
+        ownRefs.push(t.canonicalReference);
+      }
+    }
+    const text = normalizeExcerpt(m.excerptTokens);
+    const node: SurfaceNode = {
+      qualified,
+      kind: m.kind,
+      canonicalRef: m.canonicalReference,
+      line: text ? `${m.kind} ${qualified}: ${text}` : "",
+      ownRefs,
+      children: [],
+    };
+    // The full-chain qualified name is authoritative, so it always wins. The
+    // rule-based differ (api-diff.ts) names a member with its IMMEDIATE parent
+    // only (`Inner.a`, not `Outer.Inner.a` for a namespace-nested member), so
+    // also register that alias to seed the focused closure from such a change.
+    // Don't let an alias clobber a real full-chain entry.
+    byName.set(qualified, node);
+    const diffName = parentName ? `${parentName}.${m.name}` : m.name;
+    if (!byName.has(diffName)) byName.set(diffName, node);
+    if (m.canonicalReference) byRef.set(m.canonicalReference, node);
+    for (const child of m.members ?? []) {
+      const c = build(child, qualified, m.name);
+      if (c) node.children.push(c);
+    }
+    return node;
+  };
+
+  for (const m of json.members) build(m);
+  return { byRef, byName };
+}
+
+function subtreeLines(node: SurfaceNode): string[] {
+  const out: string[] = [];
+  const visit = (n: SurfaceNode): void => {
+    if (n.line) out.push(n.line);
+    for (const c of n.children) visit(c);
+  };
+  visit(node);
+  return out;
+}
+
+function collectSubtreeRefs(node: SurfaceNode, acc: Set<string>): void {
+  for (const r of node.ownRefs) acc.add(r);
+  for (const c of node.children) collectSubtreeRefs(c, acc);
+}
+
+/**
+ * Cap the breadth of the referenced-type closure so a pathological change (a
+ * type that transitively touches half the package) can't reinflate the prompt.
+ * Hitting the cap just means the model sees fewer definitions and, per
+ * system-prompt rule 8, keeps "breaking" where it can't resolve: the safe side.
+ */
+const MAX_FOCUSED_SYMBOLS = 200;
+
+/**
+ * Focused verdict context: for the changes under review, the definitions of the
+ * types their signatures reference (transitively), from the current surface,
+ * plus the baseline definition of any referenced type that itself changed so a
+ * downgrade can be judged against old-vs-new. Everything else is omitted. The
+ * changed members are not re-emitted; their before/after signatures already
+ * ride inline in the review list.
+ */
+function buildFocusedSurfaceBlock(
+  ctx: AiPackageContext,
+  changes: ApiChange[],
+): string {
+  const current = walkSurface(ctx.currentApiJsonPath);
+  let baseline: WalkedSurface = { byRef: new Map(), byName: new Map() };
+  try {
+    baseline = walkSurface(ctx.baselineApiJsonPath);
+  } catch {
+    // New package or unreadable baseline: focus on the current side only.
+  }
+
+  // Seed with the references named directly in each changed member's signature,
+  // on BOTH sides: a changed signature may reference a type in its old form
+  // that the new form drops (and vice versa), and a downgrade needs to see both.
+  const queue: string[] = [];
+  for (const change of changes) {
+    const cur = current.byName.get(change.name);
+    const base = baseline.byName.get(change.name);
+    if (cur) queue.push(...cur.ownRefs);
+    if (base) queue.push(...base.ownRefs);
+  }
+
+  // BFS over referenced symbols, pulling in each one's transitive refs.
+  const visited = new Set<string>();
+  while (queue.length > 0 && visited.size < MAX_FOCUSED_SYMBOLS) {
+    const ref = queue.shift() as string;
+    if (visited.has(ref)) continue;
+    const curNode = current.byRef.get(ref);
+    const baseNode = baseline.byRef.get(ref);
+    if (!curNode && !baseNode) continue; // external / unresolvable: skip
+    visited.add(ref);
+    const refs = new Set<string>();
+    if (curNode) collectSubtreeRefs(curNode, refs);
+    if (baseNode) collectSubtreeRefs(baseNode, refs);
+    for (const r of refs) if (!visited.has(r)) queue.push(r);
+  }
+  const truncated = visited.size >= MAX_FOCUSED_SYMBOLS && queue.length > 0;
+
+  // Emit each referenced type's current definition, and its baseline definition
+  // when it changed (that delta is exactly what a downgrade hinges on).
+  const blocks: { name: string; text: string }[] = [];
+  for (const ref of visited) {
+    const curNode = current.byRef.get(ref);
+    const baseNode = baseline.byRef.get(ref);
+    const curDef = curNode ? subtreeLines(curNode).join("\n") : "";
+    const baseDef = baseNode ? subtreeLines(baseNode).join("\n") : "";
+    const parts: string[] = [];
+    if (curDef) parts.push(curDef);
+    if (baseDef && baseDef !== curDef) parts.push(`// previously:\n${baseDef}`);
+    if (parts.length > 0) {
+      blocks.push({
+        name: curNode?.qualified ?? baseNode?.qualified ?? ref,
+        text: parts.join("\n"),
+      });
+    }
+  }
+  blocks.sort((a, b) => a.name.localeCompare(b.name));
+
+  const header = [
+    `# Referenced type definitions for ${ctx.packageName}`,
+    "(Only the types the changes under review reference. The previous signature of each change is in its beforeSnippet; `// previously:` shows a referenced type's baseline definition where it changed.)",
+  ];
+  if (blocks.length === 0) {
+    header.push(
+      "(none: the changes reference no named package types; judge from the before/after snippets.)",
+    );
+    return header.join("\n");
+  }
+  const body = ["```ts", blocks.map((b) => b.text).join("\n\n"), "```"];
+  if (truncated) {
+    body.push(
+      `(referenced-type context truncated at ${MAX_FOCUSED_SYMBOLS} symbols.)`,
+    );
+  }
+  return [...header, ...body].join("\n");
 }
 
 function parseVerdict(input: unknown): AiVerdict | null {

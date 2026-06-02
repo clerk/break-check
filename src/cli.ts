@@ -152,8 +152,12 @@ program
     "Override the AI model (e.g. claude-opus-4-7). Wins over BREAK_CHECK_AI_MODEL and config.ai.model.",
   )
   .option(
-    "--ai-strict",
-    "Run the AI reviewer even when only additions are detected (equivalent to BREAK_CHECK_AI_STRICT=1).",
+    "--ai-apply-downgrades",
+    "Apply the AI's breaking->non-breaking downgrades instead of recording them as suggestions (equivalent to BREAK_CHECK_AI_APPLY_DOWNGRADES=1).",
+  )
+  .option(
+    "--ai-scan",
+    "Run the missed-breaks audit: send both surfaces and review additions-only diffs (equivalent to BREAK_CHECK_AI_SCAN=1).",
   )
   .option("-v, --verbose", "Show verbose output")
   .action(async (options) => {
@@ -182,8 +186,12 @@ program
         disableAi: options.ai === false,
         aiModel:
           typeof options.aiModel === "string" ? options.aiModel : undefined,
-        aiStrict:
-          typeof options.aiStrict === "boolean" ? options.aiStrict : undefined,
+        aiApplyDowngrades:
+          typeof options.aiApplyDowngrades === "boolean"
+            ? options.aiApplyDowngrades
+            : undefined,
+        aiScanForMissed:
+          typeof options.aiScan === "boolean" ? options.aiScan : undefined,
       });
 
       if (detector.aiEnabled) {

@@ -108,7 +108,8 @@ Options:
   --fail-on-skipped       Exit with code 1 if any subpath could not be snapshotted
   --no-ai                 Disable the AI reviewer even if BREAK_CHECK_ANTHROPIC_API_KEY is set
   --ai-model <model>      Override the AI model (e.g. claude-opus-4-7)
-  --ai-strict             Run the AI reviewer even when only additions are detected
+  --ai-apply-downgrades   Apply the AI's breaking->non-breaking downgrades (default: record as suggestions)
+  --ai-scan               Run the missed-breaks audit (both surfaces; reviews additions-only diffs)
   -v, --verbose           Show verbose output
 ```
 
@@ -146,21 +147,43 @@ wildcard match as a real subpath.
 
 ### AI reviewer config
 
-| Field               | Type    | Default             | Description                                                                        |
-| ------------------- | ------- | ------------------- | ---------------------------------------------------------------------------------- |
-| `enabled`           | boolean | unset               | Force-enable or force-disable. Unset: runs iff `BREAK_CHECK_ANTHROPIC_API_KEY` set |
-| `model`             | string  | `claude-sonnet-4-6` | Anthropic model identifier                                                         |
-| `maxChangesPerCall` | number  | `80`                | Maximum rule-based changes batched into a single AI call                           |
-| `strict`            | boolean | `false`             | Run the reviewer even when only additions are detected                             |
+| Field               | Type    | Default             | Description                                                                               |
+| ------------------- | ------- | ------------------- | ----------------------------------------------------------------------------------------- |
+| `enabled`           | boolean | unset               | Force-enable or force-disable. Unset: runs iff `BREAK_CHECK_ANTHROPIC_API_KEY` set        |
+| `model`             | string  | `claude-sonnet-4-6` | Anthropic model identifier                                                                |
+| `maxChangesPerCall` | number  | `80`                | Maximum rule-based changes batched into a single AI call                                  |
+| `applyDowngrades`   | boolean | `false`             | Apply the AI's breaking->non-breaking downgrades instead of recording them as suggestions |
+| `scanForMissed`     | boolean | `false`             | Run the missed-breaks audit (both surfaces; also reviews additions-only diffs)            |
 
 ## AI Review
 
 Break Check can optionally route the rule-based diff through Claude for a second
-opinion. The reviewer confirms or overrides each rule-based classification,
-adds a one-sentence migration hint per breaking change, and scans the full
-API surface for breaks the rule-based pass missed (e.g., type variance,
-discriminated-union changes, structural-equivalence cases the rule pass treats
-as breaking but aren't).
+opinion. By default the reviewer is conservative: it confirms the rule-based
+verdicts, may **escalate** a change the rule pass under-classified (non-breaking
+to breaking), and adds a one-sentence migration hint per breaking change. What
+it will **not** do by default is **relax** a flagged break. Relaxing a breaking
+verdict to non-breaking, walking back the rule pass's deliberately pessimistic
+"any type change is breaking" stance, is the AI's main value but also the only
+operation that can clear a real break, so by default it is recorded as a
+suggestion in the report (the change stays breaking) and applied only when you
+pass `--ai-apply-downgrades`. The default path therefore cannot turn a flagged
+break into a non-break.
+
+The downgrade decision is the flow worth getting right, so the verdict call
+sends a **focused context**: for each change, only the definitions of the types
+its signature references (resolved transitively through API Extractor's
+canonical references), with a referenced type's baseline definition included
+where it changed so equivalence can be judged old-vs-new. On a large package
+that is a handful of types instead of the whole surface. The previous signature
+of each change itself rides along inline in its diff snippet. If a referenced
+type can't be resolved, the model is told to keep "breaking", so a thin context
+costs a missed downgrade (noise), never a shipped break.
+
+`--ai-scan` (or `BREAK_CHECK_AI_SCAN=1`, `ai.scanForMissed: true`) adds the
+opposite, paranoid pass: it ships both the baseline and current surfaces (the
+model has to diff old against new to find a break the rule pass missed entirely)
+and reviews additions-only diffs too. It is independent of
+`--ai-apply-downgrades`; combine them for the most thorough run.
 
 Enable it by exporting an API key:
 
@@ -190,7 +213,8 @@ set it permanently in `break-check.config.json`:
 {
   "ai": {
     "model": "claude-opus-4-7",
-    "strict": false
+    "applyDowngrades": false,
+    "scanForMissed": false
   }
 }
 ```
@@ -200,11 +224,12 @@ Priority is `--ai-model` > `BREAK_CHECK_AI_MODEL` > `ai.model` in config >
 
 ### Environment variables
 
-| Variable                        | Effect                                                                               |
-| ------------------------------- | ------------------------------------------------------------------------------------ |
-| `BREAK_CHECK_ANTHROPIC_API_KEY` | Anthropic API key. Required to enable the reviewer (unless `ai.enabled` is `false`). |
-| `BREAK_CHECK_AI_MODEL`          | Override the model. Equivalent to `--ai-model`; loses to the flag, wins over config. |
-| `BREAK_CHECK_AI_STRICT`         | Set to `1` (or any truthy value) to run the reviewer even on pure-additions diffs.   |
+| Variable                          | Effect                                                                                                |
+| --------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `BREAK_CHECK_ANTHROPIC_API_KEY`   | Anthropic API key. Required to enable the reviewer (unless `ai.enabled` is `false`).                  |
+| `BREAK_CHECK_AI_MODEL`            | Override the model. Equivalent to `--ai-model`; loses to the flag, wins over config.                  |
+| `BREAK_CHECK_AI_APPLY_DOWNGRADES` | Set to `1` (or any truthy value) to apply the AI's downgrades. Equivalent to `--ai-apply-downgrades`. |
+| `BREAK_CHECK_AI_SCAN`             | Set to `1` (or any truthy value) to run the missed-breaks audit. Equivalent to `--ai-scan`.           |
 
 ## GitHub Actions Integration
 
