@@ -224,6 +224,12 @@ export class BreakingChangesDetector {
       model,
       maxChangesPerCall: aiCfg?.maxChangesPerCall ?? 80,
       verbose: this.verbose,
+      // Strict is the "thorough" knob: it both runs the reviewer on
+      // additions-only diffs and enables the open-ended missed-breaks scan
+      // (which in turn ships the full baseline surface that scan needs). The
+      // lean default verdicts the supplied changes against the current
+      // surface only.
+      scanForMissed: this.aiStrict,
     });
   }
 

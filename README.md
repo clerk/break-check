@@ -108,7 +108,7 @@ Options:
   --fail-on-skipped       Exit with code 1 if any subpath could not be snapshotted
   --no-ai                 Disable the AI reviewer even if BREAK_CHECK_ANTHROPIC_API_KEY is set
   --ai-model <model>      Override the AI model (e.g. claude-opus-4-7)
-  --ai-strict             Run the AI reviewer even when only additions are detected
+  --ai-strict             Thorough mode: run on additions-only diffs and enable the missed-breaks scan
   -v, --verbose           Show verbose output
 ```
 
@@ -146,21 +146,30 @@ wildcard match as a real subpath.
 
 ### AI reviewer config
 
-| Field               | Type    | Default             | Description                                                                        |
-| ------------------- | ------- | ------------------- | ---------------------------------------------------------------------------------- |
-| `enabled`           | boolean | unset               | Force-enable or force-disable. Unset: runs iff `BREAK_CHECK_ANTHROPIC_API_KEY` set |
-| `model`             | string  | `claude-sonnet-4-6` | Anthropic model identifier                                                         |
-| `maxChangesPerCall` | number  | `80`                | Maximum rule-based changes batched into a single AI call                           |
-| `strict`            | boolean | `false`             | Run the reviewer even when only additions are detected                             |
+| Field               | Type    | Default             | Description                                                                               |
+| ------------------- | ------- | ------------------- | ----------------------------------------------------------------------------------------- |
+| `enabled`           | boolean | unset               | Force-enable or force-disable. Unset: runs iff `BREAK_CHECK_ANTHROPIC_API_KEY` set        |
+| `model`             | string  | `claude-sonnet-4-6` | Anthropic model identifier                                                                |
+| `maxChangesPerCall` | number  | `80`                | Maximum rule-based changes batched into a single AI call                                  |
+| `strict`            | boolean | `false`             | Thorough mode: run on additions-only diffs and enable the full-surface missed-breaks scan |
 
 ## AI Review
 
 Break Check can optionally route the rule-based diff through Claude for a second
-opinion. The reviewer confirms or overrides each rule-based classification,
-adds a one-sentence migration hint per breaking change, and scans the full
-API surface for breaks the rule-based pass missed (e.g., type variance,
-discriminated-union changes, structural-equivalence cases the rule pass treats
-as breaking but aren't).
+opinion. By default the reviewer confirms or overrides each rule-based
+classification (its main job is walking back the rule pass's deliberately
+pessimistic "any type change is breaking" verdicts, e.g. type variance and
+structural-equivalence cases) and adds a one-sentence migration hint per
+breaking change. To keep the request lean it sends only the current API
+surface; the previous shape of each change rides along in its diff snippet,
+which is what the model needs to judge the verdict. Leaner context can only
+make the model downgrade less, never more, so it never turns a real break into
+a non-break.
+
+Thorough mode (`strict`) additionally scans the full baseline-vs-current
+surface for breaks the rule pass missed entirely, at the cost of the larger
+prompt that scan requires. Enable it with `--ai-strict`,
+`BREAK_CHECK_AI_STRICT=1`, or `ai.strict: true`.
 
 Enable it by exporting an API key:
 

@@ -208,7 +208,7 @@ test("ai-analyzer: AI escalates NON_BREAKING -> BREAKING", async () => {
   }
 });
 
-test("ai-analyzer: AI discovers a missed break", async () => {
+test("ai-analyzer: AI discovers a missed break (scanForMissed)", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const { client } = stubClient({
     verdicts: [],
@@ -225,9 +225,12 @@ test("ai-analyzer: AI discovers a missed break", async () => {
       },
     ],
   });
+  // The missed-breaks scan is opt-in; without it an empty change list makes no
+  // call at all (see the dedicated test below).
   const analyzer = new AiChangeAnalyzer({
     apiKey: "test-key",
     client,
+    scanForMissed: true,
     logger: SILENT_LOGGER,
   });
 
@@ -350,8 +353,127 @@ test("ai-analyzer: ADDITION changes pass through without a verdict needed", asyn
     assert.equal(result.length, 1);
     assert.equal(result[0].type, ChangeType.ADDITION);
     assert.equal(result[0].aiAnalysis, undefined);
-    // Still made one call so the model can scan for missed breaks.
+    // Lean default: nothing to re-classify and no scan requested, so we spend
+    // zero API calls on an additions-only diff.
+    assert.equal(calls.length, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ai-analyzer: additions-only still calls once under scanForMissed", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const change = {
+    id: "add1",
+    type: ChangeType.ADDITION,
+    severity: ChangeSeverity.MINOR,
+    category: "function",
+    name: "newThing",
+    description: "Added function newThing",
+    afterSnippet: "export declare function newThing(): void;",
+  };
+  const { client, calls } = stubClient({ verdicts: [], missed: [] });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    scanForMissed: true,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    const result = await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    assert.equal(result.length, 1);
+    assert.equal(result[0].type, ChangeType.ADDITION);
+    // Thorough mode issues the scan call even with nothing to re-classify.
     assert.equal(calls.length, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ai-analyzer: lean path ships the current surface only, no missed scan", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const change = ruleBasedBreakingChange();
+  const { client, calls } = stubClient({
+    verdicts: [
+      {
+        id: change.id,
+        type: ChangeType.BREAKING,
+        confidence: 0.9,
+        rationale: "Return type narrowed.",
+        migration: "Update callers.",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    assert.equal(calls.length, 1);
+    const [surfaceBlock, instruction] = calls[0].messages[0].content;
+    // No baseline dump: the previous shape rides along in beforeSnippet.
+    assert.ok(
+      !surfaceBlock.text.includes("## Baseline"),
+      "lean path must not ship the baseline surface dump",
+    );
+    assert.ok(surfaceBlock.text.includes("Current API surface"));
+    // Single call: no cache breakpoint to amortize.
+    assert.equal(surfaceBlock.cache_control, undefined);
+    // Verdict-only: the model is told to return an empty missed array.
+    assert.ok(instruction.text.includes("empty `missed`"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ai-analyzer: scanForMissed ships both surfaces and requests the scan", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const change = ruleBasedBreakingChange();
+  const { client, calls } = stubClient({
+    verdicts: [
+      {
+        id: change.id,
+        type: ChangeType.BREAKING,
+        confidence: 0.9,
+        rationale: "Return type narrowed.",
+        migration: "Update callers.",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    scanForMissed: true,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    const [surfaceBlock, instruction] = calls[0].messages[0].content;
+    assert.ok(surfaceBlock.text.includes("## Baseline"));
+    assert.ok(surfaceBlock.text.includes("## Current"));
+    assert.ok(instruction.text.toLowerCase().includes("scan the current api"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

@@ -34,6 +34,14 @@ export interface AiAnalyzerOptions {
   /** Print info/debug messages to stderr. */
   verbose?: boolean;
   /**
+   * Thorough mode. When true, the model also runs the open-ended "what did the
+   * rule-based pass miss?" scan, and the prompt carries the full baseline
+   * surface that scan needs. Off by default: the lean path sends only the
+   * current surface and asks the model to verdict the supplied changes. Wired
+   * from the detector's `strict` resolution.
+   */
+  scanForMissed?: boolean;
+  /**
    * Optional structural Anthropic client for tests. When omitted the real
    * `@anthropic-ai/sdk` is lazily imported on first use.
    */
@@ -207,8 +215,8 @@ Reasoning rules:
 Output protocol:
 - Always respond by calling the submit_review tool. Never reply with plain text.
 - Provide exactly one verdict object per supplied rule-based change, keyed by its id.
-- In "missed", include only changes you can justify from the API surface. Do not invent changes. If unsure, leave it out.
-- Keep rationales to 1-3 sentences. Be specific (cite the type/parameter name).
+- Populate "missed" only when the user message explicitly asks you to scan for missed changes; otherwise return an empty array. Never invent changes; if unsure, leave it out.
+- Keep each rationale to one short, specific sentence (cite the type/parameter name).
 - For any verdict whose type is "breaking", include a one-sentence "migration" hint for consumers.`;
 
 /* --------------------------------------------------------------- analyzer -- */
@@ -219,6 +227,7 @@ export class AiChangeAnalyzer {
   private readonly maxChangesPerCall: number;
   private readonly timeoutMs: number;
   private readonly verbose: boolean;
+  private readonly scanForMissed: boolean;
   private readonly apiKey: string;
   private readonly logger: Pick<Console, "warn" | "log">;
   private clientPromise: Promise<AiClient> | null = null;
@@ -238,6 +247,7 @@ export class AiChangeAnalyzer {
     this.maxChangesPerCall = opts.maxChangesPerCall ?? 80;
     this.timeoutMs = opts.timeoutMs ?? 60_000;
     this.verbose = opts.verbose ?? false;
+    this.scanForMissed = opts.scanForMissed ?? false;
     this.logger = opts.logger ?? console;
     if (opts.client) {
       this.clientPromise = Promise.resolve(opts.client);
@@ -252,9 +262,24 @@ export class AiChangeAnalyzer {
     changes: ApiChange[],
     ctx: AiPackageContext,
   ): Promise<ApiChange[]> {
+    // The rule-based "addition" entries don't need re-classification (they're
+    // by definition non-breaking). They're stripped from the chunked verdict
+    // list and re-appended untouched at the end.
+    const reviewable = changes.filter((c) => c.type !== ChangeType.ADDITION);
+    const passThrough = changes.filter((c) => c.type === ChangeType.ADDITION);
+
+    // Lean path: nothing to re-classify and the caller didn't ask for the
+    // open-ended missed-breaks scan, so there is no reason to spend a call.
+    if (reviewable.length === 0 && !this.scanForMissed) {
+      return changes;
+    }
+
     let surface: string;
     try {
-      surface = this.buildSurfaceBlock(ctx);
+      // The baseline surface only feeds the missed-breaks scan's diff. The
+      // verdict path resolves the previous shape from each change's inline
+      // beforeSnippet, so the lean path ships the current surface alone.
+      surface = this.buildSurfaceBlock(ctx, this.scanForMissed);
     } catch (error) {
       this.warn(
         `[ai] could not load API surface for ${ctx.packageName}: ${describe(error)}. Skipping AI review.`,
@@ -272,18 +297,9 @@ export class AiChangeAnalyzer {
       return changes;
     }
 
-    // The rule-based "addition" entries don't need re-classification (they're
-    // by definition non-breaking), but the model still benefits from seeing
-    // the surface to scan for missed breaks. We strip additions from the
-    // chunked verdict list but still issue at least one call for the scan.
-    const reviewable = changes.filter((c) => c.type !== ChangeType.ADDITION);
-    const passThrough = changes.filter((c) => c.type === ChangeType.ADDITION);
-
-    // Keys that the rule-based pass already accounts for. Used both to brief
-    // the model (so its "missed" scan can ignore them) and to defensively
-    // de-dup if the model reports one anyway.
+    // Keys the rule-based pass already accounts for. Used to defensively de-dup
+    // if the model reports a "missed" entry that duplicates a known change.
     const knownKeys = new Set(changes.map((c) => `${c.category}:${c.name}`));
-    const knownSummary = formatKnownSummary(changes);
 
     const chunks: ApiChange[][] = [];
     if (reviewable.length === 0) {
@@ -294,18 +310,35 @@ export class AiChangeAnalyzer {
       }
     }
 
+    // A cache breakpoint on the surface only pays off when more than one call
+    // will read it; a lone call would eat the 1.25x cache-write with nothing
+    // to amortize against, so the single-chunk path sends it as plain input.
+    const cacheSurface = chunks.length > 1;
+
     const verdictMap = new Map<string, AiVerdict["verdicts"][number]>();
     const missedAggregate: AiVerdict["missed"] = [];
 
     for (let i = 0; i < chunks.length; i++) {
-      const includeMissedScan = i === 0;
+      const includeMissedScan = i === 0 && this.scanForMissed;
+      // For the scan, brief the model on every OTHER change so it doesn't
+      // re-report one under `missed`. The current chunk's changes are already
+      // in this call's JSON payload, so they're excluded here, which means a
+      // single-chunk package sends no redundant summary at all.
+      let otherChangesSummary = "";
+      if (includeMissedScan) {
+        const chunkIds = new Set(chunks[i].map((c) => c.id));
+        otherChangesSummary = formatKnownSummary(
+          changes.filter((c) => !chunkIds.has(c.id)),
+        );
+      }
       const verdict = await this.runOneCall(
         client,
         chunks[i],
         surface,
         ctx,
         includeMissedScan,
-        knownSummary,
+        otherChangesSummary,
+        cacheSurface,
       );
       if (!verdict) {
         // Hard fail-soft for this chunk; the affected changes will keep their
@@ -396,7 +429,8 @@ export class AiChangeAnalyzer {
     surface: string,
     ctx: AiPackageContext,
     includeMissedScan: boolean,
-    knownSummary: string,
+    otherChangesSummary: string,
+    cacheSurface: boolean,
   ): Promise<AiVerdict | null> {
     const ruleListPayload = chunk.map((c) => ({
       id: c.id,
@@ -408,25 +442,37 @@ export class AiChangeAnalyzer {
       afterSnippet: c.afterSnippet,
     }));
 
-    const userInstruction = [
+    // Compact JSON (no indentation): this block is in the non-cached part of
+    // the request, so every byte of pretty-print whitespace is paid on each
+    // call.
+    const parts: string[] = [
       `Package: ${ctx.packageName}`,
       "",
-      "Rule-based changes to review (JSON):",
+      "Rule-based changes to review (compact JSON, exactly one verdict required per id):",
       "```json",
-      JSON.stringify(ruleListPayload, null, 2),
+      JSON.stringify(ruleListPayload),
       "```",
-      "",
-      "All changes the rule-based pass already produced (do NOT re-report any of these under `missed`):",
-      "```",
-      knownSummary || "(none)",
-      "```",
-      "",
-      includeMissedScan
-        ? "Scan the API surface block above for any consumer-observable breaking changes that are NOT in the list above, and report them under `missed`. Be conservative: omit anything you are unsure about."
-        : "Do not populate `missed` in this call; return an empty `missed` array.",
+    ];
+
+    if (includeMissedScan) {
+      parts.push(
+        "",
+        "After verdicting those, scan the current API surface above for any consumer-observable breaking change the rule-based pass did NOT flag, and report each under `missed`. Be conservative: omit anything you are unsure about. Do not re-report a change already listed above" +
+          (otherChangesSummary ? " or in the list below:" : "."),
+      );
+      if (otherChangesSummary) {
+        parts.push("```", otherChangesSummary, "```");
+      }
+    } else {
+      parts.push("", "Return an empty `missed` array.");
+    }
+
+    parts.push(
       "",
       `Return exactly ${chunk.length} verdict object(s), one per supplied id.`,
-    ].join("\n");
+    );
+
+    const userInstruction = parts.join("\n");
 
     const params: AiMessagesCreateParams = {
       model: this.model,
@@ -456,7 +502,10 @@ export class AiChangeAnalyzer {
             {
               type: "text",
               text: surface,
-              cache_control: { type: "ephemeral" },
+              // Only a cache breakpoint when more than one call reads it.
+              ...(cacheSurface
+                ? { cache_control: { type: "ephemeral" as const } }
+                : {}),
             },
             { type: "text", text: userInstruction },
           ],
@@ -517,9 +566,24 @@ export class AiChangeAnalyzer {
     return this.clientPromise;
   }
 
-  private buildSurfaceBlock(ctx: AiPackageContext): string {
-    const baseline = extractSurface(ctx.baselineApiJsonPath);
+  private buildSurfaceBlock(
+    ctx: AiPackageContext,
+    includeBaseline: boolean,
+  ): string {
     const current = extractSurface(ctx.currentApiJsonPath);
+    if (!includeBaseline) {
+      // Lean path: the previous shape of each reviewed change rides along in
+      // its inline beforeSnippet, so the model only needs the current surface
+      // to resolve named types referenced by the new signatures.
+      return [
+        `# Current API surface for ${ctx.packageName}`,
+        "(The previous signature for each reviewed change is in its beforeSnippet, in the review list below.)",
+        "```ts",
+        current,
+        "```",
+      ].join("\n");
+    }
+    const baseline = extractSurface(ctx.baselineApiJsonPath);
     return [
       `# API surface for ${ctx.packageName}`,
       "",
