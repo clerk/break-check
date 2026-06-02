@@ -153,7 +153,7 @@ program
   )
   .option(
     "--ai-strict",
-    "Run the AI reviewer even when only additions are detected (equivalent to BREAK_CHECK_AI_STRICT=1).",
+    "Thorough mode: apply the AI's breaking->non-breaking downgrades, audit for missed breaks, and review additions-only diffs (equivalent to BREAK_CHECK_AI_STRICT=1).",
   )
   .option("-v, --verbose", "Show verbose output")
   .action(async (options) => {

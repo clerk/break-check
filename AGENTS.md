@@ -160,22 +160,28 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   set, unless `ai.enabled` is explicitly `false`. Model resolution
   priority is `--ai-model` > `BREAK_CHECK_AI_MODEL` > `ai.model` config >
   `claude-sonnet-4-6`. Preserve that priority order when editing.
-- **The reviewer prompt is deliberately lean by default.** The default path
-  sends only the _current_ API surface and asks the model to verdict the
-  supplied rule-based changes; the previous shape of each change rides along in
-  its `beforeSnippet`, so the full baseline surface (which roughly doubled the
-  prompt) is not sent. The open-ended "what did the rule pass miss?" scan, and
-  the both-side surface it needs, are gated behind `strict` (the same knob that
-  runs the reviewer on additions-only diffs), wired through the analyzer's
-  `scanForMissed` option in `detector.ts`. Keep that gating. The safety
-  argument is asymmetric: the rule pass is already pessimistic (every type
-  change is breaking) and the AI only ever _downgrades_, so trimming its
-  context can only cost downgrades (noisier reports, the safe direction) and
-  can never manufacture a missed break. An additions-only diff makes zero API
-  calls in the lean path. The per-call change list is compact JSON (no
-  pretty-print), `submit_review` asks for one-sentence rationales to hold
-  output down, and the surface only takes a prompt-cache breakpoint when more
-  than one chunk will read it.
+- **The reviewer prompt is lean in both modes.** It ships only the _current_
+  API surface; the previous shape of each change rides along in its
+  `beforeSnippet`, so the baseline dump (which roughly doubled the prompt) is
+  never sent, not even under `strict`. The change list is compact JSON,
+  `submit_review` asks for one-sentence rationales, and the surface only takes a
+  prompt-cache breakpoint when more than one chunk will read it. An
+  additions-only diff makes zero API calls in the lean path.
+- **Downgrades are gated behind `strict`; the lean default cannot clear a
+  break.** A `breaking -> non-breaking` verdict is the only operation that can
+  hide a real break, so the analyzer applies it only when `strict` is set
+  (wired from the detector's `aiStrict` through the analyzer's `strict`
+  option). In the lean default such a verdict is recorded as an
+  `ai-suggested-downgrade`: the change stays breaking and the report tells the
+  user to re-run `--ai-strict` to apply it. Escalations (`-> breaking`) and
+  confirmations always apply, in both modes. Keep this gating, it is what makes
+  the safety property real ("the default reviewer never turns a flagged break
+  into a non-break") instead of a hope about model behavior. `strict` also
+  enables the open-ended missed-breaks audit and runs the reviewer on
+  additions-only diffs. Do not reintroduce the baseline surface to "strengthen"
+  strict downgrades: the inline before/after snippets plus the current surface
+  are sufficient, and rule 8 of the system prompt tells the model to keep
+  "breaking" for any type it cannot resolve, so a missing definition fails safe.
 - **Action is preview**: it ships from this repo but isn't usable
   until `@clerk/break-check` is on npm and a `v1` tag exists. The README
   has the disclaimer; keep it in sync if the status changes.

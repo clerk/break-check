@@ -425,6 +425,11 @@ export class MarkdownReporter {
       const confidence = Math.round(ai.confidence * 100);
       const label = this.aiReviewLabel(change);
       lines.push(`> 🤖 **${label}** (${confidence}%): ${ai.rationale}\n`);
+      if (ai.source === "ai-suggested-downgrade") {
+        lines.push(
+          `> Kept breaking by the lean reviewer; re-run with \`--ai-strict\` to relax this under full context.\n`,
+        );
+      }
       if (ai.migration) {
         lines.push(`> **Migration:** ${ai.migration}\n`);
       }
@@ -610,6 +615,8 @@ export class MarkdownReporter {
         return "AI review (confirmed)";
       case "ai-discovered":
         return "AI review (additional finding)";
+      case "ai-suggested-downgrade":
+        return "AI review (suggests non-breaking, not applied)";
     }
   }
 

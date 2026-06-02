@@ -108,7 +108,7 @@ Options:
   --fail-on-skipped       Exit with code 1 if any subpath could not be snapshotted
   --no-ai                 Disable the AI reviewer even if BREAK_CHECK_ANTHROPIC_API_KEY is set
   --ai-model <model>      Override the AI model (e.g. claude-opus-4-7)
-  --ai-strict             Thorough mode: run on additions-only diffs and enable the missed-breaks scan
+  --ai-strict             Thorough mode: apply downgrades, audit for missed breaks, review additions-only diffs
   -v, --verbose           Show verbose output
 ```
 
@@ -146,30 +146,37 @@ wildcard match as a real subpath.
 
 ### AI reviewer config
 
-| Field               | Type    | Default             | Description                                                                               |
-| ------------------- | ------- | ------------------- | ----------------------------------------------------------------------------------------- |
-| `enabled`           | boolean | unset               | Force-enable or force-disable. Unset: runs iff `BREAK_CHECK_ANTHROPIC_API_KEY` set        |
-| `model`             | string  | `claude-sonnet-4-6` | Anthropic model identifier                                                                |
-| `maxChangesPerCall` | number  | `80`                | Maximum rule-based changes batched into a single AI call                                  |
-| `strict`            | boolean | `false`             | Thorough mode: run on additions-only diffs and enable the full-surface missed-breaks scan |
+| Field               | Type    | Default             | Description                                                                                    |
+| ------------------- | ------- | ------------------- | ---------------------------------------------------------------------------------------------- |
+| `enabled`           | boolean | unset               | Force-enable or force-disable. Unset: runs iff `BREAK_CHECK_ANTHROPIC_API_KEY` set             |
+| `model`             | string  | `claude-sonnet-4-6` | Anthropic model identifier                                                                     |
+| `maxChangesPerCall` | number  | `80`                | Maximum rule-based changes batched into a single AI call                                       |
+| `strict`            | boolean | `false`             | Thorough mode: apply the AI's downgrades, audit for missed breaks, review additions-only diffs |
 
 ## AI Review
 
 Break Check can optionally route the rule-based diff through Claude for a second
-opinion. By default the reviewer confirms or overrides each rule-based
-classification (its main job is walking back the rule pass's deliberately
-pessimistic "any type change is breaking" verdicts, e.g. type variance and
-structural-equivalence cases) and adds a one-sentence migration hint per
-breaking change. To keep the request lean it sends only the current API
-surface; the previous shape of each change rides along in its diff snippet,
-which is what the model needs to judge the verdict. Leaner context can only
-make the model downgrade less, never more, so it never turns a real break into
-a non-break.
+opinion. By default the reviewer is conservative: it confirms the rule-based
+verdicts, may **escalate** a change the rule pass under-classified (non-breaking
+to breaking), and adds a one-sentence migration hint per breaking change. What
+it will **not** do by default is **relax** a flagged break. Relaxing a breaking
+verdict to non-breaking, walking back the rule pass's deliberately pessimistic
+"any type change is breaking" stance, is the AI's main value but also the only
+operation that can clear a real break, so it is applied only under `strict`. The
+default path therefore cannot turn a flagged break into a non-break; the worst
+it does on thin context is leave a false positive in place (noise, not a shipped
+break). When the default reviewer believes a flagged break is actually safe it
+records that as a suggestion in the report, so you can re-run with `--ai-strict`
+to apply it.
 
-Thorough mode (`strict`) additionally scans the full baseline-vs-current
-surface for breaks the rule pass missed entirely, at the cost of the larger
-prompt that scan requires. Enable it with `--ai-strict`,
-`BREAK_CHECK_AI_STRICT=1`, or `ai.strict: true`.
+To keep both paths cheap, the prompt ships only the current API surface; the
+previous shape of each change rides along in its diff snippet, which is what the
+model needs to judge the verdict.
+
+Thorough mode (`strict`) **applies** the model's downgrades and additionally
+audits the current surface for breaks the rule pass didn't flag. It also runs on
+additions-only diffs. Enable it with `--ai-strict`, `BREAK_CHECK_AI_STRICT=1`,
+or `ai.strict: true`.
 
 Enable it by exporting an API key:
 
@@ -209,11 +216,11 @@ Priority is `--ai-model` > `BREAK_CHECK_AI_MODEL` > `ai.model` in config >
 
 ### Environment variables
 
-| Variable                        | Effect                                                                               |
-| ------------------------------- | ------------------------------------------------------------------------------------ |
-| `BREAK_CHECK_ANTHROPIC_API_KEY` | Anthropic API key. Required to enable the reviewer (unless `ai.enabled` is `false`). |
-| `BREAK_CHECK_AI_MODEL`          | Override the model. Equivalent to `--ai-model`; loses to the flag, wins over config. |
-| `BREAK_CHECK_AI_STRICT`         | Set to `1` (or any truthy value) to run the reviewer even on pure-additions diffs.   |
+| Variable                        | Effect                                                                                                                      |
+| ------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `BREAK_CHECK_ANTHROPIC_API_KEY` | Anthropic API key. Required to enable the reviewer (unless `ai.enabled` is `false`).                                        |
+| `BREAK_CHECK_AI_MODEL`          | Override the model. Equivalent to `--ai-model`; loses to the flag, wins over config.                                        |
+| `BREAK_CHECK_AI_STRICT`         | Set to `1` (or any truthy value) for thorough mode: apply downgrades, audit for missed breaks, review additions-only diffs. |
 
 ## GitHub Actions Integration
 

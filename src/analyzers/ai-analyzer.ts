@@ -34,13 +34,17 @@ export interface AiAnalyzerOptions {
   /** Print info/debug messages to stderr. */
   verbose?: boolean;
   /**
-   * Thorough mode. When true, the model also runs the open-ended "what did the
-   * rule-based pass miss?" scan, and the prompt carries the full baseline
-   * surface that scan needs. Off by default: the lean path sends only the
-   * current surface and asks the model to verdict the supplied changes. Wired
-   * from the detector's `strict` resolution.
+   * Thorough mode. Two effects, both off by default:
+   *   1. Downgrades are applied. A `breaking -> non-breaking` verdict is the
+   *      only one that can clear a flagged break, so it is the only risky
+   *      operation. In the lean default it is recorded as a suggestion but the
+   *      change stays breaking; only strict mode actually relaxes the verdict.
+   *   2. The open-ended "what did the rule-based pass miss?" audit runs.
+   * Wired from the detector's `strict` resolution. The prompt surface is
+   * current-only in both modes; the previous signature of each change rides
+   * along in its inline beforeSnippet.
    */
-  scanForMissed?: boolean;
+  strict?: boolean;
   /**
    * Optional structural Anthropic client for tests. When omitted the real
    * `@anthropic-ai/sdk` is lazily imported on first use.
@@ -211,6 +215,7 @@ Reasoning rules:
 5. Class member visibility going from public to protected/private is breaking. The other direction is non-breaking.
 6. Generic constraint tightening is breaking; loosening is non-breaking.
 7. When uncertain, prefer "breaking" but lower confidence to reflect the uncertainty.
+8. Only relax a rule-based "breaking" verdict to "non-breaking" when you can fully resolve the relevant types from the current API surface or the change's before/after snippets. If a referenced type's definition is not available to you, keep "breaking".
 
 Output protocol:
 - Always respond by calling the submit_review tool. Never reply with plain text.
@@ -227,7 +232,7 @@ export class AiChangeAnalyzer {
   private readonly maxChangesPerCall: number;
   private readonly timeoutMs: number;
   private readonly verbose: boolean;
-  private readonly scanForMissed: boolean;
+  private readonly strict: boolean;
   private readonly apiKey: string;
   private readonly logger: Pick<Console, "warn" | "log">;
   private clientPromise: Promise<AiClient> | null = null;
@@ -247,7 +252,7 @@ export class AiChangeAnalyzer {
     this.maxChangesPerCall = opts.maxChangesPerCall ?? 80;
     this.timeoutMs = opts.timeoutMs ?? 60_000;
     this.verbose = opts.verbose ?? false;
-    this.scanForMissed = opts.scanForMissed ?? false;
+    this.strict = opts.strict ?? false;
     this.logger = opts.logger ?? console;
     if (opts.client) {
       this.clientPromise = Promise.resolve(opts.client);
@@ -269,17 +274,17 @@ export class AiChangeAnalyzer {
     const passThrough = changes.filter((c) => c.type === ChangeType.ADDITION);
 
     // Lean path: nothing to re-classify and the caller didn't ask for the
-    // open-ended missed-breaks scan, so there is no reason to spend a call.
-    if (reviewable.length === 0 && !this.scanForMissed) {
+    // open-ended missed-breaks audit, so there is no reason to spend a call.
+    if (reviewable.length === 0 && !this.strict) {
       return changes;
     }
 
     let surface: string;
     try {
-      // The baseline surface only feeds the missed-breaks scan's diff. The
-      // verdict path resolves the previous shape from each change's inline
-      // beforeSnippet, so the lean path ships the current surface alone.
-      surface = this.buildSurfaceBlock(ctx, this.scanForMissed);
+      // Current surface only, in both modes: the previous shape of each change
+      // rides along in its inline beforeSnippet, so the baseline dump is
+      // redundant. Keeps strict mode as lean as the default.
+      surface = this.buildSurfaceBlock(ctx);
     } catch (error) {
       this.warn(
         `[ai] could not load API surface for ${ctx.packageName}: ${describe(error)}. Skipping AI review.`,
@@ -319,7 +324,7 @@ export class AiChangeAnalyzer {
     const missedAggregate: AiVerdict["missed"] = [];
 
     for (let i = 0; i < chunks.length; i++) {
-      const includeMissedScan = i === 0 && this.scanForMissed;
+      const includeMissedScan = i === 0 && this.strict;
       // For the scan, brief the model on every OTHER change so it doesn't
       // re-report one under `missed`. The current chunk's changes are already
       // in this call's JSON payload, so they're excluded here, which means a
@@ -372,6 +377,30 @@ export class AiChangeAnalyzer {
         verdictType = ChangeType.NON_BREAKING;
       }
       this.reviewedCount += 1;
+
+      // A downgrade (breaking -> non-breaking) is the only verdict that can
+      // clear a flagged break, so it is the only risky one. The lean default
+      // does NOT apply it: the change stays breaking and the model's opinion is
+      // recorded so a human can re-run with --ai-strict to relax it under full
+      // context. Escalations (-> breaking) and confirmations always apply, in
+      // both modes. This makes the default path unable to hide a real break.
+      const isDowngrade =
+        change.type === ChangeType.BREAKING &&
+        verdictType === ChangeType.NON_BREAKING;
+      if (isDowngrade && !this.strict) {
+        enriched.push({
+          ...change,
+          aiAnalysis: {
+            source: "ai-suggested-downgrade",
+            confidence: clamp01(v.confidence),
+            rationale: v.rationale,
+            migration: undefined,
+            model: this.model,
+          },
+        });
+        continue;
+      }
+
       const overrode = verdictType !== change.type;
       if (overrode) this.overriddenCount += 1;
       const aiAnalysis: AiAnalysis = {
@@ -566,33 +595,16 @@ export class AiChangeAnalyzer {
     return this.clientPromise;
   }
 
-  private buildSurfaceBlock(
-    ctx: AiPackageContext,
-    includeBaseline: boolean,
-  ): string {
+  private buildSurfaceBlock(ctx: AiPackageContext): string {
+    // Current surface only. The previous shape of each reviewed change rides
+    // along in its inline beforeSnippet, so the model only needs the current
+    // surface to resolve named types referenced by the new signatures. The
+    // baselineApiJsonPath is still carried on the context for callers that may
+    // diff it directly, but the prompt does not ship the baseline dump.
     const current = extractSurface(ctx.currentApiJsonPath);
-    if (!includeBaseline) {
-      // Lean path: the previous shape of each reviewed change rides along in
-      // its inline beforeSnippet, so the model only needs the current surface
-      // to resolve named types referenced by the new signatures.
-      return [
-        `# Current API surface for ${ctx.packageName}`,
-        "(The previous signature for each reviewed change is in its beforeSnippet, in the review list below.)",
-        "```ts",
-        current,
-        "```",
-      ].join("\n");
-    }
-    const baseline = extractSurface(ctx.baselineApiJsonPath);
     return [
-      `# API surface for ${ctx.packageName}`,
-      "",
-      "## Baseline",
-      "```ts",
-      baseline,
-      "```",
-      "",
-      "## Current",
+      `# Current API surface for ${ctx.packageName}`,
+      "(The previous signature for each reviewed change is in its beforeSnippet, in the review list below.)",
       "```ts",
       current,
       "```",

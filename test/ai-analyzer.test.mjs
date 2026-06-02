@@ -128,7 +128,46 @@ test("ai-analyzer: AI confirms rule-based verdict", async () => {
   }
 });
 
-test("ai-analyzer: AI overrides BREAKING -> NON_BREAKING", async () => {
+test("ai-analyzer: strict applies a BREAKING -> NON_BREAKING downgrade", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const change = ruleBasedBreakingChange();
+  const { client } = stubClient({
+    verdicts: [
+      {
+        id: change.id,
+        type: ChangeType.NON_BREAKING,
+        confidence: 0.85,
+        rationale: "Aliases resolve to the same shape.",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    strict: true,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    const [result] = await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    assert.equal(result.type, ChangeType.NON_BREAKING);
+    assert.equal(result.severity, ChangeSeverity.MINOR);
+    assert.equal(result.ruleBasedType, ChangeType.BREAKING);
+    assert.equal(result.aiAnalysis.source, "rule-overridden");
+    assert.equal(result.aiAnalysis.migration, undefined);
+    assert.equal(analyzer.overriddenCount, 1);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ai-analyzer: lean mode records a suggested downgrade but keeps it breaking", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = ruleBasedBreakingChange();
   const { client } = stubClient({
@@ -155,12 +194,18 @@ test("ai-analyzer: AI overrides BREAKING -> NON_BREAKING", async () => {
       currentApiJsonPath: current,
     });
 
-    assert.equal(result.type, ChangeType.NON_BREAKING);
-    assert.equal(result.severity, ChangeSeverity.MINOR);
-    assert.equal(result.ruleBasedType, ChangeType.BREAKING);
-    assert.equal(result.aiAnalysis.source, "rule-overridden");
-    assert.equal(result.aiAnalysis.migration, undefined);
-    assert.equal(analyzer.overriddenCount, 1);
+    // The lean default must NOT clear a flagged break, even when the model
+    // says non-breaking. The change stays breaking; the suggestion is recorded.
+    assert.equal(result.type, ChangeType.BREAKING);
+    assert.equal(result.severity, ChangeSeverity.MAJOR);
+    assert.equal(result.aiAnalysis.source, "ai-suggested-downgrade");
+    assert.equal(
+      result.aiAnalysis.rationale,
+      "Aliases resolve to the same shape.",
+    );
+    assert.equal(result.ruleBasedType, undefined);
+    assert.equal(analyzer.reviewedCount, 1);
+    assert.equal(analyzer.overriddenCount, 0);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -208,7 +253,7 @@ test("ai-analyzer: AI escalates NON_BREAKING -> BREAKING", async () => {
   }
 });
 
-test("ai-analyzer: AI discovers a missed break (scanForMissed)", async () => {
+test("ai-analyzer: AI discovers a missed break (strict)", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const { client } = stubClient({
     verdicts: [],
@@ -225,12 +270,12 @@ test("ai-analyzer: AI discovers a missed break (scanForMissed)", async () => {
       },
     ],
   });
-  // The missed-breaks scan is opt-in; without it an empty change list makes no
-  // call at all (see the dedicated test below).
+  // The missed-breaks audit is opt-in (strict); without it an empty change
+  // list makes no call at all (see the dedicated test below).
   const analyzer = new AiChangeAnalyzer({
     apiKey: "test-key",
     client,
-    scanForMissed: true,
+    strict: true,
     logger: SILENT_LOGGER,
   });
 
@@ -361,7 +406,7 @@ test("ai-analyzer: ADDITION changes pass through without a verdict needed", asyn
   }
 });
 
-test("ai-analyzer: additions-only still calls once under scanForMissed", async () => {
+test("ai-analyzer: additions-only still calls once under strict", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = {
     id: "add1",
@@ -376,7 +421,7 @@ test("ai-analyzer: additions-only still calls once under scanForMissed", async (
   const analyzer = new AiChangeAnalyzer({
     apiKey: "test-key",
     client,
-    scanForMissed: true,
+    strict: true,
     logger: SILENT_LOGGER,
   });
 
@@ -441,7 +486,7 @@ test("ai-analyzer: lean path ships the current surface only, no missed scan", as
   }
 });
 
-test("ai-analyzer: scanForMissed ships both surfaces and requests the scan", async () => {
+test("ai-analyzer: strict requests the missed audit but stays current-only", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = ruleBasedBreakingChange();
   const { client, calls } = stubClient({
@@ -459,7 +504,7 @@ test("ai-analyzer: scanForMissed ships both surfaces and requests the scan", asy
   const analyzer = new AiChangeAnalyzer({
     apiKey: "test-key",
     client,
-    scanForMissed: true,
+    strict: true,
     logger: SILENT_LOGGER,
   });
 
@@ -471,15 +516,65 @@ test("ai-analyzer: scanForMissed ships both surfaces and requests the scan", asy
     });
 
     const [surfaceBlock, instruction] = calls[0].messages[0].content;
-    assert.ok(surfaceBlock.text.includes("## Baseline"));
-    assert.ok(surfaceBlock.text.includes("## Current"));
+    // Strict is as lean as the default: still no baseline dump.
+    assert.ok(!surfaceBlock.text.includes("## Baseline"));
+    assert.ok(surfaceBlock.text.includes("Current API surface"));
+    // But it does ask the model to audit for missed breaks.
     assert.ok(instruction.text.toLowerCase().includes("scan the current api"));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("ai-analyzer: coerces bogus ADDITION verdict on an in-place change to NON_BREAKING", async () => {
+test("ai-analyzer: strict coerces a bogus ADDITION verdict to NON_BREAKING", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const change = ruleBasedBreakingChange();
+  const warnings = [];
+  const { client } = stubClient({
+    verdicts: [
+      {
+        id: change.id,
+        type: ChangeType.ADDITION,
+        confidence: 0.6,
+        rationale: "Type widened, treating as additive.",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    strict: true,
+    logger: {
+      warn: (m) => warnings.push(m),
+      log: () => {},
+    },
+  });
+
+  try {
+    const [result] = await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    // ADDITION is reserved for brand-new exports; the model violated the
+    // protocol on an in-place modification, so we coerce to NON_BREAKING. Under
+    // strict, that downgrade is then applied.
+    assert.equal(result.type, ChangeType.NON_BREAKING);
+    assert.equal(result.severity, ChangeSeverity.MINOR);
+    assert.equal(result.ruleBasedType, ChangeType.BREAKING);
+    assert.equal(result.aiAnalysis.source, "rule-overridden");
+    assert.ok(
+      warnings.some((w) => w.includes("addition")),
+      `expected warning about bogus 'addition' verdict, got: ${warnings.join(" | ")}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ai-analyzer: lean coerces a bogus ADDITION but keeps it breaking", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = ruleBasedBreakingChange();
   const warnings = [];
@@ -510,16 +605,11 @@ test("ai-analyzer: coerces bogus ADDITION verdict on an in-place change to NON_B
       currentApiJsonPath: current,
     });
 
-    // ADDITION is reserved for brand-new exports; the model violated the
-    // protocol on an in-place modification, so we coerce to NON_BREAKING.
-    assert.equal(result.type, ChangeType.NON_BREAKING);
-    assert.equal(result.severity, ChangeSeverity.MINOR);
-    assert.equal(result.ruleBasedType, ChangeType.BREAKING);
-    assert.equal(result.aiAnalysis.source, "rule-overridden");
-    assert.ok(
-      warnings.some((w) => w.includes("addition")),
-      `expected warning about bogus 'addition' verdict, got: ${warnings.join(" | ")}`,
-    );
+    // Coercion still flags the protocol violation, but the resulting
+    // non-breaking is a downgrade, so the lean default does not apply it.
+    assert.equal(result.type, ChangeType.BREAKING);
+    assert.equal(result.aiAnalysis.source, "ai-suggested-downgrade");
+    assert.ok(warnings.some((w) => w.includes("addition")));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

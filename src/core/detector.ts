@@ -224,12 +224,12 @@ export class BreakingChangesDetector {
       model,
       maxChangesPerCall: aiCfg?.maxChangesPerCall ?? 80,
       verbose: this.verbose,
-      // Strict is the "thorough" knob: it both runs the reviewer on
-      // additions-only diffs and enables the open-ended missed-breaks scan
-      // (which in turn ships the full baseline surface that scan needs). The
-      // lean default verdicts the supplied changes against the current
-      // surface only.
-      scanForMissed: this.aiStrict,
+      // Strict is the "thorough" knob. It runs the reviewer on additions-only
+      // diffs (gated below), applies the model's downgrades (breaking ->
+      // non-breaking, the only verdict the lean default withholds), and runs
+      // the missed-breaks audit. The prompt surface is current-only in both
+      // modes.
+      strict: this.aiStrict,
     });
   }
 
@@ -752,6 +752,11 @@ export class BreakingChangesDetector {
       );
 
       const ai = this.ensureAiAnalyzer();
+      // No rule-based changes means baseline and current matched for this
+      // entry, so there is nothing to review. We deliberately do not invoke the
+      // AI here even under strict: the reviewer ships the current surface only,
+      // so with no change to anchor against there is no break for the missed
+      // audit to find. The audit runs alongside an entry that does have changes.
       if (ai && entryChanges.length > 0) {
         const hasNonAdditionChange = entryChanges.some(
           (c) => c.type !== ChangeType.ADDITION,
