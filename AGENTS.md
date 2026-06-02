@@ -171,7 +171,11 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   safe. `submit_review` asks for one-sentence rationales, and the surface only
   takes a prompt-cache breakpoint when more than one chunk will read it. The
   missed-breaks audit is the exception: it needs breadth, so it sends the full
-  current surface (`buildFullSurfaceBlock`).
+  current surface (`buildFullSurfaceBlock`). Note `walkSurface` indexes every
+  member under BOTH its full-chain name and api-diff's immediate-parent name
+  (`Inner.a` as well as `Outer.Inner.a`), because the rule-based differ names a
+  change by its immediate parent only; without that alias a namespace-nested
+  change would seed an empty closure. Keep both keys.
 - **Two orthogonal opt-ins, both default off; the default cannot clear a
   break.** `applyDowngrades` decides whether a `breaking -> non-breaking`
   verdict (the only one that can hide a break) is acted on or recorded as an

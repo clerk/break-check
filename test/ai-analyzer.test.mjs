@@ -675,6 +675,51 @@ test("ai-analyzer: focused context resolves transitive references", async () => 
   assert.ok(!surface.includes("Unrelated"), "unrelated type excluded");
 });
 
+test("ai-analyzer: focused context seeds from a namespace-nested change", async () => {
+  // api-diff names a namespace-nested member by its immediate parent only
+  // (`Inner.a`), while the surface walk qualifies it fully (`Outer.Inner.a`).
+  // The closure must still resolve the change's referenced types.
+  const members = [
+    iface("Helper", [prop("Helper", "x", [C("string")])]),
+    iface("Unrelated", [prop("Unrelated", "z", [C("number")])]),
+    {
+      kind: "Namespace",
+      name: "Outer",
+      canonicalReference: "@demo/pkg!Outer:namespace",
+      excerptTokens: [C("export declare namespace Outer ")],
+      members: [
+        {
+          kind: "Interface",
+          name: "Inner",
+          canonicalReference: "@demo/pkg!Outer.Inner:interface",
+          excerptTokens: [C("interface Inner ")],
+          members: [
+            {
+              kind: "PropertySignature",
+              name: "a",
+              canonicalReference: "@demo/pkg!Outer.Inner#a:member",
+              excerptTokens: [
+                C("a: "),
+                R("Helper", "@demo/pkg!Helper:interface"),
+                C(";"),
+              ],
+            },
+          ],
+        },
+      ],
+    },
+  ];
+
+  // The rule-based change for the nested property is named `Inner.a`.
+  const surface = await focusedSurfaceFor(members, "Inner.a");
+  assert.ok(
+    surface.includes("Helper"),
+    "nested change must still resolve its referenced type",
+  );
+  assert.ok(surface.includes("Helper.x"), "and that type's members");
+  assert.ok(!surface.includes("Unrelated"), "unrelated type excluded");
+});
+
 test("ai-analyzer: applyDowngrades coerces a bogus ADDITION verdict to NON_BREAKING", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = ruleBasedBreakingChange();

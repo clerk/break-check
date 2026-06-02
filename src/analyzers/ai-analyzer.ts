@@ -714,12 +714,17 @@ function walkSurface(apiJsonPath: string): WalkedSurface {
   const byRef = new Map<string, SurfaceNode>();
   const byName = new Map<string, SurfaceNode>();
 
-  const build = (m: ApiJsonMember, parent?: string): SurfaceNode | null => {
+  const build = (
+    m: ApiJsonMember,
+    parentQualified?: string,
+    parentName?: string,
+  ): SurfaceNode | null => {
     if (m.kind === "EntryPoint") {
-      for (const child of m.members ?? []) build(child, parent);
+      for (const child of m.members ?? [])
+        build(child, parentQualified, parentName);
       return null;
     }
-    const qualified = parent ? `${parent}.${m.name}` : m.name;
+    const qualified = parentQualified ? `${parentQualified}.${m.name}` : m.name;
     const ownRefs: string[] = [];
     for (const t of m.excerptTokens ?? []) {
       if (t.kind === "Reference" && t.canonicalReference) {
@@ -735,10 +740,17 @@ function walkSurface(apiJsonPath: string): WalkedSurface {
       ownRefs,
       children: [],
     };
+    // The full-chain qualified name is authoritative, so it always wins. The
+    // rule-based differ (api-diff.ts) names a member with its IMMEDIATE parent
+    // only (`Inner.a`, not `Outer.Inner.a` for a namespace-nested member), so
+    // also register that alias to seed the focused closure from such a change.
+    // Don't let an alias clobber a real full-chain entry.
     byName.set(qualified, node);
+    const diffName = parentName ? `${parentName}.${m.name}` : m.name;
+    if (!byName.has(diffName)) byName.set(diffName, node);
     if (m.canonicalReference) byRef.set(m.canonicalReference, node);
     for (const child of m.members ?? []) {
-      const c = build(child, qualified);
+      const c = build(child, qualified, m.name);
       if (c) node.children.push(c);
     }
     return node;
