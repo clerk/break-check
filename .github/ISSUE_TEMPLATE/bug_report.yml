@@ -1,0 +1,67 @@
+name: Bug Report
+description: Report a bug in @clerk/break-check.
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug report. Please fill out the
+        sections below so we can reproduce and fix the issue. For questions and
+        general help, use the [Clerk Discord](https://clerk.com/discord).
+  - type: checkboxes
+    attributes:
+      label: Preliminary checks
+      options:
+        - label: I have searched the existing issues and this has not been reported yet.
+          required: true
+        - label: I am running a supported Node.js version (22.13 or newer).
+          required: true
+        - label: I built my package so its `.d.ts` declaration files exist before running break-check.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: break-check version
+      description: The version of `@clerk/break-check` you are running (check your package.json or lockfile).
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Configuration
+      description: Your `break-check.config.json` (redact anything sensitive).
+      render: json
+    validations:
+      required: false
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and output
+      description: The exact command you ran and its output. Re-run with `--verbose` if you can.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened?
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Run `npx envinfo --system --binaries --npmPackages @clerk/break-check,@microsoft/api-extractor,typescript` and paste the output.
+      render: shell
+    validations:
+      required: false

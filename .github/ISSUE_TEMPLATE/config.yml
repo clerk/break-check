@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Clerk Discord community
+    url: https://clerk.com/discord
+    about: Ask questions and get help from the Clerk community.
+  - name: Clerk documentation
+    url: https://clerk.com/docs
+    about: Learn more about Clerk and its tooling.
