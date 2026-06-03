@@ -229,3 +229,160 @@ test("markdown reporter: no truncation notice when the report fits", () => {
   );
   assert.ok(out.includes("@demo/pkg-0") && out.includes("@demo/pkg-1"));
 });
+
+/* ---------------------------------------- breaking-first layout helpers -- */
+
+function changeOf(type, name, subpath) {
+  return {
+    id: name,
+    type,
+    severity:
+      type === ChangeType.BREAKING
+        ? ChangeSeverity.MAJOR
+        : ChangeSeverity.MINOR,
+    category: "type",
+    name,
+    description: `change ${name}`,
+    beforeSnippet: `type ${name} = { a: string };`,
+    afterSnippet: `type ${name} = { a: number };`,
+    ...(subpath ? { subpath } : {}),
+  };
+}
+
+function pkgOf(name, changes, extra = {}) {
+  return {
+    packageName: name,
+    version: { previous: "1.0.0", current: "1.0.1" },
+    recommendedVersionBump: changes.some((c) => c.type === ChangeType.BREAKING)
+      ? "major"
+      : "minor",
+    changes,
+    ...extra,
+  };
+}
+
+function resultOf(packages, extra = {}) {
+  const all = packages.flatMap((p) => p.changes);
+  return {
+    timestamp: "2026-06-03T00:00:00.000Z",
+    summary: {
+      totalPackages: packages.length,
+      packagesWithChanges: packages.length,
+      breakingChanges: all.filter((c) => c.type === ChangeType.BREAKING).length,
+      nonBreakingChanges: all.filter((c) => c.type === ChangeType.NON_BREAKING)
+        .length,
+      additions: all.filter((c) => c.type === ChangeType.ADDITION).length,
+    },
+    hasBreakingChanges: all.some((c) => c.type === ChangeType.BREAKING),
+    packages,
+    ...extra,
+  };
+}
+
+test("markdown reporter: packages with breaking changes are ordered first", () => {
+  const safe = pkgOf("@demo/safe", [changeOf(ChangeType.NON_BREAKING, "Safe")]);
+  const risky = pkgOf("@demo/risky", [changeOf(ChangeType.BREAKING, "Risky")]);
+  // Array order puts the safe package first; the reporter must reorder.
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    resultOf([safe, risky]),
+  );
+  const riskyIdx = out.indexOf("## @demo/risky");
+  const safeIdx = out.indexOf("## @demo/safe");
+  assert.ok(riskyIdx > -1 && safeIdx > -1);
+  assert.ok(
+    riskyIdx < safeIdx,
+    "breaking package should render before the non-breaking one",
+  );
+});
+
+test("markdown reporter: subpaths with breaking changes are ordered first", () => {
+  const p = pkgOf("@demo/pkg", [
+    changeOf(ChangeType.NON_BREAKING, "ClientThing", "./client"),
+    changeOf(ChangeType.BREAKING, "TypeThing", "./types"),
+  ]);
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    resultOf([p]),
+  );
+  const typesIdx = out.indexOf("### Subpath `./types`");
+  const clientIdx = out.indexOf("### Subpath `./client`");
+  assert.ok(typesIdx > -1 && clientIdx > -1);
+  assert.ok(
+    typesIdx < clientIdx,
+    "breaking subpath should render before the alphabetically-earlier non-breaking one",
+  );
+});
+
+test("markdown reporter: breaking changes are never collapsed; large non-breaking collapse", () => {
+  const breaking = Array.from({ length: 12 }, (_, i) =>
+    changeOf(ChangeType.BREAKING, `B${i}`, "./types"),
+  );
+  const nonBreaking = Array.from({ length: 12 }, (_, i) =>
+    changeOf(ChangeType.NON_BREAKING, `N${i}`, "./types"),
+  );
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    resultOf([pkgOf("@demo/pkg", [...breaking, ...nonBreaking])]),
+  );
+
+  const brkHeader = out.indexOf("Breaking Changes (12)");
+  const nbHeader = out.indexOf("Non-breaking Changes (12)");
+  assert.ok(brkHeader > -1 && nbHeader > -1);
+  // The breaking section (up to the non-breaking header) is fully expanded.
+  const breakingBlock = out.slice(brkHeader, nbHeader);
+  assert.ok(
+    !breakingBlock.includes("<details>"),
+    "breaking changes must never be collapsed",
+  );
+  // The large non-breaking section collapses behind <details>.
+  assert.ok(
+    out.slice(nbHeader).includes("Click to expand 12 changes"),
+    "a large non-breaking section should collapse",
+  );
+});
+
+test("markdown reporter: a breaking-changes index lists every break up front", () => {
+  const p = pkgOf("@demo/pkg", [
+    changeOf(ChangeType.BREAKING, "Risky", "./types"),
+  ]);
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    resultOf([p]),
+  );
+  assert.ok(
+    out.includes("Breaking changes index (1)"),
+    "expected the breaking index heading",
+  );
+  const idxPos = out.indexOf("Breaking changes index");
+  const pkgPos = out.indexOf("## @demo/pkg");
+  assert.ok(
+    idxPos > -1 && idxPos < pkgPos,
+    "index should appear before package sections",
+  );
+  assert.match(out, /\| @demo\/pkg \| `\.\/types` \| `Risky` \|/);
+});
+
+test("markdown reporter: incomplete AI reviews are surfaced and the stamp is partial", () => {
+  const p = pkgOf(
+    "@demo/pkg",
+    [changeOf(ChangeType.BREAKING, "Risky", "./types")],
+    {
+      aiReviewedBy: "claude-test",
+    },
+  );
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    resultOf([p], {
+      incompleteReviews: [
+        {
+          packageName: "@demo/pkg (./types)",
+          reason: "request too large",
+          unreviewed: 3,
+        },
+      ],
+    }),
+  );
+  assert.match(out, /reviewed by `claude-test` \(partial\)/);
+  assert.match(out, /AI review did not complete for 1 subpath/);
+  assert.match(out, /3 changes unreviewed/);
+  assert.ok(
+    out.includes("@demo/pkg (./types)"),
+    "should name the failed subpath",
+  );
+});

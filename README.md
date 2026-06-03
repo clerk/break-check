@@ -212,7 +212,11 @@ npx break-check detect --baseline .api-snapshots-baseline --fail-on-breaking
 
 The reviewer is fail-soft: if the API is unreachable, the key is missing while
 `ai.enabled` is unset, or the model returns a malformed response, Break Check falls
-back to the rule-based result and exits the same way it would without AI.
+back to the rule-based result and exits the same way it would without AI. A call
+that fails on a large surface is retried in smaller batches first; anything still
+unreviewed is reported as partial coverage (the "reviewed by" stamp is marked
+`(partial)` and a callout lists the affected subpaths) rather than being silently
+trusted, so those changes keep their pessimistic rule-based verdict.
 
 ### Picking a model
 

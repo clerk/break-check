@@ -331,6 +331,123 @@ test("ai-analyzer: SDK failure falls back to rule-based", async () => {
     assert.equal(result[0].ruleBasedType, undefined);
     assert.ok(warnings.some((w) => w.includes("boom")));
     assert.equal(analyzer.reviewedCount, 0);
+    // The gap is now recorded so the report can flag partial coverage.
+    assert.equal(analyzer.incompleteReviews.length, 1);
+    assert.equal(analyzer.incompleteReviews[0].unreviewed, 1);
+    assert.equal(analyzer.incompleteReviews[0].packageName, "@demo/pkg");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ai-analyzer: oversized before/after snippets are capped before send", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const huge = Array.from({ length: 1000 }, (_, i) => `  field${i}: string;`);
+  const change = {
+    ...ruleBasedBreakingChange(),
+    beforeSnippet: `type Big = {\n${huge.join("\n")}\n};`,
+    afterSnippet: `type Big = {\n${huge.join("\n")}\n  added?: string;\n};`,
+  };
+  const { client, calls } = stubClient({
+    verdicts: [
+      {
+        id: change.id,
+        type: ChangeType.BREAKING,
+        confidence: 0.9,
+        rationale: "x",
+        migration: "y",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    assert.equal(calls.length, 1);
+    // The rule list rides in the second user content block as compact JSON.
+    const payloadText = calls[0].messages[0].content[1].text;
+    assert.ok(
+      payloadText.includes("lines elided"),
+      "expected the huge snippet to be elided",
+    );
+    // The 1000-line wall must not be sent verbatim: the elided middle is gone.
+    assert.ok(
+      !payloadText.includes("field500"),
+      "expected the middle of the huge snippet to be dropped",
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ai-analyzer: a failed multi-change chunk splits and retries", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const changeA = ruleBasedBreakingChange("id-a");
+  const changeB = { ...ruleBasedBreakingChange("id-b"), name: "greet2" };
+  const warnings = [];
+  const calls = [];
+  // Fails when more than one change is in the call; succeeds for a single one.
+  const client = {
+    messages: {
+      async create(params) {
+        calls.push(params);
+        const text = params.messages[0].content[1].text;
+        const ids = [...text.matchAll(/"id":"([^"]+)"/g)].map((m) => m[1]);
+        if (ids.length > 1) throw new Error("request too large");
+        return {
+          content: [
+            {
+              type: "tool_use",
+              name: "submit_review",
+              input: {
+                verdicts: ids.map((id) => ({
+                  id,
+                  type: ChangeType.NON_BREAKING,
+                  confidence: 0.95,
+                  rationale: "internal rename",
+                })),
+                missed: [],
+              },
+            },
+          ],
+        };
+      },
+    },
+  };
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    applyDowngrades: true,
+    logger: { warn: (m) => warnings.push(m), log: () => {} },
+  });
+
+  try {
+    const result = await analyzer.analyze([changeA, changeB], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    // Both changes were reviewed via the retry split; nothing left unreviewed.
+    assert.equal(result.length, 2);
+    for (const c of result) {
+      assert.equal(c.type, ChangeType.NON_BREAKING);
+      assert.equal(c.aiAnalysis.source, "rule-overridden");
+    }
+    assert.equal(analyzer.incompleteReviews.length, 0);
+    // One failed batch of 2, then two successful singles.
+    assert.equal(calls.length, 3);
+    assert.ok(warnings.some((w) => w.includes("retrying as two smaller")));
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

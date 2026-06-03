@@ -972,6 +972,12 @@ export class BreakingChangesDetector {
     if (this.skippedEntries.length > 0) {
       result.skippedEntries = [...this.skippedEntries];
     }
+    // The analyzer instance is memoized by ensureAiAnalyzer and accumulates
+    // review gaps across every (package, subpath) call, so read it once here.
+    const incompleteReviews = this.aiAnalyzer?.incompleteReviews ?? [];
+    if (incompleteReviews.length > 0) {
+      result.incompleteReviews = [...incompleteReviews];
+    }
     return result;
   }
 
