@@ -550,13 +550,33 @@ export class MarkdownReporter {
       );
     }
 
+    // Deterministic guard: a reference to a non-resolvable module specifier is
+    // breaking regardless of structural shape, and the AI cannot relax it. Only
+    // shown while the change is still breaking (an explicit acknowledgement may
+    // have greened it, which the line above already explains).
+    if (change.unresolvableReference && !change.acknowledged) {
+      const spec = change.unresolvableSpecifier
+        ? `\`${change.unresolvableSpecifier}\``
+        : "an internal subpath";
+      lines.push(
+        `> ⛔ References ${spec}, which is not a resolvable public export of its package (export-blocked or an internal bundler chunk). Consumers cannot resolve this type (it errors under \`nodenext\`, or degrades to \`any\` with \`skipLibCheck\`), so this stays breaking and \`--ai-apply-downgrades\` cannot relax it.\n`,
+      );
+    }
+
     if (ai) {
       const confidence = Math.round(ai.confidence * 100);
       const label = this.aiReviewLabel(change);
       lines.push(`> 🤖 **${label}** (${confidence}%): ${ai.rationale}\n`);
       // Once acknowledged the change is no longer kept breaking, so suppress the
       // "re-run with --ai-apply-downgrades" nudge that would otherwise apply.
-      if (ai.source === "ai-suggested-downgrade" && !change.acknowledged) {
+      // Also suppress it for an unresolvable-reference change: that flag pins the
+      // change breaking precisely so --ai-apply-downgrades cannot relax it, and
+      // the ⛔ callout above already explains why.
+      if (
+        ai.source === "ai-suggested-downgrade" &&
+        !change.acknowledged &&
+        !change.unresolvableReference
+      ) {
         lines.push(
           `> Kept breaking by the reviewer; re-run with \`--ai-apply-downgrades\` to apply this relaxation.\n`,
         );

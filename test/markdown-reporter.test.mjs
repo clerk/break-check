@@ -386,3 +386,38 @@ test("markdown reporter: incomplete AI reviews are surfaced and the stamp is par
     "should name the failed subpath",
   );
 });
+
+test("markdown reporter: unresolvable-reference change shows the guard callout and suppresses the downgrade nudge", () => {
+  const change = {
+    id: "u1",
+    type: ChangeType.BREAKING,
+    severity: ChangeSeverity.MAJOR,
+    category: "function",
+    name: "decodeJwt",
+    description: "Return type changed",
+    beforeSnippet:
+      'export declare const decodeJwt: (token: string) => import("@clerk/shared/types").Jwt;',
+    afterSnippet:
+      'export declare const decodeJwt: (token: string) => import("@clerk/shared/_chunks/index-DcO1-lAR").$a;',
+    unresolvableReference: true,
+    unresolvableSpecifier: "@clerk/shared/_chunks/index-DcO1-lAR",
+    aiAnalysis: {
+      source: "ai-suggested-downgrade",
+      confidence: 0.75,
+      rationale: "Build artifact rename; shape identical.",
+      model: "claude-test",
+    },
+  };
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    makeResult(change),
+  );
+  assert.ok(
+    out.includes("@clerk/shared/_chunks/index-DcO1-lAR"),
+    "callout should name the offending specifier",
+  );
+  assert.match(out, /not a resolvable public export/);
+  assert.ok(
+    !out.includes("re-run with `--ai-apply-downgrades`"),
+    "the downgrade nudge must be suppressed: the flag cannot be relaxed by it",
+  );
+});

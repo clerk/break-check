@@ -217,6 +217,48 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   bump all key off `type`, so the flip is sufficient. The markdown reporter tags
   acknowledged changes and suppresses the "re-run with --ai-apply-downgrades"
   nudge for them.
+- **The unresolvable-reference guard is a deterministic, AI-proof escalation
+  in the opposite direction.** When a change's new signature references a
+  dependency subpath consumers can't resolve (export-blocked or an internal
+  bundler chunk, e.g. `@clerk/shared/_chunks/index-DcO1-lAR` under
+  `"./_chunks/*": null`), the change is breaking regardless of structural shape:
+  downstream it errors (`TS2307`) or degrades to `any` (`skipLibCheck`). This is
+  the false-negative from issue #60. Note `api-diff.ts#canonicalType` strips the
+  subpath from a _resolved_ reference and an _unresolvable_ one carries no
+  `canonicalReference` at all, so the signal survives ONLY in the raw
+  `afterSnippet` text, never the canonical comparison type. `utils/exports-resolution.ts`
+  extracts the inline `import("...")` specifiers a signature newly introduces
+  (present in `afterSnippet`, absent in `beforeSnippet`) and classifies each:
+  `isSubpathExported` resolves it against the dependency's `package.json`
+  `exports` (exact key, single-`*` wildcard longest-prefix-wins, `null` =
+  blocked), located by walking up `node_modules` from `packageInfo.path`; when
+  the dependency can't be located it falls back to `looksLikeInternalChunk`
+  (a `/_chunks/` segment or `isHashedChunkSubpath` basename), reported as a
+  non-deterministic hit. `detector.ts#flagUnresolvableReferences` runs BEFORE the
+  AI over every non-addition change: a change the rule pass already flagged
+  `breaking` is marked `unresolvableReference` (either a deterministic block or
+  the heuristic qualifies, since marking an already-breaking change only prevents
+  a relaxation, never invents a break); a `non-breaking` modification is escalated
+  to breaking ONLY on a deterministic `exports` block (e.g. a newly-added optional
+  param whose type lives in a blocked subpath), never on the heuristic, so a
+  chunk-shaped name can't manufacture a break. The `ai-analyzer.ts` downgrade
+  branch then refuses to apply a downgrade for a flagged change even when
+  `applyDowngrades` is on (it records the model's opinion as a non-applied
+  suggestion); system-prompt rule 12 also tells the model not to downgrade such
+  refs. The reporter shows a `⛔` callout naming the specifier and suppresses the
+  `--ai-apply-downgrades` nudge for it. `acknowledgedChanges` still wins (it runs
+  after and can clear it); `resolvableSpecifiers` (glob-aware, via
+  `makeSubpathMatcher`) is the per-specifier escape hatch. Keep `unresolvableReference`
+  OUT of `generateChangeId`. SCOPE: the guard inspects emitted breaking /
+  non-breaking changes, not brand-new exports (an addition referencing a blocked
+  subpath is reported as an addition; a new unusable export is not a "breaking"
+  change and shouldn't force a major). The reported issue #60 transition
+  (resolvable subpath -> blocked chunk) is fully caught even when the exported
+  symbol name is preserved: a blocked reference carries no `canonicalReference`,
+  so `canonicalType` leaves its raw chunk path in the comparison string and the
+  diff fires. The only case `canonicalType` collapses to nothing is a
+  resolvable-chunk -> resolvable-chunk move, which is benign (a resolvable chunk
+  is importable by consumers).
 - **Action is preview**: it ships from this repo but isn't usable
   until `@clerk/break-check` is on npm and a `v1` tag exists. The README
   has the disclaimer; keep it in sync if the status changes.

@@ -167,6 +167,51 @@ test("ai-analyzer: applyDowngrades applies a BREAKING -> NON_BREAKING downgrade"
   }
 });
 
+test("ai-analyzer: unresolvableReference refuses the downgrade even with applyDowngrades", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const change = {
+    ...ruleBasedBreakingChange(),
+    unresolvableReference: true,
+    unresolvableSpecifier: "@clerk/shared/_chunks/index-DcO1-lAR",
+  };
+  const { client } = stubClient({
+    verdicts: [
+      {
+        id: change.id,
+        type: ChangeType.NON_BREAKING,
+        confidence: 0.75,
+        rationale: "Build artifact rename; shape identical.",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    applyDowngrades: true,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    const [result] = await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    // The deterministic guard wins: the change stays breaking, the model's
+    // opinion is recorded as a (non-applied) suggestion, and nothing is counted
+    // as an override.
+    assert.equal(result.type, ChangeType.BREAKING);
+    assert.equal(result.severity, ChangeSeverity.MAJOR);
+    assert.equal(result.aiAnalysis.source, "ai-suggested-downgrade");
+    assert.equal(result.unresolvableReference, true);
+    assert.equal(analyzer.overriddenCount, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("ai-analyzer: lean mode records a suggested downgrade but keeps it breaking", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = ruleBasedBreakingChange();

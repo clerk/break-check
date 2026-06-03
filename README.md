@@ -124,17 +124,18 @@ stderr so stdout remains parseable JSON.
 
 ## Configuration
 
-| Option                | Type     | Default          | Description                                                 |
-| --------------------- | -------- | ---------------- | ----------------------------------------------------------- |
-| `packages`            | string[] | required         | Package paths to analyze                                    |
-| `snapshotDir`         | string   | `.api-snapshots` | Snapshot output directory                                   |
-| `mainBranch`          | string   | `main`           | Base branch name for repo-specific workflows                |
-| `checkVersionBump`    | boolean  | `true`           | Mark insufficient version bumps in reports                  |
-| `outputFormat`        | string   | `markdown`       | Default report format                                       |
-| `ignoreSubpaths`      | string[] | `[]`             | Subpath exports to skip (exact, or glob with `*`/`**`)      |
-| `ignoreHashedChunks`  | boolean  | `true`           | Drop content-hashed bundler chunks matched by `./*`         |
-| `acknowledgedChanges` | string[] | `[]`             | Breaking changes you've verified safe (downgraded + tagged) |
-| `ai`                  | object   | unset            | AI reviewer options (see below)                             |
+| Option                 | Type     | Default          | Description                                                            |
+| ---------------------- | -------- | ---------------- | ---------------------------------------------------------------------- |
+| `packages`             | string[] | required         | Package paths to analyze                                               |
+| `snapshotDir`          | string   | `.api-snapshots` | Snapshot output directory                                              |
+| `mainBranch`           | string   | `main`           | Base branch name for repo-specific workflows                           |
+| `checkVersionBump`     | boolean  | `true`           | Mark insufficient version bumps in reports                             |
+| `outputFormat`         | string   | `markdown`       | Default report format                                                  |
+| `ignoreSubpaths`       | string[] | `[]`             | Subpath exports to skip (exact, or glob with `*`/`**`)                 |
+| `ignoreHashedChunks`   | boolean  | `true`           | Drop content-hashed bundler chunks matched by `./*`                    |
+| `acknowledgedChanges`  | string[] | `[]`             | Breaking changes you've verified safe (downgraded + tagged)            |
+| `resolvableSpecifiers` | string[] | `[]`             | Module-specifier globs to exempt from the unresolvable-reference guard |
+| `ai`                   | object   | unset            | AI reviewer options (see below)                                        |
 
 A `"./*"` export that points into a bundler output dir will glob in the shared
 chunks emitted by rolldown/tsdown/esbuild/rollup (`index-Dq-_K2VH.mjs`,
@@ -154,6 +155,26 @@ name (`OAuthConsentInfo`, `User.email`), optionally prefixed with the package
 tagged `acknowledged` in the report, and dropped from the recommended version
 bump. Unlike an AI downgrade this is unconditional: it always applies and does
 not need `--ai-apply-downgrades`. Use it sparingly, and for one symbol at a time.
+
+When a public signature starts referencing a dependency subpath consumers
+cannot resolve, the change is breaking no matter how the underlying type looks.
+This happens when a bundler moves a re-exported type into an internal chunk that
+the dependency blocks in its `exports` (e.g. `@clerk/shared` declares
+`"./_chunks/*": null`), so a `.d.ts` ends up emitting
+`import("@clerk/shared/_chunks/index-DcO1-lAR").Jwt`. The specifier does not
+resolve downstream: under `nodenext` it errors (`TS2307`), and with the common
+`skipLibCheck: true` it silently degrades to `any`. break-check detects this by
+extracting the inline `import("...")` specifiers a new signature introduces and
+resolving each against the dependency's `package.json` `exports` (falling back
+to a `/_chunks/` and content-hash heuristic when the dependency can't be located
+on disk). A flagged change is kept breaking and the AI **cannot** relax it, even
+under `--ai-apply-downgrades`. If a referenced subpath is in fact a legitimate
+public entry point the heuristic mis-flags, exempt it with `resolvableSpecifiers`
+(specifier globs, e.g. `@scope/pkg/internal/*`); an explicit `acknowledgedChanges`
+entry also clears it. The guard applies to changed and removed exports, including
+escalating an otherwise non-breaking modification (say a new optional parameter)
+when its type is provably export-blocked. A brand-new export is still reported as
+an addition, not a breaking change, even when its type is unresolvable.
 
 ### AI reviewer config
 

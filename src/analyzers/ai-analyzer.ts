@@ -234,6 +234,7 @@ Reasoning rules:
 9. Adding a *new optional* property to an object type is non-breaking, for both input and output types: existing consumers neither passed it nor relied on reading it. (This is distinct from rule 4, which is about flipping an *existing* output field to optional.)
 10. \`Pick\`, \`Omit\`, \`Partial\`, \`Required\`, and other mapped types preserve each member's optionality from the source type. Resolve the member against the referenced source definition before judging; a property newly included by a \`Pick\` (or surviving an \`Omit\`) is optional in the result whenever the source declares it optional, so do not treat it as required unless the source does.
 11. Adding a *required* property to a type is breaking only when consumers construct or assign values of that type (a parameter / input position, or an object literal they author against the type). For a type consumers only read (a return / response / output type, e.g. the resolved value of a \`Promise<T>\` return or a hook result field), adding a property is non-breaking. Determine the direction from the "Usage sites" block: a \`Promise<T>\` result, a function return, or a result field is output. If any usage is an input position, or no usage sites are shown, keep "breaking".
+12. A reference whose module specifier is not a public, exported entry point of its package is breaking regardless of structural shape: the consumer cannot resolve the module, so the type degrades to \`any\` (skipLibCheck) or fails to compile (TS2307). Treat a specifier that contains a \`/_chunks/\` segment, ends in a content-hashed bundler chunk basename (a \`-<hash>\` suffix), or names a subpath a package blocks/omits in its \`exports\` as non-resolvable. Do NOT downgrade such a change on structural-equivalence grounds (rule 2 does not apply): "the shape is identical" is true but irrelevant when the consumer never receives the type.
 
 Output protocol:
 - Always respond by calling the submit_review tool. Never reply with plain text.
@@ -472,10 +473,20 @@ export class AiChangeAnalyzer {
       // --ai-apply-downgrades to relax it. Escalations (-> breaking) and
       // confirmations always apply. This makes the default path unable to hide
       // a real break.
+      //
+      // `unresolvableReference` is a deterministic, AI-proof guard: when the new
+      // signature references a module specifier consumers can't resolve (an
+      // export-blocked / internal-chunk dependency subpath), the change is
+      // breaking regardless of structural shape, so the downgrade is refused
+      // even under --ai-apply-downgrades. The model's suggestion is still
+      // recorded; the reporter explains it can't be relaxed by that flag.
       const isDowngrade =
         change.type === ChangeType.BREAKING &&
         verdictType === ChangeType.NON_BREAKING;
-      if (isDowngrade && !this.applyDowngrades) {
+      if (
+        isDowngrade &&
+        (!this.applyDowngrades || change.unresolvableReference)
+      ) {
         enriched.push({
           ...change,
           aiAnalysis: {
