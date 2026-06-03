@@ -16,6 +16,7 @@ import * as crypto from "node:crypto";
 import {
   AiAnalysis,
   AiAnalysisSource,
+  AiReviewFailure,
   ApiChange,
   ChangeCategory,
   ChangeSeverity,
@@ -261,6 +262,13 @@ export class AiChangeAnalyzer {
   public overriddenCount = 0;
   /** Cumulative count of breaks discovered by the AI (not in rule output). */
   public discoveredCount = 0;
+  /**
+   * (package, subpath) reviews that could not be completed even after
+   * split-and-retry. The affected changes keep their rule-based verdict; the
+   * detector drains this into the report so partial coverage is visible rather
+   * than silently trusted. Cumulative across `.analyze()` calls.
+   */
+  public readonly incompleteReviews: AiReviewFailure[] = [];
 
   constructor(opts: AiAnalyzerOptions) {
     if (!opts.apiKey) {
@@ -313,6 +321,11 @@ export class AiChangeAnalyzer {
       this.warn(
         `[ai] could not load API surface for ${ctx.packageName}: ${describe(error)}. Skipping AI review.`,
       );
+      this.recordIncomplete(
+        ctx,
+        reviewable.length,
+        `could not load API surface: ${describe(error)}`,
+      );
       return changes;
     }
 
@@ -322,6 +335,11 @@ export class AiChangeAnalyzer {
     } catch (error) {
       this.warn(
         `[ai] @anthropic-ai/sdk is not available (${describe(error)}). Skipping AI review.`,
+      );
+      this.recordIncomplete(
+        ctx,
+        reviewable.length,
+        `@anthropic-ai/sdk unavailable: ${describe(error)}`,
       );
       return changes;
     }
@@ -347,6 +365,48 @@ export class AiChangeAnalyzer {
     const verdictMap = new Map<string, AiVerdict["verdicts"][number]>();
     const missedAggregate: AiVerdict["missed"] = [];
 
+    // Changes left unreviewed because a call failed even after retries. Recorded
+    // once per analyze() so the report can flag partial coverage.
+    let unreviewed = 0;
+
+    // Run one chunk, splitting and retrying on failure so a single oversized or
+    // transient failure doesn't wipe out every verdict in the chunk. A1/A2 keep
+    // the first attempt within size; this is the backstop for a transient error
+    // or a verdict response overflowing max_tokens. We don't split a missed-scan
+    // call: there the full audit surface (not the rule list) dominates the
+    // payload, so a smaller chunk wouldn't help.
+    const reviewChunk = async (
+      chunk: ApiChange[],
+      includeMissedScan: boolean,
+      otherChangesSummary: string,
+    ): Promise<AiVerdict | null> => {
+      const verdict = await this.runOneCall(
+        client,
+        chunk,
+        surface,
+        ctx,
+        includeMissedScan,
+        otherChangesSummary,
+        cacheSurface,
+      );
+      if (verdict) return verdict;
+      if (chunk.length <= 1 || includeMissedScan) {
+        unreviewed += chunk.length;
+        return null;
+      }
+      this.warn(
+        `[ai] ${ctx.packageName}: review of ${chunk.length} changes failed; retrying as two smaller batches.`,
+      );
+      const mid = Math.floor(chunk.length / 2);
+      const left = await reviewChunk(chunk.slice(0, mid), false, "");
+      const right = await reviewChunk(chunk.slice(mid), false, "");
+      if (!left && !right) return null;
+      return {
+        verdicts: [...(left?.verdicts ?? []), ...(right?.verdicts ?? [])],
+        missed: [...(left?.missed ?? []), ...(right?.missed ?? [])],
+      };
+    };
+
     for (let i = 0; i < chunks.length; i++) {
       const includeMissedScan = i === 0 && this.scanForMissed;
       // For the scan, brief the model on every OTHER change so it doesn't
@@ -360,23 +420,26 @@ export class AiChangeAnalyzer {
           changes.filter((c) => !chunkIds.has(c.id)),
         );
       }
-      const verdict = await this.runOneCall(
-        client,
+      const verdict = await reviewChunk(
         chunks[i],
-        surface,
-        ctx,
         includeMissedScan,
         otherChangesSummary,
-        cacheSurface,
       );
       if (!verdict) {
-        // Hard fail-soft for this chunk; the affected changes will keep their
-        // rule-based type. Continue to the next chunk in case it succeeds.
+        // Hard fail-soft for this chunk; the affected changes keep their
+        // rule-based type (and were counted in `unreviewed`). Continue to the
+        // next chunk in case it succeeds.
         continue;
       }
       for (const v of verdict.verdicts) verdictMap.set(v.id, v);
       if (includeMissedScan) missedAggregate.push(...verdict.missed);
     }
+
+    this.recordIncomplete(
+      ctx,
+      unreviewed,
+      "AI review did not complete (call failed, timed out, or returned an unusable response after retries)",
+    );
 
     const enriched: ApiChange[] = [];
 
@@ -492,8 +555,12 @@ export class AiChangeAnalyzer {
       category: c.category,
       name: c.name,
       description: c.description,
-      beforeSnippet: c.beforeSnippet,
-      afterSnippet: c.afterSnippet,
+      // A change to a huge type (e.g. the 1907-line LocalizationResource) would
+      // otherwise embed its full before AND after text here, dwarfing every
+      // other call and blowing the request size. The model only needs the delta;
+      // referenced type definitions ride in the surface block.
+      beforeSnippet: capSnippet(c.beforeSnippet),
+      afterSnippet: capSnippet(c.afterSnippet),
     }));
 
     // Compact JSON (no indentation): this block is in the non-cached part of
@@ -622,6 +689,20 @@ export class AiChangeAnalyzer {
 
   private warn(message: string): void {
     this.logger.warn(message);
+  }
+
+  /** Record a (package, subpath) review gap, unless nothing was left unreviewed. */
+  private recordIncomplete(
+    ctx: AiPackageContext,
+    unreviewed: number,
+    reason: string,
+  ): void {
+    if (unreviewed <= 0) return;
+    this.incompleteReviews.push({
+      packageName: ctx.packageName,
+      reason,
+      unreviewed,
+    });
   }
 }
 
@@ -840,6 +921,41 @@ function collectSubtreeRefs(node: SurfaceNode, acc: Set<string>): void {
 const MAX_FOCUSED_SYMBOLS = 200;
 
 /**
+ * Per-snippet and per-symbol line caps, plus an overall focused-surface char
+ * budget. `MAX_FOCUSED_SYMBOLS` bounds the symbol *count*, which a single
+ * enormous type (the 1907-line LocalizationResource) defeats, so the request
+ * still needs a size bound. Hitting any cap just elides text and, per
+ * system-prompt rule 8, the model keeps "breaking" where it can't resolve: the
+ * safe side.
+ */
+const MAX_SNIPPET_LINES = 80;
+const MAX_FOCUSED_SYMBOL_LINES = 200;
+const MAX_FOCUSED_SURFACE_CHARS = 60_000;
+
+/**
+ * Keep a head and tail of a multi-line snippet/definition with an elision
+ * marker when it exceeds `maxLines`. Used to bound both the before/after text in
+ * the rule list and each referenced-type definition in the focused surface.
+ */
+function capSnippet(
+  text: string | undefined,
+  maxLines: number = MAX_SNIPPET_LINES,
+): string | undefined {
+  if (text === undefined) return undefined;
+  const lines = text.split("\n");
+  if (lines.length <= maxLines) return text;
+  const half = Math.max(1, Math.floor(maxLines / 2));
+  const head = lines.slice(0, half);
+  const tail = lines.slice(lines.length - half);
+  const elided = lines.length - head.length - tail.length;
+  return [
+    ...head,
+    `/* ... ${elided} line${elided === 1 ? "" : "s"} elided ... */`,
+    ...tail,
+  ].join("\n");
+}
+
+/**
  * Focused verdict context: for the changes under review, the definitions of the
  * types their signatures reference (transitively), from the current surface,
  * plus the baseline definition of any referenced type that itself changed so a
@@ -896,8 +1012,18 @@ function buildFocusedSurfaceBlock(
   for (const ref of visited) {
     const curNode = current.byRef.get(ref);
     const baseNode = baseline.byRef.get(ref);
-    const curDef = curNode ? subtreeLines(curNode).join("\n") : "";
-    const baseDef = baseNode ? subtreeLines(baseNode).join("\n") : "";
+    const curDef = curNode
+      ? (capSnippet(
+          subtreeLines(curNode).join("\n"),
+          MAX_FOCUSED_SYMBOL_LINES,
+        ) ?? "")
+      : "";
+    const baseDef = baseNode
+      ? (capSnippet(
+          subtreeLines(baseNode).join("\n"),
+          MAX_FOCUSED_SYMBOL_LINES,
+        ) ?? "")
+      : "";
     const parts: string[] = [];
     if (curDef) parts.push(curDef);
     if (baseDef && baseDef !== curDef) parts.push(`// previously:\n${baseDef}`);
@@ -931,10 +1057,25 @@ function buildFocusedSurfaceBlock(
 
   const out = [...header];
   if (blocks.length > 0) {
-    out.push("```ts", blocks.map((b) => b.text).join("\n\n"), "```");
-    if (truncated) {
+    // Keep definitions until the overall char budget is reached so a handful of
+    // large types can't reinflate the prompt past the per-symbol line cap.
+    const kept: string[] = [];
+    let used = 0;
+    for (const b of blocks) {
+      if (kept.length > 0 && used + b.text.length > MAX_FOCUSED_SURFACE_CHARS) {
+        break;
+      }
+      kept.push(b.text);
+      used += b.text.length + 2;
+    }
+    const droppedBlocks = blocks.length - kept.length;
+    out.push("```ts", kept.join("\n\n"), "```");
+    if (truncated || droppedBlocks > 0) {
+      const reasons: string[] = [];
+      if (truncated) reasons.push(`${MAX_FOCUSED_SYMBOLS} symbols`);
+      if (droppedBlocks > 0) reasons.push(`${droppedBlocks} large definitions`);
       out.push(
-        `(referenced-type context truncated at ${MAX_FOCUSED_SYMBOLS} symbols.)`,
+        `(referenced-type context truncated at ${reasons.join(" and ")}.)`,
       );
     }
   }

@@ -153,6 +153,22 @@ export interface SkippedEntry {
 }
 
 /**
+ * A (package, subpath) whose AI review did not complete: the call failed, timed
+ * out, or returned an unusable payload even after the analyzer's split-and-retry.
+ * The affected changes keep their rule-based (pessimistic) classification, so
+ * they may be over-reported as breaking. Surfaced in the report so a maintainer
+ * knows coverage was partial rather than silently trusting an incomplete review.
+ */
+export interface AiReviewFailure {
+  /** Package + subpath label, e.g. `@clerk/shared (./types)`. */
+  packageName: string;
+  /** Underlying reason the call could not be completed. */
+  reason: string;
+  /** Number of changes left with only their rule-based verdict. */
+  unreviewed: number;
+}
+
+/**
  * Overall analysis result across all packages
  */
 export interface AnalysisResult {
@@ -164,6 +180,10 @@ export interface AnalysisResult {
   hasBreakingChanges: boolean;
   /** Subpaths break-check could not snapshot on either side of the diff. */
   skippedEntries?: SkippedEntry[];
+  /** (package, subpath) reviews the AI analyzer could not complete; their
+   * changes carry only rule-based verdicts. Absent when AI is off or all
+   * reviews succeeded. */
+  incompleteReviews?: AiReviewFailure[];
   /** Summary statistics */
   summary: {
     /** Total packages analyzed */
