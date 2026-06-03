@@ -116,6 +116,18 @@ export const ConfigSchema = z.object({
    */
   acknowledgedChanges: z.array(z.string()).default([]),
 
+  /**
+   * Module specifiers to treat as resolvable, suppressing the unresolvable-
+   * reference guard for them. The guard flags a change whose new signature
+   * references a dependency subpath that is export-blocked or looks like an
+   * internal bundler chunk (e.g. `@clerk/shared/_chunks/index-DcO1-lAR`), and
+   * keeps it breaking even under `--ai-apply-downgrades`. This is the escape
+   * hatch when a referenced subpath is in fact a legitimate public entry point
+   * the heuristic mis-flags. Each entry is a specifier glob (`*` within a path
+   * segment, `**` across), e.g. `@scope/pkg/internal/*`.
+   */
+  resolvableSpecifiers: z.array(z.string()).default([]),
+
   /** Optional AI analyzer configuration. */
   ai: AiConfigSchema.optional(),
 });
@@ -143,6 +155,7 @@ export function createDefaultConfig(): BreakCheckConfig {
     ignoreSubpaths: [],
     ignoreHashedChunks: true,
     acknowledgedChanges: [],
+    resolvableSpecifiers: [],
   };
 }
 

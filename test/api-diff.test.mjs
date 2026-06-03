@@ -498,3 +498,231 @@ test("equivalent import notation is not a breaking change", () => {
     rmSync(workspace, { recursive: true, force: true });
   }
 });
+
+test("detect: a reference to an export-blocked dependency subpath is flagged unresolvable (end-to-end)", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "break-check-unres-"));
+  try {
+    const pkgDir = join(workspace, "packages", "pkg");
+    mkdirSync(join(pkgDir, "dist"), { recursive: true });
+
+    // Install a dependency that blocks its internal `_chunks` subpath, mirroring
+    // @clerk/shared's `"./_chunks/*": null`.
+    const depDir = join(pkgDir, "node_modules", "dep");
+    mkdirSync(join(depDir, "dist", "_chunks"), { recursive: true });
+    writeFileSync(
+      join(depDir, "package.json"),
+      JSON.stringify({
+        name: "dep",
+        version: "1.0.0",
+        types: "dist/index.d.ts",
+        exports: {
+          ".": { types: "./dist/index.d.ts" },
+          "./types": { types: "./dist/types.d.ts" },
+          "./_chunks/*": null,
+        },
+      }),
+    );
+    writeFileSync(
+      join(depDir, "dist", "_chunks", "index-DcO1-lAR.d.ts"),
+      "export interface Jwt { sub: string; }\n",
+    );
+    writeFileSync(
+      join(depDir, "dist", "types.d.ts"),
+      'export type { Jwt } from "./_chunks/index-DcO1-lAR";\n',
+    );
+    writeFileSync(
+      join(depDir, "dist", "index.d.ts"),
+      'export * from "./types";\n',
+    );
+
+    writeFileSync(
+      join(workspace, "break-check.config.json"),
+      JSON.stringify(
+        {
+          packages: ["packages/pkg"],
+          snapshotDir: "current",
+          mainBranch: "main",
+          checkVersionBump: true,
+          outputFormat: "json",
+        },
+        null,
+        2,
+      ),
+    );
+
+    const writePkg = (version, dts) => {
+      writeFileSync(
+        join(pkgDir, "package.json"),
+        JSON.stringify(
+          { name: "@demo/pkg", version, types: "dist/index.d.ts" },
+          null,
+          2,
+        ) + "\n",
+      );
+      writeFileSync(join(pkgDir, "dist", "index.d.ts"), dts);
+    };
+
+    writePkg(
+      "1.0.0",
+      "export declare function decodeJwt(token: string): string;\n",
+    );
+    const snap = runBreakCheck(
+      [
+        "snapshot",
+        "-c",
+        join(workspace, "break-check.config.json"),
+        "-o",
+        "baseline",
+      ],
+      workspace,
+    );
+    assert.equal(snap.status, 0, snap.stderr || snap.stdout);
+
+    writePkg(
+      "1.0.1",
+      'export declare function decodeJwt(token: string): import("dep/_chunks/index-DcO1-lAR").Jwt;\n',
+    );
+    const detect = runBreakCheck(
+      [
+        "detect",
+        "-c",
+        join(workspace, "break-check.config.json"),
+        "--baseline",
+        "baseline",
+        "--format",
+        "json",
+        "--no-ai",
+      ],
+      workspace,
+    );
+    assert.equal(detect.status, 0, detect.stderr || detect.stdout);
+
+    const result = JSON.parse(detect.stdout);
+    const change = (result.packages[0]?.changes ?? []).find(
+      (c) => c.name === "decodeJwt",
+    );
+    assert.ok(change, "expected a decodeJwt change");
+    assert.equal(change.type, "breaking");
+    assert.equal(change.unresolvableReference, true);
+    assert.match(change.unresolvableSpecifier, /_chunks/);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("detect: a non-breaking change is escalated to breaking when it adds an export-blocked reference (end-to-end)", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "break-check-unres-esc-"));
+  try {
+    const pkgDir = join(workspace, "packages", "pkg");
+    mkdirSync(join(pkgDir, "dist"), { recursive: true });
+
+    const depDir = join(pkgDir, "node_modules", "dep");
+    mkdirSync(join(depDir, "dist", "_chunks"), { recursive: true });
+    writeFileSync(
+      join(depDir, "package.json"),
+      JSON.stringify({
+        name: "dep",
+        version: "1.0.0",
+        types: "dist/index.d.ts",
+        exports: {
+          ".": { types: "./dist/index.d.ts" },
+          "./types": { types: "./dist/types.d.ts" },
+          "./_chunks/*": null,
+        },
+      }),
+    );
+    writeFileSync(
+      join(depDir, "dist", "_chunks", "index-DcO1-lAR.d.ts"),
+      "export interface Opts { verbose: boolean; }\n",
+    );
+    writeFileSync(
+      join(depDir, "dist", "types.d.ts"),
+      'export type { Opts } from "./_chunks/index-DcO1-lAR";\n',
+    );
+    writeFileSync(
+      join(depDir, "dist", "index.d.ts"),
+      'export * from "./types";\n',
+    );
+
+    writeFileSync(
+      join(workspace, "break-check.config.json"),
+      JSON.stringify(
+        {
+          packages: ["packages/pkg"],
+          snapshotDir: "current",
+          mainBranch: "main",
+          checkVersionBump: true,
+          outputFormat: "json",
+        },
+        null,
+        2,
+      ),
+    );
+
+    const writePkg = (version, dts) => {
+      writeFileSync(
+        join(pkgDir, "package.json"),
+        JSON.stringify(
+          { name: "@demo/pkg", version, types: "dist/index.d.ts" },
+          null,
+          2,
+        ) + "\n",
+      );
+      writeFileSync(join(pkgDir, "dist", "index.d.ts"), dts);
+    };
+
+    // Baseline: a plain function. Current: adds an OPTIONAL parameter whose type
+    // lives in an export-blocked chunk. The rule pass calls "added optional
+    // parameter" non-breaking; the deterministic guard escalates it.
+    writePkg(
+      "1.0.0",
+      "export declare function decodeJwt(token: string): string;\n",
+    );
+    const snap = runBreakCheck(
+      [
+        "snapshot",
+        "-c",
+        join(workspace, "break-check.config.json"),
+        "-o",
+        "baseline",
+      ],
+      workspace,
+    );
+    assert.equal(snap.status, 0, snap.stderr || snap.stdout);
+
+    writePkg(
+      "1.1.0",
+      'export declare function decodeJwt(token: string, opts?: import("dep/_chunks/index-DcO1-lAR").Opts): string;\n',
+    );
+    const detect = runBreakCheck(
+      [
+        "detect",
+        "-c",
+        join(workspace, "break-check.config.json"),
+        "--baseline",
+        "baseline",
+        "--format",
+        "json",
+        "--no-ai",
+      ],
+      workspace,
+    );
+    assert.equal(detect.status, 0, detect.stderr || detect.stdout);
+
+    const result = JSON.parse(detect.stdout);
+    const change = (result.packages[0]?.changes ?? []).find(
+      (c) => c.name === "decodeJwt",
+    );
+    assert.ok(change, "expected a decodeJwt change");
+    assert.equal(change.type, "breaking", "should be escalated to breaking");
+    assert.equal(
+      change.ruleBasedType,
+      "non-breaking",
+      "rule pass saw it as non-breaking",
+    );
+    assert.equal(change.unresolvableReference, true);
+    assert.match(change.unresolvableSpecifier, /_chunks/);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});

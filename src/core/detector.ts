@@ -25,6 +25,7 @@ import { ApiDiffAnalyzer } from "../analyzers/api-diff.js";
 import { VersionAnalyzer } from "../analyzers/version.js";
 import { AiChangeAnalyzer } from "../analyzers/ai-analyzer.js";
 import { makeAcknowledgedMatcher } from "../utils/acknowledged.js";
+import { findUnresolvableReference } from "../utils/exports-resolution.js";
 import {
   AnalysisResult,
   ApiChange,
@@ -136,6 +137,7 @@ export class BreakingChangesDetector {
     packageName: string,
     change: ApiChange,
   ) => boolean;
+  private resolvableSpecifierMatcher: (specifier: string) => boolean;
   private verbose: boolean;
   private configPath: string;
   private configDir: string;
@@ -172,6 +174,9 @@ export class BreakingChangesDetector {
     );
     this.acknowledgedMatcher = makeAcknowledgedMatcher(
       this.config.acknowledgedChanges ?? [],
+    );
+    this.resolvableSpecifierMatcher = makeSubpathMatcher(
+      this.config.resolvableSpecifiers ?? [],
     );
   }
 
@@ -796,6 +801,13 @@ export class BreakingChangesDetector {
         currentSnap.apiJsonPath,
       );
 
+      // Deterministic guard (runs before the AI sees the changes): flag any
+      // breaking change whose new signature references a module specifier
+      // consumers can't resolve (an export-blocked / internal-chunk dependency
+      // subpath). The AI may not downgrade a flagged change, even under
+      // --ai-apply-downgrades. See `findUnresolvableReference`.
+      this.flagUnresolvableReferences(entryChanges, packageInfo.path);
+
       const ai = this.ensureAiAnalyzer();
       // No rule-based changes means baseline and current matched for this
       // entry, so there is nothing to review. We deliberately do not invoke the
@@ -890,6 +902,52 @@ export class BreakingChangesDetector {
       isValidBump,
       aiReviewedBy,
     };
+  }
+
+  /**
+   * Mark (and, where safe, escalate) any change whose new signature introduces a
+   * reference to a non-resolvable module specifier. `fromDir` is the analyzed
+   * package directory, from which the dependency's `package.json` exports map is
+   * resolved (walking up `node_modules`).
+   *
+   * - A change the rule pass already flagged `breaking` is marked
+   *   `unresolvableReference` so the AI cannot downgrade it (the reported issue
+   *   #60 class). Either a deterministic `exports` block or the coarse
+   *   `/_chunks/` heuristic qualifies, since marking an already-breaking change
+   *   only ever prevents a relaxation, never manufactures a break.
+   * - A `non-breaking` modification is escalated to breaking ONLY when the
+   *   reference is *deterministically* blocked (resolved against the dependency's
+   *   `exports`), e.g. a newly-added optional parameter whose type lives in an
+   *   export-blocked subpath. The heuristic is deliberately NOT used to escalate,
+   *   so a chunk-shaped name can never invent a breaking change.
+   * - Additions are left alone: a brand-new export is not a breaking change even
+   *   when its type is unusable downstream.
+   */
+  private flagUnresolvableReferences(
+    changes: ApiChange[],
+    fromDir: string,
+  ): void {
+    for (const change of changes) {
+      if (change.type === ChangeType.ADDITION) continue;
+      if (change.unresolvableReference) continue;
+      const hit = findUnresolvableReference(
+        change,
+        fromDir,
+        this.resolvableSpecifierMatcher,
+      );
+      if (!hit) continue;
+
+      if (change.type === ChangeType.BREAKING) {
+        change.unresolvableReference = true;
+        change.unresolvableSpecifier = hit.specifier;
+      } else if (hit.deterministic) {
+        change.ruleBasedType = change.ruleBasedType ?? change.type;
+        change.type = ChangeType.BREAKING;
+        change.severity = ChangeSeverity.MAJOR;
+        change.unresolvableReference = true;
+        change.unresolvableSpecifier = hit.specifier;
+      }
+    }
   }
 
   private buildSubpathRemovalChange(subpath: string): ApiChange {

@@ -103,6 +103,19 @@ export interface ApiChange {
    * downgrade this is unconditional and not gated behind `--ai-apply-downgrades`.
    */
   acknowledged?: boolean;
+  /**
+   * Set when the change's new signature references a module specifier that
+   * consumers cannot resolve (a dependency subpath blocked or absent in that
+   * dependency's `exports`, e.g. an internal `/_chunks/` bundler path). Such a
+   * change is breaking regardless of structural shape, because the type degrades
+   * to `any` (skipLibCheck) or fails to compile (TS2307) downstream. This is a
+   * deterministic guard the AI cannot override: the AI may not downgrade a
+   * change carrying this flag, even under `--ai-apply-downgrades`. An explicit
+   * `acknowledgedChanges` entry can still clear it.
+   */
+  unresolvableReference?: boolean;
+  /** The offending module specifier when `unresolvableReference` is set. */
+  unresolvableSpecifier?: string;
   /** Present when the AI analyzer reviewed (or produced) this change */
   aiAnalysis?: AiAnalysis;
 }
