@@ -96,9 +96,14 @@ export function isSubpathExported(
   exportsField: unknown,
   subpath: string,
 ): boolean | null {
-  if (exportsField === undefined) return null;
-  // `"exports": null` blocks every subpath, the root included.
-  if (exportsField === null) return false;
+  // A top-level `"exports": null` is NOT a block: Node only consults `exports`
+  // when it is "not null or undefined" (PACKAGE_RESOLVE step 9), so a null field
+  // is ignored and resolution falls back to `main`/`types` legacy lookup for
+  // every subpath, the root included. Treat it as inconclusive, like a missing
+  // field, so the guard never escalates on it. (An explicit `{ ".": null }` is a
+  // different thing: there `exports` IS an object and the "." target is null, so
+  // the branch below correctly reports it blocked.)
+  if (exportsField === undefined || exportsField === null) return null;
 
   const isObject =
     exportsField !== null &&

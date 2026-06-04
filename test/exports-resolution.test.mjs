@@ -164,8 +164,6 @@ test("classifyReference: an export-blocked or absent root is not assumed exporte
     ".": null,
     "./types": { types: "./dist/types.d.ts" },
   });
-  // `exports: null` blocks every subpath, root included.
-  const nullExports = makeDepWorkspace(null);
   // A subpath-only map with no "." key: the root is not exported.
   const noRootKey = makeDepWorkspace({ "./types": { types: "./dist/t.d.ts" } });
   try {
@@ -175,18 +173,31 @@ test("classifyReference: an export-blocked or absent root is not assumed exporte
       classifyReference("@clerk/shared/types", blockedRoot),
       "exported",
     );
-    assert.equal(classifyReference("@clerk/shared", nullExports), "blocked");
     assert.equal(classifyReference("@clerk/shared", noRootKey), "blocked");
   } finally {
     rmSync(blockedRoot, { recursive: true, force: true });
-    rmSync(nullExports, { recursive: true, force: true });
     rmSync(noRootKey, { recursive: true, force: true });
   }
 });
 
-test("isSubpathExported: `exports: null` blocks the root (#5)", () => {
-  assert.equal(isSubpathExported(null, "."), false);
-  assert.equal(isSubpathExported(null, "./types"), false);
+test("classifyReference: top-level `exports: null` falls back to legacy resolution, not blocked (#5)", () => {
+  // Node ignores a null `exports` field and resolves the root via main/types, so
+  // a bare `import("dep")` still works. The guard must treat it as inconclusive
+  // (unknown), never blocked, so a newly introduced root reference isn't falsely
+  // escalated to breaking.
+  const nullExports = makeDepWorkspace(null);
+  try {
+    assert.equal(classifyReference("@clerk/shared", nullExports), "unknown");
+  } finally {
+    rmSync(nullExports, { recursive: true, force: true });
+  }
+});
+
+test('isSubpathExported: a null `exports` field is inconclusive; `{ ".": null }` blocks the root (#5)', () => {
+  // A top-level null field == a missing field (legacy fallback), so inconclusive.
+  assert.equal(isSubpathExported(null, "."), null);
+  assert.equal(isSubpathExported(null, "./types"), null);
+  // But an explicit null target on the root IS a block.
   assert.equal(isSubpathExported({ ".": null }, "."), false);
 });
 

@@ -1282,6 +1282,70 @@ test("ai-analyzer: missed-scan audit surface is capped (#11)", async () => {
   }
 });
 
+test("ai-analyzer: a truncated audit surface is recorded as partial coverage (#11)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "break-check-audit-trunc-"));
+  const baseline = join(dir, "baseline.api.json");
+  const current = join(dir, "current.api.json");
+  const big = Array.from({ length: 4000 }, (_, i) => ({
+    kind: "Function",
+    name: `fn${i}`,
+    excerptTokens: [
+      {
+        text: `export declare function fn${i}(a: string, b: number, c: boolean): Record<string, unknown>;`,
+      },
+    ],
+  }));
+  writeApiJson(baseline, big);
+  writeApiJson(current, big);
+
+  const change = {
+    id: "c1",
+    type: ChangeType.BREAKING,
+    severity: ChangeSeverity.MAJOR,
+    category: "function",
+    name: "fn0",
+    description: "changed",
+    beforeSnippet: "x",
+    afterSnippet: "y",
+  };
+  // The audit call SUCCEEDS, but on a surface trimmed to the budget.
+  const { client } = stubClient({
+    verdicts: [
+      {
+        id: "c1",
+        type: ChangeType.BREAKING,
+        confidence: 0.9,
+        rationale: "x",
+        migration: "y",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "k",
+    client,
+    scanForMissed: true,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    const result = await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+    // The verdict still applied...
+    assert.equal(result[0].type, ChangeType.BREAKING);
+    // ...but the truncated audit is surfaced as partial coverage rather than
+    // implying a complete review.
+    assert.equal(analyzer.incompleteReviews.length, 1);
+    assert.equal(analyzer.incompleteReviews[0].unreviewed, 0);
+    assert.match(analyzer.incompleteReviews[0].reason, /truncated/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("ai-analyzer: chunks large change lists across multiple calls", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const changes = Array.from({ length: 5 }, (_, i) => ({

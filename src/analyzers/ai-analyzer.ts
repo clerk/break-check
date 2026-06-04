@@ -309,15 +309,23 @@ export class AiChangeAnalyzer {
     }
 
     let surface: string;
+    // True when the audit surface had to be truncated to fit the size budget, so
+    // a break beyond the cap could not be seen. Recorded as partial coverage
+    // below if the audit otherwise ran.
+    let auditTruncated = false;
     try {
       // The audit has to diff old against new to find an unflagged break, so it
       // gets both full surfaces. The verdict path instead gets a focused
       // context: only the definitions of the types each change references, which
       // is all the model needs to judge (and confidently relax) a verdict, at a
       // fraction of the tokens.
-      surface = this.scanForMissed
-        ? buildAuditSurfaceBlock(ctx)
-        : buildFocusedSurfaceBlock(ctx, reviewable);
+      if (this.scanForMissed) {
+        const audit = buildAuditSurfaceBlock(ctx);
+        surface = audit.text;
+        auditTruncated = audit.truncated;
+      } else {
+        surface = buildFocusedSurfaceBlock(ctx, reviewable);
+      }
     } catch (error) {
       this.warn(
         `[ai] could not load API surface for ${ctx.packageName}: ${describe(error)}. Skipping AI review.`,
@@ -457,6 +465,16 @@ export class AiChangeAnalyzer {
         packageName: ctx.packageName,
         reason:
           "missed-breaks audit did not complete (call failed, timed out, or returned an unusable response)",
+        unreviewed: 0,
+      });
+    } else if (this.scanForMissed && auditTruncated && !missedScanFailed) {
+      // The audit ran, but on a surface trimmed to fit the size budget, so a
+      // break past the cap was never shown to the model. Record it as partial
+      // coverage so the report doesn't imply a complete audit.
+      this.incompleteReviews.push({
+        packageName: ctx.packageName,
+        reason:
+          "missed-breaks audit surface was truncated to fit the size budget; any break past the cap was not scanned",
         unreviewed: 0,
       });
     }
@@ -795,26 +813,33 @@ function extractSurface(apiJsonPath: string): string {
  * referenced type defs). The baseline is omitted only when there is none (a new
  * package), in which case the audit can inspect the current surface alone.
  */
-function buildAuditSurfaceBlock(ctx: AiPackageContext): string {
-  const current = capSurfaceText(
-    extractSurface(ctx.currentApiJsonPath),
-    MAX_AUDIT_SURFACE_CHARS,
-  );
-  let baseline = "";
+function buildAuditSurfaceBlock(ctx: AiPackageContext): {
+  text: string;
+  truncated: boolean;
+} {
+  const rawCurrent = extractSurface(ctx.currentApiJsonPath);
+  let rawBaseline = "";
   try {
-    baseline = capSurfaceText(
-      extractSurface(ctx.baselineApiJsonPath),
-      MAX_AUDIT_SURFACE_CHARS,
-    );
+    rawBaseline = extractSurface(ctx.baselineApiJsonPath);
   } catch {
     // No baseline (new package): the audit can only see the current surface.
   }
+  // If either side overflowed the cap, the model couldn't see the whole surface,
+  // so a break living past the cap is unscannable. Surface that as partial
+  // coverage rather than letting the report imply a complete audit.
+  const truncated =
+    rawCurrent.length > MAX_AUDIT_SURFACE_CHARS ||
+    rawBaseline.length > MAX_AUDIT_SURFACE_CHARS;
+  const current = capSurfaceText(rawCurrent, MAX_AUDIT_SURFACE_CHARS);
+  const baseline = rawBaseline
+    ? capSurfaceText(rawBaseline, MAX_AUDIT_SURFACE_CHARS)
+    : "";
   const parts = [`# API surface for ${ctx.packageName}`, ""];
   if (baseline) {
     parts.push("## Baseline", "```ts", baseline, "```", "");
   }
   parts.push("## Current", "```ts", current, "```");
-  return parts.join("\n");
+  return { text: parts.join("\n"), truncated };
 }
 
 /**
