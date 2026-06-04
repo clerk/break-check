@@ -384,6 +384,9 @@ jobs:
           path: .api-baseline-main
           retention-days: 30
           if-no-files-found: error
+          # .api-baseline-main is dot-prefixed; upload-artifact@v4 treats it as
+          # a hidden directory and skips it without this flag.
+          include-hidden-files: true
 ```
 
 **Consumer** (PR check): point the Action at the artifact name.
