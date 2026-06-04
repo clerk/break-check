@@ -402,6 +402,32 @@ test("changing a property type is breaking", () => {
   assert.match(changesFor(result)[0].description, /Type changed/);
 });
 
+test("nested members under different parents are not collapsed by a key collision (#6)", () => {
+  // `A.Inner.value` and `B.Inner.value` share an immediate parent (`Inner`) and
+  // leaf name. When the map key used only the immediate parent, the two collided
+  // and the later (unchanged) `B.Inner.value` masked the real change to
+  // `A.Inner.value`, hiding a breaking change.
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts:
+        "export namespace A { export interface Inner { value: string; } }\n" +
+        "export namespace B { export interface Inner { value: string; } }\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts:
+        "export namespace A { export interface Inner { value: number; } }\n" +
+        "export namespace B { export interface Inner { value: string; } }\n",
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+  const ch = changesFor(result).find((c) => c.type === "breaking");
+  assert.ok(ch, "the A.Inner.value change must not be masked by B.Inner.value");
+  assert.equal(ch.name, "Inner.value");
+  assert.match(ch.description, /Type changed/);
+});
+
 test("equivalent import notation is not a breaking change", () => {
   // Regression for #44. API Extractor resolves a namespace-import alias
   // (`_dep.Foo`) and an inline import type (`import("@demo/dep").Foo`) to the

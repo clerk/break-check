@@ -145,6 +145,61 @@ test("snapshot supports declaration packages without a tsconfig", () => {
   }
 });
 
+test("detect: an all-skipped current build still records skipped entries and fails --fail-on-skipped", () => {
+  const workspace = createWorkspace();
+
+  try {
+    const configPath = writeConfig(workspace);
+
+    // Valid baseline so detect has something to compare against.
+    writePackage(workspace, {
+      version: "1.0.0",
+      declarations: "export declare function go(name: string): void;\n",
+    });
+    const snapshot = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+
+    // Current build whose only entry fails extraction (references an undefined
+    // type, so API Extractor errors and the entry is skipped). Every current
+    // entry skipped means zero current snapshots: the path that previously
+    // returned an empty result and dropped the skip signal entirely.
+    writePackage(workspace, {
+      version: "1.0.1",
+      declarations: "export declare const x: MissingType;\n",
+    });
+    const detect = runBreakCheck([
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "baseline",
+      "--format",
+      "json",
+      "--no-ai",
+      "--fail-on-skipped",
+    ]);
+
+    // The skip must surface and --fail-on-skipped must fire, not silently report
+    // "no changes" for a surface break-check never actually read.
+    assert.equal(detect.status, 1, detect.stderr);
+    const result = JSON.parse(detect.stdout);
+    assert.equal(result.hasBreakingChanges, false);
+    assert.ok(
+      result.skippedEntries && result.skippedEntries.length === 1,
+      "the skipped entry must be recorded even when every entry failed",
+    );
+    assert.match(detect.stderr, /could not be snapshotted/);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("snapshot fails when a configured package has no declarations", () => {
   const workspace = createWorkspace();
 

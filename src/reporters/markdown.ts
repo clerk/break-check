@@ -71,7 +71,9 @@ export class MarkdownReporter {
     if (aiModel) {
       // Don't claim full coverage when a subpath's review didn't complete.
       const partial = incompleteReviews.length > 0 ? " (partial)" : "";
-      head.push(`> 🤖 This report was reviewed by \`${aiModel}\`${partial}.\n`);
+      head.push(
+        `> 🤖 This report was reviewed by \`${mdCode(aiModel)}\`${partial}.\n`,
+      );
     }
 
     if (result.skippedEntries && result.skippedEntries.length > 0) {
@@ -201,8 +203,9 @@ export class MarkdownReporter {
     );
     lines.push(">");
     for (const s of skipped) {
-      const reason = s.reason.replace(/\s+/g, " ").trim();
-      lines.push(`> - \`${s.packageName}\` ${s.subpath}: ${reason}`);
+      lines.push(
+        `> - \`${mdCode(s.packageName)}\` ${mdCode(s.subpath)}: ${mdProse(s.reason)}`,
+      );
     }
     lines.push("");
     return lines.join("\n");
@@ -219,16 +222,23 @@ export class MarkdownReporter {
   ): string {
     const total = failures.reduce((n, f) => n + f.unreviewed, 0);
     const lines: string[] = [];
+    // An audit-only failure carries no verdict count (unreviewed 0), so omit the
+    // "(N changes)" clause when nothing was left with a rule-based-only verdict.
+    const countClause =
+      total > 0 ? ` (${total} change${total === 1 ? "" : "s"})` : "";
     lines.push(
-      `> **Warning**\n> AI review did not complete for ${failures.length} subpath${failures.length === 1 ? "" : "s"} ` +
-        `(${total} change${total === 1 ? "" : "s"}); those changes show rule-based (pessimistic) verdicts only ` +
+      `> **Warning**\n> AI review did not complete for ${failures.length} subpath${failures.length === 1 ? "" : "s"}${countClause}; ` +
+        `affected changes show rule-based (pessimistic) verdicts only ` +
         `and may be over-reported as breaking.`,
     );
     lines.push(">");
     for (const f of failures) {
-      const reason = f.reason.replace(/\s+/g, " ").trim();
+      const pkg = mdCode(f.packageName);
+      const reason = mdProse(f.reason);
       lines.push(
-        `> - \`${f.packageName}\`: ${f.unreviewed} change${f.unreviewed === 1 ? "" : "s"} unreviewed (${reason})`,
+        f.unreviewed > 0
+          ? `> - \`${pkg}\`: ${f.unreviewed} change${f.unreviewed === 1 ? "" : "s"} unreviewed (${reason})`
+          : `> - \`${pkg}\`: ${reason}`,
       );
     }
     lines.push("");
@@ -247,7 +257,7 @@ export class MarkdownReporter {
         if (change.type !== ChangeType.BREAKING) continue;
         const subpath = change.subpath ?? ".";
         rows.push(
-          `| ${pkg.packageName} | \`${subpath}\` | \`${change.name}\` |`,
+          `| ${mdCode(pkg.packageName)} | \`${mdCode(subpath)}\` | \`${mdCode(change.name)}\` |`,
         );
       }
     }
@@ -314,17 +324,17 @@ export class MarkdownReporter {
     const lines: string[] = [];
 
     // Package header
-    lines.push(`## ${pkg.packageName}\n`);
+    lines.push(`## ${mdProse(pkg.packageName)}\n`);
 
     // Version info. When previous === current the PR hasn't bumped yet, so an
     // arrow would be misleading; show the current version and project the
     // target version implied by the recommended bump instead.
     const versionUnchanged = pkg.version.previous === pkg.version.current;
     if (versionUnchanged) {
-      lines.push(`**Current version:** ${pkg.version.current}`);
+      lines.push(`**Current version:** ${mdProse(pkg.version.current)}`);
     } else {
       lines.push(
-        `**Version:** ${pkg.version.previous} → ${pkg.version.current}`,
+        `**Version:** ${mdProse(pkg.version.previous)} → ${mdProse(pkg.version.current)}`,
       );
     }
 
@@ -384,7 +394,7 @@ export class MarkdownReporter {
       if (changes.length === 0) continue;
 
       if (!onlyRoot) {
-        lines.push(`### Subpath \`${subpath}\`\n`);
+        lines.push(`### Subpath \`${mdCode(subpath)}\`\n`);
       }
 
       lines.push(
@@ -501,7 +511,9 @@ export class MarkdownReporter {
     const tag = this.aiHeadingTag(change);
     const ackTag = change.acknowledged ? " _(acknowledged)_" : "";
     const hashes = "#".repeat(headingLevel);
-    lines.push(`${hashes} ${action}: \`${change.name}\`${tag}${ackTag}\n`);
+    lines.push(
+      `${hashes} ${action}: \`${mdCode(change.name)}\`${tag}${ackTag}\n`,
+    );
 
     // Code diff
     if (change.beforeSnippet || change.afterSnippet) {
@@ -521,11 +533,15 @@ export class MarkdownReporter {
         );
       }
 
-      lines.push("```diff");
-      for (const line of rendered) {
+      // Cap each line (one minified declaration can be a single enormous line),
+      // then pick a fence long enough that no snippet line can close it early.
+      const cappedDiff = rendered.map((line) => capDiffLine(line));
+      const fence = diffFence(cappedDiff);
+      lines.push(fence.open);
+      for (const line of cappedDiff) {
         lines.push(line);
       }
-      lines.push("```");
+      lines.push(fence.close);
 
       if (collapsed) {
         lines.push("</details>\n");
@@ -542,7 +558,7 @@ export class MarkdownReporter {
     const labelStatic =
       Boolean(change.acknowledged) || (ai && ai.source !== "ai-discovered");
     const prefix = labelStatic ? "**Static analyzer:** " : "";
-    lines.push(`> ${prefix}${change.description}\n`);
+    lines.push(`> ${prefix}${mdProse(change.description)}\n`);
 
     if (change.acknowledged) {
       lines.push(
@@ -556,7 +572,7 @@ export class MarkdownReporter {
     // have greened it, which the line above already explains).
     if (change.unresolvableReference && !change.acknowledged) {
       const spec = change.unresolvableSpecifier
-        ? `\`${change.unresolvableSpecifier}\``
+        ? `\`${mdCode(change.unresolvableSpecifier)}\``
         : "an internal subpath";
       lines.push(
         `> ⛔ References ${spec}, which is not a resolvable public export of its package (export-blocked or an internal bundler chunk). Consumers cannot resolve this type (it errors under \`nodenext\`, or degrades to \`any\` with \`skipLibCheck\`), so this stays breaking and \`--ai-apply-downgrades\` cannot relax it.\n`,
@@ -566,7 +582,9 @@ export class MarkdownReporter {
     if (ai) {
       const confidence = Math.round(ai.confidence * 100);
       const label = this.aiReviewLabel(change);
-      lines.push(`> 🤖 **${label}** (${confidence}%): ${ai.rationale}\n`);
+      lines.push(
+        `> 🤖 **${label}** (${confidence}%): ${mdProse(ai.rationale)}\n`,
+      );
       // Once acknowledged the change is no longer kept breaking, so suppress the
       // "re-run with --ai-apply-downgrades" nudge that would otherwise apply.
       // Also suppress it for an unresolvable-reference change: that flag pins the
@@ -582,7 +600,7 @@ export class MarkdownReporter {
         );
       }
       if (ai.migration) {
-        lines.push(`> **Migration:** ${ai.migration}\n`);
+        lines.push(`> **Migration:** ${mdProse(ai.migration)}\n`);
       }
     }
 
@@ -828,4 +846,75 @@ export class MarkdownReporter {
         return "⚪";
     }
   }
+}
+
+/* ---------------------------------------------------------- escaping -- */
+//
+// Package names, symbol names, descriptions, AI rationales, and migration hints
+// are derived from the scanned package's public surface (PR-controlled in the
+// Action) or from model output. They are interpolated into the report, which the
+// Action posts verbatim as a PR comment, so they must not be able to forge report
+// structure (headings, blockquote callouts, table rows) or mislead a reviewer.
+
+/**
+ * Neutralize an untrusted value rendered inline in markdown prose (descriptions,
+ * AI rationales, skip reasons). Collapsing all whitespace to single spaces is the
+ * load-bearing part: it stops a value with an embedded newline from breaking out
+ * of its line to forge a heading or a fake `>` callout. `](` is defanged so an
+ * injected `[text](url)` can't render as a link. Backticks are left intact:
+ * break-check's own descriptions legitimately wrap type names in them.
+ */
+function mdProse(value: string | undefined): string {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .replace(/]\(/g, "]\\(")
+    .trim();
+}
+
+/**
+ * Neutralize an untrusted value rendered inside a `code span`, a heading, or a
+ * table cell (symbol names, subpaths, package names, specifiers, model ids).
+ * Newlines collapse, backticks are neutralized so the value can't break out of
+ * its span, and pipes are escaped so it can't forge extra table columns. These
+ * fields never legitimately contain a backtick or a pipe.
+ */
+function mdCode(value: string | undefined): string {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .replace(/`/g, "'")
+    .replace(/\|/g, "\\|")
+    .trim();
+}
+
+/** Max characters for a single rendered diff line; see `capDiffLine`. */
+const MAX_DIFF_LINE_CHARS = 800;
+
+/**
+ * Cap a single rendered diff line. A minified declaration can be one line tens or
+ * hundreds of KB long, which the line-count-based collapse never catches, so one
+ * such line could push the comment past GitHub's 65 KB limit and fail to post.
+ * The 2-char diff prefix sits at the front, so a head slice preserves it.
+ */
+function capDiffLine(line: string): string {
+  if (line.length <= MAX_DIFF_LINE_CHARS) return line;
+  const omitted = line.length - MAX_DIFF_LINE_CHARS;
+  return `${line.slice(0, MAX_DIFF_LINE_CHARS)} … /* +${omitted} chars elided */`;
+}
+
+/**
+ * Pick a ```diff fence long enough that no rendered line can close it early. An
+ * untrusted snippet can contain a line that is itself a run of backticks; with a
+ * matching-length fence (and markdown's "indented up to 3 spaces" close rule),
+ * that would terminate the code block and let the rest render as markdown. Using
+ * an opening fence one backtick longer than the longest run in the content makes
+ * an early close impossible.
+ */
+function diffFence(lines: string[]): { open: string; close: string } {
+  let longest = 0;
+  for (const line of lines) {
+    const runs = line.match(/`+/g);
+    if (runs) for (const run of runs) longest = Math.max(longest, run.length);
+  }
+  const ticks = "`".repeat(Math.max(3, longest + 1));
+  return { open: `${ticks}diff`, close: ticks };
 }

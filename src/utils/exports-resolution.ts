@@ -97,6 +97,8 @@ export function isSubpathExported(
   subpath: string,
 ): boolean | null {
   if (exportsField === undefined) return null;
+  // `"exports": null` blocks every subpath, the root included.
+  if (exportsField === null) return false;
 
   const isObject =
     exportsField !== null &&
@@ -196,12 +198,14 @@ export function classifyReference(
 ): ReferenceResolvability {
   const parsed = parseModuleSpecifier(specifier);
   if (!parsed) return "exported"; // relative/intra-package: not our concern
-  // The package root is treated as resolvable. Node falls back to legacy
-  // (main/index) resolution when a root is blocked via `exports: null`, so a
-  // bare `import("dep")` almost always resolves; the rare empty-/conditions-only
-  // root that genuinely blocks the root is not worth the condition-aware
-  // resolution it would take to detect.
-  if (parsed.subpath === ".") return "exported";
+  // The root (`.`) is resolved against the dependency's `exports` like any other
+  // subpath. Once a package declares `exports`, that map fully governs
+  // resolution, so a root blocked with `"."`/`exports: null` is genuinely
+  // unimportable (`ERR_PACKAGE_PATH_NOT_EXPORTED`), not silently served from
+  // `main`/`index`. When the dependency can't be located or has no `exports`,
+  // `isSubpathExported` returns null below and the root falls through to
+  // `unknown`, which never escalates on its own (the chunk heuristic ignores
+  // the root), so the common case stays untouched.
   const { found, exports } = readDependencyExports(parsed.pkg, fromDir);
   if (!found) return "unknown";
   const verdict = isSubpathExported(exports, parsed.subpath);

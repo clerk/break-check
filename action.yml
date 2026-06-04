@@ -102,6 +102,7 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github-token }}
         BASE_REF: ${{ inputs.base-ref }}
+        BASE_SHA: ${{ github.event.pull_request.base.sha }}
         ARTIFACT_NAME: ${{ inputs.baseline-artifact-name }}
         MAX_AGE_HOURS: ${{ inputs.baseline-max-age }}
         REPO: ${{ github.repository }}
@@ -115,13 +116,24 @@ runs:
           exit 0
         }
 
+        # On pull_request events, bind the baseline to the PR's exact base commit
+        # by matching the producing run's head_sha against base.sha. Selecting by
+        # branch name alone grabs the newest snapshot on that branch, which can be
+        # ahead of (or behind) the commit the PR was actually opened against, so
+        # the diff would compare against a tree the PR never saw. Fall back to
+        # branch matching only when no base SHA is available (non-PR events).
+        if [ -n "${BASE_SHA:-}" ]; then
+          SELECT="select(.workflow_run.head_sha == \"$BASE_SHA\" and .expired == false)"
+        else
+          SELECT="select(.workflow_run.head_branch == \"$BASE_REF\" and .expired == false)"
+        fi
         ARTIFACT=$(gh api \
           "repos/$REPO/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" \
-          --jq "[.artifacts[] | select(.workflow_run.head_branch == \"$BASE_REF\" and .expired == false)] | .[0]") \
+          --jq "[.artifacts[] | $SELECT] | .[0]") \
           || fallback "Artifact lookup failed."
 
         if [ -z "$ARTIFACT" ] || [ "$ARTIFACT" = "null" ]; then
-          fallback "No baseline artifact '$ARTIFACT_NAME' on '$BASE_REF'."
+          fallback "No baseline artifact '$ARTIFACT_NAME' for base '${BASE_SHA:-$BASE_REF}'."
         fi
 
         ARTIFACT_ID=$(echo "$ARTIFACT" | jq -r '.id')
@@ -299,19 +311,29 @@ runs:
           exit "$status"
         fi
 
-        # Baseline is now compatible; the JSON pass reuses it (best-effort).
+        # Baseline is now compatible; the JSON pass reuses it. This pass is
+        # authoritative for has-breaking-changes, so it must fail closed: a
+        # swallowed nonzero exit or an unparseable report would otherwise default
+        # the flag to false and let fail-on-breaking pass on a real break. The
+        # markdown pass above already proved the baseline compatible (and handled
+        # the exit-3 rebuild), so a nonzero status here is a genuine failure.
+        json_status=0
         npx --yes "@clerk/break-check@$BREAK_CHECK_VERSION" detect \
           --config "$CONFIG_PATH" \
           --baseline "$BASELINE_DIR" \
-          --format json > "$JSON_PATH" || true
-
-        HAS_BREAKING=false
-        if [ -f "$JSON_PATH" ]; then
-          HAS_BREAKING=$(node -e "
-            const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf-8'));
-            process.stdout.write(r.hasBreakingChanges ? 'true' : 'false');
-          " "$JSON_PATH" 2>/dev/null || echo false)
+          --format json > "$JSON_PATH" || json_status=$?
+        if [ "$json_status" != "0" ]; then
+          echo "::error::break-check JSON detect failed (exit $json_status); refusing to emit a fail-open result."
+          exit "$json_status"
         fi
+
+        HAS_BREAKING=$(node -e "
+          const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf-8'));
+          process.stdout.write(r.hasBreakingChanges ? 'true' : 'false');
+        " "$JSON_PATH") || {
+          echo "::error::Could not parse break-check JSON report at $JSON_PATH."
+          exit 1
+        }
 
         echo "has-breaking-changes=$HAS_BREAKING" >> "$GITHUB_OUTPUT"
         echo "report-path=$REPORT_PATH" >> "$GITHUB_OUTPUT"

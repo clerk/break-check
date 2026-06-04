@@ -1167,6 +1167,121 @@ test("ai-analyzer: lean coerces a bogus ADDITION but keeps it breaking", async (
   }
 });
 
+test("ai-analyzer: additions-only audit failure is recorded as incomplete (#9)", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const addition = {
+    id: "add1",
+    type: ChangeType.ADDITION,
+    severity: ChangeSeverity.MINOR,
+    category: "function",
+    name: "newThing",
+    description: "Added function newThing",
+    afterSnippet: "export declare function newThing(): void;",
+  };
+  // additions-only diff: the only reason to call is the missed-breaks audit.
+  const client = {
+    messages: {
+      async create() {
+        throw new Error("request too large");
+      },
+    },
+  };
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    scanForMissed: true,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    const result = await analyzer.analyze([addition], {
+      packageName: "@demo/pkg (./x)",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    // The addition still passes through untouched...
+    assert.equal(result.length, 1);
+    assert.equal(result[0].type, ChangeType.ADDITION);
+    // ...but the failed audit is now visible instead of the report silently
+    // claiming a complete AI review.
+    assert.equal(analyzer.incompleteReviews.length, 1);
+    assert.equal(analyzer.incompleteReviews[0].unreviewed, 0);
+    assert.match(analyzer.incompleteReviews[0].reason, /audit/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ai-analyzer: missed-scan audit surface is capped (#11)", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "break-check-audit-cap-"));
+  const baseline = join(dir, "baseline.api.json");
+  const current = join(dir, "current.api.json");
+  // A large public surface (~4000 functions): uncapped this serializes to
+  // multiple megabytes per side.
+  const big = Array.from({ length: 4000 }, (_, i) => ({
+    kind: "Function",
+    name: `fn${i}`,
+    excerptTokens: [
+      {
+        text: `export declare function fn${i}(a: string, b: number, c: boolean): Record<string, unknown>;`,
+      },
+    ],
+  }));
+  writeApiJson(baseline, big);
+  writeApiJson(current, [
+    ...big,
+    {
+      kind: "Function",
+      name: "added",
+      excerptTokens: [{ text: "export declare function added(): void;" }],
+    },
+  ]);
+
+  let surfaceText = null;
+  const client = {
+    messages: {
+      async create(params) {
+        surfaceText = params.messages[0].content[0].text;
+        throw new Error("stop"); // captured the surface; abort the call
+      },
+    },
+  };
+  const change = {
+    id: "c1",
+    type: ChangeType.BREAKING,
+    severity: ChangeSeverity.MAJOR,
+    category: "function",
+    name: "fn0",
+    description: "changed",
+    beforeSnippet: "x",
+    afterSnippet: "y",
+  };
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "k",
+    client,
+    scanForMissed: true,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+    assert.ok(surfaceText, "surface should have been sent");
+    // Both sides are bounded by the per-side cap; without it this is multi-MB.
+    assert.ok(
+      surfaceText.length < 250_000,
+      `audit surface should be capped, got ${surfaceText.length}`,
+    );
+    assert.match(surfaceText, /surface truncated/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("ai-analyzer: chunks large change lists across multiple calls", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const changes = Array.from({ length: 5 }, (_, i) => ({

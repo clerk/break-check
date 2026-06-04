@@ -387,6 +387,72 @@ test("markdown reporter: incomplete AI reviews are surfaced and the stamp is par
   );
 });
 
+test("markdown reporter: untrusted fields cannot forge report structure (#10)", () => {
+  const change = {
+    id: "x",
+    type: ChangeType.BREAKING,
+    severity: ChangeSeverity.MAJOR,
+    category: "type",
+    name: "Evil\n## Injected Heading\n`broken | cell",
+    description:
+      "desc\n## Fake Heading\n> fake callout\n| col | bad |\n[click](http://evil.example)",
+    beforeSnippet: "type Evil = { a: string };",
+    afterSnippet: "type Evil = { a: number };",
+    subpath: "./x\n## Subpath Injection",
+    aiAnalysis: {
+      source: "rule-confirmed",
+      confidence: 0.9,
+      rationale: "rationale\n## Sneaky\nlook here",
+      migration: "do x\n### Steps\n- thing",
+      model: "m",
+    },
+  };
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    makeResult(change),
+  );
+  const startsBlock = (marker) =>
+    out.split("\n").some((l) => l.trimStart().startsWith(marker));
+
+  // No untrusted value may start a markdown block on its own line.
+  assert.ok(
+    !startsBlock("## Injected"),
+    "name newline must not forge a heading",
+  );
+  assert.ok(!startsBlock("## Fake"), "description must not forge a heading");
+  assert.ok(!startsBlock("## Sneaky"), "rationale must not forge a heading");
+  assert.ok(!startsBlock("### Steps"), "migration must not forge a heading");
+  assert.ok(
+    !startsBlock("## Subpath Injection"),
+    "subpath must not forge a heading",
+  );
+  // The injected inline link is defanged.
+  assert.ok(
+    !out.includes("](http://evil.example)"),
+    "inline link must be defanged",
+  );
+});
+
+test("markdown reporter: a huge single-line declaration is capped (#12)", () => {
+  const huge = "a".repeat(500_000);
+  const change = {
+    id: "x",
+    type: ChangeType.BREAKING,
+    severity: ChangeSeverity.MAJOR,
+    category: "type",
+    name: "Big",
+    description: "Type changed",
+    beforeSnippet: `type Big = "${huge}";`,
+    afterSnippet: `type Big = "${huge}X";`,
+  };
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    makeResult(change),
+  );
+  // One 500KB line must not be emitted raw; the per-line cap keeps the comment
+  // well under GitHub's 65KB limit.
+  assert.ok(out.length < 50_000, `expected a capped report, got ${out.length}`);
+  assert.match(out, /chars elided/);
+});
+
 test("markdown reporter: unresolvable-reference change shows the guard callout and suppresses the downgrade nudge", () => {
   const change = {
     id: "u1",
