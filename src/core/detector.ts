@@ -373,7 +373,11 @@ export class BreakingChangesDetector {
     const currentSnapshots = await this.generateSnapshots();
 
     if (currentSnapshots.size === 0) {
-      return this.createEmptyResult();
+      // Every current entry failed extraction (or there were none). Build the
+      // result through the normal path so `skippedEntries` is still attached;
+      // returning an empty result here would drop that signal and let
+      // `--fail-on-skipped` pass on a surface break-check never actually read.
+      return this.buildResult([]);
     }
 
     const packageAnalyses: PackageAnalysis[] = [];
@@ -1068,21 +1072,6 @@ export class BreakingChangesDetector {
       breakingChanges,
       nonBreakingChanges,
       additions,
-    };
-  }
-
-  private createEmptyResult(): AnalysisResult {
-    return {
-      timestamp: new Date().toISOString(),
-      packages: [],
-      hasBreakingChanges: false,
-      summary: {
-        totalPackages: 0,
-        packagesWithChanges: 0,
-        breakingChanges: 0,
-        nonBreakingChanges: 0,
-        additions: 0,
-      },
     };
   }
 

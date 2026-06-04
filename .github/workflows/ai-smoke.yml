@@ -44,8 +44,15 @@ jobs:
 
       - name: pnpm test (AI tests enabled)
         env:
-          BREAK_CHECK_ANTHROPIC_API_KEY: ${{ secrets.BREAK_CHECK_ANTHROPIC_API_KEY }}
-          BREAK_CHECK_RUN_REAL_AI_TESTS: "1"
+          # workflow_dispatch can be triggered from any branch, and this step runs
+          # that branch's (untrusted) tests and build. Only expose the Anthropic
+          # secret when the ref is main, so a write-capable actor can't dispatch a
+          # modified branch to exfiltrate the key. The real-AI tests gate on the
+          # key being present, so a branch dispatch simply skips them. For
+          # pre-merge AI testing on a branch, use a protected environment with
+          # required reviewers rather than widening this.
+          BREAK_CHECK_ANTHROPIC_API_KEY: ${{ github.ref == 'refs/heads/main' && secrets.BREAK_CHECK_ANTHROPIC_API_KEY || '' }}
+          BREAK_CHECK_RUN_REAL_AI_TESTS: ${{ github.ref == 'refs/heads/main' && '1' || '' }}
           # Off by default: the missed-break audit is a model judgment call that
           # flickers, so nightly red is reserved for the robust contract checks.
           # A manual dispatch can opt into hard-gating it.

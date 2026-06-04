@@ -309,15 +309,23 @@ export class AiChangeAnalyzer {
     }
 
     let surface: string;
+    // True when the audit surface had to be truncated to fit the size budget, so
+    // a break beyond the cap could not be seen. Recorded as partial coverage
+    // below if the audit otherwise ran.
+    let auditTruncated = false;
     try {
       // The audit has to diff old against new to find an unflagged break, so it
       // gets both full surfaces. The verdict path instead gets a focused
       // context: only the definitions of the types each change references, which
       // is all the model needs to judge (and confidently relax) a verdict, at a
       // fraction of the tokens.
-      surface = this.scanForMissed
-        ? buildAuditSurfaceBlock(ctx)
-        : buildFocusedSurfaceBlock(ctx, reviewable);
+      if (this.scanForMissed) {
+        const audit = buildAuditSurfaceBlock(ctx);
+        surface = audit.text;
+        auditTruncated = audit.truncated;
+      } else {
+        surface = buildFocusedSurfaceBlock(ctx, reviewable);
+      }
     } catch (error) {
       this.warn(
         `[ai] could not load API surface for ${ctx.packageName}: ${describe(error)}. Skipping AI review.`,
@@ -369,6 +377,11 @@ export class AiChangeAnalyzer {
     // Changes left unreviewed because a call failed even after retries. Recorded
     // once per analyze() so the report can flag partial coverage.
     let unreviewed = 0;
+    // The missed-breaks audit (when requested) rides on the first chunk. An
+    // additions-only diff makes that chunk empty, so an audit failure adds 0 to
+    // `unreviewed` and would otherwise leave no trace, letting the report claim a
+    // complete AI review. Track it separately so the failure is still surfaced.
+    let missedScanFailed = false;
 
     // Run one chunk, splitting and retrying on failure so a single oversized or
     // transient failure doesn't wipe out every verdict in the chunk. A1/A2 keep
@@ -430,6 +443,7 @@ export class AiChangeAnalyzer {
         // Hard fail-soft for this chunk; the affected changes keep their
         // rule-based type (and were counted in `unreviewed`). Continue to the
         // next chunk in case it succeeds.
+        if (includeMissedScan) missedScanFailed = true;
         continue;
       }
       for (const v of verdict.verdicts) verdictMap.set(v.id, v);
@@ -441,6 +455,29 @@ export class AiChangeAnalyzer {
       unreviewed,
       "AI review did not complete (call failed, timed out, or returned an unusable response after retries)",
     );
+
+    // When the audit failed but no verdicts were left unreviewed (the
+    // additions-only case), the line above recorded nothing, so log the audit
+    // gap explicitly. With reviewable changes, `unreviewed` already flagged this
+    // subpath, so don't double-report it.
+    if (missedScanFailed && unreviewed === 0) {
+      this.incompleteReviews.push({
+        packageName: ctx.packageName,
+        reason:
+          "missed-breaks audit did not complete (call failed, timed out, or returned an unusable response)",
+        unreviewed: 0,
+      });
+    } else if (this.scanForMissed && auditTruncated && !missedScanFailed) {
+      // The audit ran, but on a surface trimmed to fit the size budget, so a
+      // break past the cap was never shown to the model. Record it as partial
+      // coverage so the report doesn't imply a complete audit.
+      this.incompleteReviews.push({
+        packageName: ctx.packageName,
+        reason:
+          "missed-breaks audit surface was truncated to fit the size budget; any break past the cap was not scanned",
+        unreviewed: 0,
+      });
+    }
 
     const enriched: ApiChange[] = [];
 
@@ -776,20 +813,54 @@ function extractSurface(apiJsonPath: string): string {
  * referenced type defs). The baseline is omitted only when there is none (a new
  * package), in which case the audit can inspect the current surface alone.
  */
-function buildAuditSurfaceBlock(ctx: AiPackageContext): string {
-  const current = extractSurface(ctx.currentApiJsonPath);
-  let baseline = "";
+function buildAuditSurfaceBlock(ctx: AiPackageContext): {
+  text: string;
+  truncated: boolean;
+} {
+  const rawCurrent = extractSurface(ctx.currentApiJsonPath);
+  let rawBaseline = "";
   try {
-    baseline = extractSurface(ctx.baselineApiJsonPath);
+    rawBaseline = extractSurface(ctx.baselineApiJsonPath);
   } catch {
     // No baseline (new package): the audit can only see the current surface.
   }
+  // If either side overflowed the cap, the model couldn't see the whole surface,
+  // so a break living past the cap is unscannable. Surface that as partial
+  // coverage rather than letting the report imply a complete audit.
+  const truncated =
+    rawCurrent.length > MAX_AUDIT_SURFACE_CHARS ||
+    rawBaseline.length > MAX_AUDIT_SURFACE_CHARS;
+  const current = capSurfaceText(rawCurrent, MAX_AUDIT_SURFACE_CHARS);
+  const baseline = rawBaseline
+    ? capSurfaceText(rawBaseline, MAX_AUDIT_SURFACE_CHARS)
+    : "";
   const parts = [`# API surface for ${ctx.packageName}`, ""];
   if (baseline) {
     parts.push("## Baseline", "```ts", baseline, "```", "");
   }
   parts.push("## Current", "```ts", current, "```");
-  return parts.join("\n");
+  return { text: parts.join("\n"), truncated };
+}
+
+/**
+ * Per-side character budget for the missed-breaks audit surfaces. Unlike the
+ * focused verdict path (which only emits referenced type defs), the audit ships
+ * whole baseline + current surfaces, so a large public API would otherwise
+ * generate a multi-megabyte prompt and a request failure / cost spike. Capping
+ * each side keeps the audit bounded; the elision marker tells the model the
+ * surface is partial, and per system-prompt rule 8 unresolved surface fails safe
+ * toward "breaking".
+ */
+const MAX_AUDIT_SURFACE_CHARS = 90_000;
+
+/** Truncate a surface string to `max` chars on a line boundary, with a marker. */
+function capSurfaceText(text: string, max: number): string {
+  if (text.length <= max) return text;
+  const head = text.slice(0, max);
+  const cut = head.lastIndexOf("\n");
+  const kept = cut > 0 ? head.slice(0, cut) : head;
+  const omitted = text.length - kept.length;
+  return `${kept}\n/* ... surface truncated: ${omitted} more character${omitted === 1 ? "" : "s"} elided ... */`;
 }
 
 /** One node in the walked surface tree. */

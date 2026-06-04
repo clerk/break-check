@@ -192,9 +192,15 @@ export class ApiDiffAnalyzer {
     member: ApiJsonMember,
     items: Map<string, ParsedApiItem>,
     parentName?: string,
+    parentChain?: string,
   ): void {
     const category = this.mapCategory(member.kind);
-    const key = this.buildKey(member.kind, member.name, parentName);
+    // The map key uses the FULL parent chain (`A.Inner`), not just the immediate
+    // parent, so two distinct nested members that share an immediate parent and
+    // leaf name (`A.Inner.value` and `B.Inner.value`) don't collide and silently
+    // overwrite each other. The stored `parentName` stays the immediate parent so
+    // the human-facing display name (and the AI walkSurface alias) are unchanged.
+    const key = this.buildKey(member.kind, member.name, parentChain);
     const shape = this.parseShape(member);
     const snippet = this.tokensToText(member.excerptTokens);
 
@@ -210,8 +216,11 @@ export class ApiDiffAnalyzer {
     });
 
     if (member.members && member.members.length > 0) {
+      const childChain = parentChain
+        ? `${parentChain}.${member.name}`
+        : member.name;
       for (const nested of member.members) {
-        this.processApiMember(nested, items, member.name);
+        this.processApiMember(nested, items, member.name, childChain);
       }
     }
   }
@@ -567,9 +576,9 @@ export class ApiDiffAnalyzer {
     return { ...change, id: this.generateChangeId(change) };
   }
 
-  private buildKey(kind: string, name: string, parentName?: string): string {
+  private buildKey(kind: string, name: string, parentChain?: string): string {
     const k = this.mapCategory(kind);
-    return parentName ? `${k}:${parentName}:${name}` : `${k}:${name}`;
+    return parentChain ? `${k}:${parentChain}:${name}` : `${k}:${name}`;
   }
 
   private mapCategory(kind: string): ChangeCategory {

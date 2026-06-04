@@ -31,7 +31,7 @@ jobs:
         id: fetch-baseline
         env:
           GH_TOKEN: ${{ github.token }}
-          BASE_REF: ${{ github.base_ref }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           ARTIFACT_NAME: break-check-baseline-main
           REPO: ${{ github.repository }}
           BASELINE_DIR: ${{ github.workspace }}/.api-baseline-main
@@ -44,13 +44,18 @@ jobs:
             exit 0
           }
 
+          # Bind the baseline to the PR's exact base commit: match the producing
+          # run's head_sha (the main commit the baseline workflow ran on) against
+          # github.event.pull_request.base.sha. Selecting by branch alone would
+          # grab the newest main snapshot, which can be ahead of the PR base, so
+          # the diff would compare against a tree the PR was never based on.
           ARTIFACT=$(gh api \
             "repos/$REPO/actions/artifacts?name=$ARTIFACT_NAME&per_page=100" \
-            --jq "[.artifacts[] | select(.workflow_run.head_branch == \"$BASE_REF\" and .expired == false)] | .[0]") \
+            --jq "[.artifacts[] | select(.workflow_run.head_sha == \"$BASE_SHA\" and .expired == false)] | .[0]") \
             || fallback "Artifact lookup failed."
 
           if [ -z "$ARTIFACT" ] || [ "$ARTIFACT" = "null" ]; then
-            fallback "No baseline artifact '$ARTIFACT_NAME' on '$BASE_REF'."
+            fallback "No baseline artifact '$ARTIFACT_NAME' for base $BASE_SHA."
           fi
 
           ARTIFACT_ID=$(echo "$ARTIFACT" | jq -r '.id')

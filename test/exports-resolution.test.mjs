@@ -131,6 +131,7 @@ function makeDepWorkspace(exportsField) {
 
 test("readDependencyExports / classifyReference: resolves against an installed dependency", () => {
   const dir = makeDepWorkspace({
+    ".": { types: "./dist/index.d.ts" },
     "./types": { types: "./dist/types.d.ts" },
     "./_chunks/*": null,
     "./*": { types: "./dist/*.d.ts" },
@@ -145,7 +146,8 @@ test("readDependencyExports / classifyReference: resolves against an installed d
     );
     assert.equal(classifyReference("@clerk/shared/types", dir), "exported");
     assert.equal(classifyReference("@clerk/shared/url", dir), "exported");
-    // Package root is always public.
+    // The root resolves against `exports` like any other subpath; it's present
+    // here, so it's exported.
     assert.equal(classifyReference("@clerk/shared", dir), "exported");
     // Not installed here: unknown (caller falls back to the heuristic).
     assert.equal(classifyReference("not-installed/foo", dir), "unknown");
@@ -154,6 +156,49 @@ test("readDependencyExports / classifyReference: resolves against an installed d
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("classifyReference: an export-blocked or absent root is not assumed exported (#5)", () => {
+  // `{ ".": null }` blocks the root; a bare `import("dep")` is unresolvable.
+  const blockedRoot = makeDepWorkspace({
+    ".": null,
+    "./types": { types: "./dist/types.d.ts" },
+  });
+  // A subpath-only map with no "." key: the root is not exported.
+  const noRootKey = makeDepWorkspace({ "./types": { types: "./dist/t.d.ts" } });
+  try {
+    assert.equal(classifyReference("@clerk/shared", blockedRoot), "blocked");
+    // A real public subpath on the same package still resolves.
+    assert.equal(
+      classifyReference("@clerk/shared/types", blockedRoot),
+      "exported",
+    );
+    assert.equal(classifyReference("@clerk/shared", noRootKey), "blocked");
+  } finally {
+    rmSync(blockedRoot, { recursive: true, force: true });
+    rmSync(noRootKey, { recursive: true, force: true });
+  }
+});
+
+test("classifyReference: top-level `exports: null` falls back to legacy resolution, not blocked (#5)", () => {
+  // Node ignores a null `exports` field and resolves the root via main/types, so
+  // a bare `import("dep")` still works. The guard must treat it as inconclusive
+  // (unknown), never blocked, so a newly introduced root reference isn't falsely
+  // escalated to breaking.
+  const nullExports = makeDepWorkspace(null);
+  try {
+    assert.equal(classifyReference("@clerk/shared", nullExports), "unknown");
+  } finally {
+    rmSync(nullExports, { recursive: true, force: true });
+  }
+});
+
+test('isSubpathExported: a null `exports` field is inconclusive; `{ ".": null }` blocks the root (#5)', () => {
+  // A top-level null field == a missing field (legacy fallback), so inconclusive.
+  assert.equal(isSubpathExported(null, "."), null);
+  assert.equal(isSubpathExported(null, "./types"), null);
+  // But an explicit null target on the root IS a block.
+  assert.equal(isSubpathExported({ ".": null }, "."), false);
 });
 
 test("findUnresolvableReference: flags a newly-introduced export-blocked specifier", () => {
