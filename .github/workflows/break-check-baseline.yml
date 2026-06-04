@@ -37,3 +37,6 @@ jobs:
           path: .api-baseline-main
           retention-days: 30
           if-no-files-found: error
+          # .api-baseline-main is dot-prefixed, so upload-artifact@v4 skips it
+          # as a hidden directory unless this is set, yielding "No files were found".
+          include-hidden-files: true
