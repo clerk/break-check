@@ -844,3 +844,51 @@ test("switching an export's declaration kind is breaking", () => {
   assert.ok(removed, "expected a breaking change for the removed function");
   assert.match(removed.description, /Removed function `thing`/);
 });
+
+test("turning a parameter into a rest parameter is breaking", () => {
+  // API Extractor's .api.json omits an isRest flag, so this is recovered from
+  // the excerpt. Without that, a rest-ness flip is invisible to the diff.
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare function go(items: string[]): void;\n",
+    },
+    current: {
+      version: "1.0.1",
+      dts: "export declare function go(...items: string[]): void;\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 1,
+    nonBreaking: 0,
+    additions: 0,
+  });
+  const change = changesFor(result).find((c) => c.name === "go");
+  assert.ok(change, "expected a change on go");
+  assert.equal(change.type, "breaking");
+  assert.match(change.description, /Parameter `items` rest-ness changed/);
+});
+
+test("adding a rest parameter is non-breaking", () => {
+  // A new `...rest` is back-compatible (existing calls still type-check), so it
+  // must read as an optional add, not a required-parameter break.
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare function go(): void;\n",
+    },
+    current: {
+      version: "1.1.0",
+      dts: "export declare function go(...items: string[]): void;\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 0,
+    nonBreaking: 1,
+    additions: 0,
+  });
+  const change = changesFor(result).find((c) => c.name === "go");
+  assert.ok(change, "expected a change on go");
+  assert.equal(change.type, "non-breaking");
+  assert.match(change.description, /Optional parameter `items` was added/);
+});
