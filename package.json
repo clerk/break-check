@@ -30,6 +30,7 @@
     "clean": "rm -rf dist",
     "dev": "tsc --watch",
     "format": "prettier --write .",
+    "lint:action-pins": "node scripts/check-action-pins.mjs",
     "lint:actions": "node scripts/lint-action-shell.mjs",
     "prepare": "pnpm build",
     "release": "pnpm build && changeset publish",
