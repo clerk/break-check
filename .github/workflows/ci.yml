@@ -9,6 +9,13 @@ on:
 permissions:
   contents: read
 
+# Cancel superseded runs on the same ref (rapid pushes / PR force-pushes) so the
+# matrix doesn't pile up. Pushes to main get a per-ref group too, which is fine:
+# only the newest main commit needs the full matrix.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: test (node ${{ matrix.node-version }})
