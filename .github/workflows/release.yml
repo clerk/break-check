@@ -19,11 +19,18 @@ jobs:
     timeout-minutes: 20
     steps:
       # Persisted credentials are intentionally kept on this checkout so the
-      # subsequent `changesets/action` step can push the Version PR back to
-      # the repo using GITHUB_TOKEN.
+      # subsequent `changesets/action` step can push the Version PR branch back
+      # to the repo. Prefer CHANGESETS_PAT so that push is attributed to a real
+      # token rather than GITHUB_TOKEN: GitHub does not run Actions workflows on
+      # commits/PRs created by GITHUB_TOKEN, so without a PAT the "Version
+      # Packages" PR never triggers CI and sits blocked under branch protection.
+      # Falls back to GITHUB_TOKEN until the secret is provisioned, so this is
+      # safe to merge before the secret exists (releases keep working; the
+      # version PR just won't run CI until the PAT is added).
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          token: ${{ secrets.CHANGESETS_PAT || secrets.GITHUB_TOKEN }}
 
       - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6.0.8
 
@@ -51,6 +58,9 @@ jobs:
           title: "chore: version packages"
           commit: "chore: version packages"
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Same CHANGESETS_PAT-with-fallback as the checkout above, so the
+          # Version PR is opened/updated by that identity and triggers the
+          # required CI checks instead of silently skipping them.
+          GITHUB_TOKEN: ${{ secrets.CHANGESETS_PAT || secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
           NPM_CONFIG_PROVENANCE: "true"
