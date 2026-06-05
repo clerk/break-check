@@ -63,17 +63,22 @@ jobs:
       - run: pnpm install --frozen-lockfile
 
       - name: Verify changeset is present
-        # Dependabot here only bumps the github-actions group (CI-only, no
-        # published-package impact), so its grouped PRs don't need a changeset.
-        # The job still runs and exits 0, satisfying this required check without
-        # leaving the PR stuck. Actor/base ref go through env to keep the value
-        # out of the shell-command string.
+        # Two PR kinds legitimately carry no changeset and would otherwise fail
+        # this required check (and, with branch protection on main, sit stuck):
+        #   - Dependabot bumps the github-actions group only (CI-only, no
+        #     published-package impact).
+        #   - The changesets "Version Packages" PR (head `changeset-release/<base>`)
+        #     has already consumed its changesets, so `changeset status` errors on
+        #     it (changed package, zero changesets present).
+        # Both still run the job and exit 0, satisfying the check. Actor/refs go
+        # through env to keep the values out of the shell-command string.
         env:
           ACTOR: ${{ github.actor }}
+          HEAD_REF: ${{ github.head_ref }}
           BASE_REF: ${{ github.base_ref }}
         run: |
-          if [ "$ACTOR" = "dependabot[bot]" ]; then
-            echo "Dependabot PR: changeset not required (action bumps are CI-only)."
+          if [ "$ACTOR" = "dependabot[bot]" ] || [ "$HEAD_REF" = "changeset-release/$BASE_REF" ]; then
+            echo "Dependabot or release PR: changeset not required."
             exit 0
           fi
           pnpm changeset status --since="origin/$BASE_REF"
