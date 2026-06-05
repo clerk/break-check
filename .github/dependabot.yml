@@ -8,3 +8,28 @@ updates:
       github-actions:
         patterns:
           - "*"
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    # Batch routine updates so the queue stays low-noise: one PR for prod deps,
+    # one for dev deps. API Extractor is deliberately left out of the prod group
+    # (see ignore below) so it always arrives as its own reviewable PR.
+    groups:
+      production-dependencies:
+        dependency-type: production
+        exclude-patterns:
+          - "@microsoft/api-extractor"
+      development-dependencies:
+        dependency-type: development
+    ignore:
+      # An API Extractor MAJOR bump is a break-check major: the snapshot schema
+      # and the hand-rolled parseApiJson reader are AE-major-specific, and a
+      # baseline produced under a different AE major is refused at detect time.
+      # It must be a deliberate, documented upgrade (regenerate committed
+      # baselines, cut a major), never an automated batch. Patch/minor still flow
+      # as their own PR; only majors are held back for a human to own.
+      - dependency-name: "@microsoft/api-extractor"
+        update-types:
+          - version-update:semver-major
