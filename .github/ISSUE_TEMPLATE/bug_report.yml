@@ -24,7 +24,7 @@ body:
     attributes:
       label: break-check version
       description: The version of `@clerk/break-check` you are running (check your package.json or lockfile).
-      placeholder: "0.1.0"
+      placeholder: "0.0.1"
     validations:
       required: true
   - type: textarea

@@ -332,6 +332,7 @@ jobs:
 | `baseline-max-age`       | unset                                          | Maximum age (hours) for a downloaded baseline artifact before falling back to a worktree rebuild.                   |
 | `comment`                | `true`                                         | Post or update a PR comment with the report.                                                                        |
 | `fail-on-breaking`       | `false`                                        | Fail the workflow when breaking changes are detected.                                                               |
+| `policy-mode`            | `false`                                        | Enforce the config from the base ref so a PR cannot suppress its own break by editing its config.                   |
 | `github-token`           | `${{ github.token }}`                          | Token used to read/write PR comments and (when `baseline-artifact-name` is set) fetch the artifact.                 |
 
 ### Action outputs
@@ -348,6 +349,27 @@ On the first PR that introduces Break Check, the base ref won't contain a
 the PR's config into the base checkout in that case so the first run still
 produces a usable baseline. Subsequent runs always use the base ref's own
 config.
+
+### Required-gate hardening
+
+The `break-check.config.json` lives in the repo, so a pull request can edit its
+own config the same way it edits any other file: drop the changed package from
+`packages`, add an `acknowledgedChanges` entry, or widen `ignoreSubpaths` /
+`resolvableSpecifiers`. Any of those greens the PR's own breaking change. That is
+acceptable when the config is itself reviewed (for example under CODEOWNERS), but
+if you rely on this Action as a required merge gate, set `policy-mode: true`:
+
+```yaml
+- uses: clerk/break-check@v1
+  with:
+    fail-on-breaking: true
+    policy-mode: true
+```
+
+In policy mode the Action reads `break-check.config.json` from the base ref
+before running the diff, so a config change takes effect only once it has landed
+on the base branch and passed that branch's review. A base ref that has no config
+yet (the first PR introducing Break Check) falls back to the PR's config.
 
 ### Larger monorepos
 

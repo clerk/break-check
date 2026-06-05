@@ -528,12 +528,38 @@ function sanitizeSubpath(subpath: string): string {
   return subpath.replace(/^\.\//, "").replace(/\//g, "__");
 }
 
+/**
+ * Resolve `target` (a path read from a scanned package's package.json) against
+ * `packagePath`, returning the absolute path only when it stays inside the
+ * package root. A package.json is attacker-controlled in CI (the Action builds
+ * a PR's manifest), so a `types`/`exports` value like `../../../secret.d.ts`
+ * must not let discovery pull a `.d.ts` from outside the package it describes
+ * into the snapshot, report, or AI payload. The check is lexical (no symlink
+ * resolution), matching the baseline-side `isContainedFilename` guard in
+ * detector.ts and the prefix/suffix containment in `expandWildcardSubpath`; a
+ * non-contained target resolves to null and the caller skips that entry.
+ */
+function resolveWithinPackage(
+  packagePath: string,
+  target: string,
+): string | null {
+  const root = path.resolve(packagePath);
+  const resolved = path.resolve(root, target);
+  const rel = path.relative(root, resolved);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) {
+    return null;
+  }
+  return resolved;
+}
+
 function resolveTypesFromExportValue(
   value: unknown,
   packagePath: string,
 ): string | null {
   if (typeof value === "string") {
-    return /\.d\.m?ts$/.test(value) ? path.resolve(packagePath, value) : null;
+    return /\.d\.m?ts$/.test(value)
+      ? resolveWithinPackage(packagePath, value)
+      : null;
   }
 
   if (!value || typeof value !== "object") return null;
@@ -545,12 +571,12 @@ function resolveTypesFromExportValue(
     const branch = conditional[condition];
     if (!branch) continue;
     if (typeof branch === "string" && /\.d\.m?ts$/.test(branch)) {
-      return path.resolve(packagePath, branch);
+      return resolveWithinPackage(packagePath, branch);
     }
     if (branch && typeof branch === "object") {
       const types = (branch as Record<string, unknown>).types;
       if (typeof types === "string") {
-        return path.resolve(packagePath, types);
+        return resolveWithinPackage(packagePath, types);
       }
     }
   }
@@ -558,7 +584,7 @@ function resolveTypesFromExportValue(
   // Top-level `types` inside the conditional block ({"types": "...", ...})
   const topTypes = conditional.types;
   if (typeof topTypes === "string") {
-    return path.resolve(packagePath, topTypes);
+    return resolveWithinPackage(packagePath, topTypes);
   }
 
   return null;
@@ -631,15 +657,15 @@ function resolveRootTypes(
   // 1. types field
   const types = packageJson.types;
   if (typeof types === "string") {
-    const p = path.resolve(packagePath, types);
-    if (fs.existsSync(p)) return p;
+    const p = resolveWithinPackage(packagePath, types);
+    if (p && fs.existsSync(p)) return p;
   }
 
   // 2. typings (legacy)
   const typings = packageJson.typings;
   if (typeof typings === "string") {
-    const p = path.resolve(packagePath, typings);
-    if (fs.existsSync(p)) return p;
+    const p = resolveWithinPackage(packagePath, typings);
+    if (p && fs.existsSync(p)) return p;
   }
 
   // 3. exports["."] - resolved generically
@@ -656,8 +682,8 @@ function resolveRootTypes(
   const main = packageJson.main;
   if (typeof main === "string") {
     const dts = main.replace(/\.js$/, ".d.ts");
-    const p = path.resolve(packagePath, dts);
-    if (fs.existsSync(p)) return p;
+    const p = resolveWithinPackage(packagePath, dts);
+    if (p && fs.existsSync(p)) return p;
   }
 
   // 5. dist/index.d.ts

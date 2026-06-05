@@ -16,6 +16,7 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       # Persisted credentials are intentionally kept on this checkout so the
       # subsequent `changesets/action` step can push the Version PR back to
