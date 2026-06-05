@@ -30,6 +30,7 @@
     "clean": "rm -rf dist",
     "dev": "tsc --watch",
     "format": "prettier --write .",
+    "lint:actions": "node scripts/lint-action-shell.mjs",
     "prepare": "pnpm build",
     "release": "pnpm build && changeset publish",
     "start": "node dist/index.js",
@@ -58,7 +59,8 @@
     "@changesets/cli": "^2.31.0",
     "@types/node": "25.9.1",
     "prettier": "3.8.3",
-    "typescript": "6.0.3"
+    "typescript": "6.0.3",
+    "yaml": "^2.9.0"
   },
   "engines": {
     "node": ">=22.13"
