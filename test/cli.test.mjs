@@ -12,13 +12,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import { loadConfig } from "../dist/config.js";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = join(repoRoot, "dist", "cli.js");
 
-function runBreakCheck(args) {
+function runBreakCheck(args, cwd) {
   return spawnSync(process.execPath, [cliPath, ...args], {
-    cwd: repoRoot,
+    cwd: cwd ?? repoRoot,
     encoding: "utf-8",
   });
 }
@@ -214,6 +215,86 @@ test("snapshot fails when a configured package has no declarations", () => {
 
     assert.equal(snapshot.status, 1);
     assert.match(snapshot.stderr, /no TypeScript declarations found/);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("init writes a default config that loadConfig accepts", () => {
+  const workspace = createWorkspace();
+
+  try {
+    const result = runBreakCheck(["init"], workspace);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /Created/);
+
+    const configPath = join(workspace, "break-check.config.json");
+    assert.ok(existsSync(configPath), "config file should be written");
+
+    // The generated file must round-trip through the loader/validator, which
+    // guards against createDefaultConfig drifting away from the zod schema.
+    const config = loadConfig(configPath);
+    assert.deepEqual(config.packages, ["packages/my-package"]);
+    assert.equal(config.mainBranch, "main");
+    assert.equal(config.outputFormat, "markdown");
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("init refuses to overwrite an existing config without --force", () => {
+  const workspace = createWorkspace();
+
+  try {
+    const first = runBreakCheck(["init"], workspace);
+    assert.equal(first.status, 0, first.stderr);
+
+    const second = runBreakCheck(["init"], workspace);
+    assert.equal(second.status, 1);
+    assert.match(second.stderr, /already exists/);
+    assert.match(second.stderr, /--force/);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("init --force overwrites an existing config", () => {
+  const workspace = createWorkspace();
+
+  try {
+    const configPath = join(workspace, "break-check.config.json");
+    // Seed a file the loader would reject, to prove --force actually rewrites it.
+    writeFileSync(configPath, "{ not valid json }\n");
+
+    const result = runBreakCheck(["init", "--force"], workspace);
+    assert.equal(result.status, 0, result.stderr);
+
+    const config = loadConfig(configPath);
+    assert.deepEqual(config.packages, ["packages/my-package"]);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("init -o writes the config to a custom path", () => {
+  const workspace = createWorkspace();
+
+  try {
+    const result = runBreakCheck(
+      ["init", "-o", "custom.config.json"],
+      workspace,
+    );
+    assert.equal(result.status, 0, result.stderr);
+
+    const customPath = join(workspace, "custom.config.json");
+    assert.ok(existsSync(customPath), "custom config path should be written");
+    assert.ok(
+      !existsSync(join(workspace, "break-check.config.json")),
+      "default path should not be written when -o is given",
+    );
+
+    const config = loadConfig(customPath);
+    assert.equal(config.mainBranch, "main");
   } finally {
     rmSync(workspace, { recursive: true, force: true });
   }

@@ -753,6 +753,98 @@ test("detect: a non-breaking change is escalated to breaking when it adds an exp
   }
 });
 
+test("changing an enum member value is breaking", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare enum Color {\n  Red = 1,\n  Green = 2,\n}\n",
+    },
+    current: {
+      version: "1.0.1",
+      dts: "export declare enum Color {\n  Red = 5,\n  Green = 2,\n}\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 1,
+    nonBreaking: 0,
+    additions: 0,
+  });
+  const change = changesFor(result).find((c) => c.name === "Color.Red");
+  assert.ok(change, "expected a change on Color.Red");
+  assert.equal(change.type, "breaking");
+  assert.match(change.description, /Enum member value changed: `1` → `5`/);
+});
+
+test("adding readonly to a property is breaking", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export interface Box {\n  value: string;\n}\n",
+    },
+    current: {
+      version: "1.0.1",
+      dts: "export interface Box {\n  readonly value: string;\n}\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 1,
+    nonBreaking: 0,
+    additions: 0,
+  });
+  const change = changesFor(result).find((c) => c.name === "Box.value");
+  assert.ok(change, "expected a change on Box.value");
+  assert.equal(change.type, "breaking");
+  assert.match(change.description, /Field became readonly/);
+});
+
+test("removing readonly from a property is breaking", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export interface Box {\n  readonly value: string;\n}\n",
+    },
+    current: {
+      version: "1.0.1",
+      dts: "export interface Box {\n  value: string;\n}\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 1,
+    nonBreaking: 0,
+    additions: 0,
+  });
+  const change = changesFor(result).find((c) => c.name === "Box.value");
+  assert.ok(change, "expected a change on Box.value");
+  assert.equal(change.type, "breaking");
+  assert.match(change.description, /Field is no longer readonly/);
+});
+
+test("switching an export's declaration kind is breaking", () => {
+  // A function becoming a const keys into different change categories
+  // (function vs variable), so it surfaces as the old export removed plus a
+  // new one added. The removal is the breaking signal: callers of the old
+  // function break. (The same-key "Declaration kind changed" branch is
+  // defensive; category keying routes differing shapes apart before it.)
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare function thing(): void;\n",
+    },
+    current: {
+      version: "1.0.1",
+      dts: "export declare const thing: string;\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 1,
+    nonBreaking: 0,
+    additions: 1,
+  });
+  const removed = changesFor(result).find((c) => c.type === "breaking");
+  assert.ok(removed, "expected a breaking change for the removed function");
+  assert.match(removed.description, /Removed function `thing`/);
+});
+
 test("turning a parameter into a rest parameter is breaking", () => {
   // API Extractor's .api.json omits an isRest flag, so this is recovered from
   // the excerpt. Without that, a rest-ness flip is invisible to the diff.
