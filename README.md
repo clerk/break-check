@@ -435,11 +435,11 @@ compatibility.
 
 Break Check classifies each diff as one of three types.
 
-| Type         | Severity | What it covers                                                                                                                                              |
-| ------------ | -------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Breaking     | Major    | Removed exports or members; required parameter added; optional parameter or property made required; parameter or property type changed; return type changed |
-| Non-breaking | Minor    | Optional parameter added; required parameter or property made optional                                                                                      |
-| Addition     | Minor    | New exports, new interface/class members                                                                                                                    |
+| Type         | Severity | What it covers                                                                                                                                                                               |
+| ------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Breaking     | Major    | Removed exports or members; required parameter added; optional parameter or property made required; a parameter's rest-ness changed; parameter or property type changed; return type changed |
+| Non-breaking | Minor    | Optional parameter added; rest parameter added; required parameter or property made optional                                                                                                 |
+| Addition     | Minor    | New exports, new interface/class members                                                                                                                                                     |
 
 The analyzer compares parameters, return types, property types, and enum values
 structurally. The following are deliberately **not** flagged:

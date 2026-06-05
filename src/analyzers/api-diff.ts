@@ -236,7 +236,7 @@ export class ApiDiffAnalyzer {
             p.parameterTypeTokenRange,
           ),
           isOptional: Boolean(p.isOptional),
-          isRest: Boolean(p.isRest),
+          isRest: this.parameterIsRest(member.excerptTokens, p),
         })),
         returnType: member.returnTypeTokenRange
           ? this.canonicalType(
@@ -287,6 +287,35 @@ export class ApiDiffAnalyzer {
       kind: "opaque",
       signature: this.canonicalType(member.excerptTokens),
     };
+  }
+
+  /**
+   * Whether a parameter is a rest parameter (`...args`).
+   *
+   * API Extractor's `.api.json` (at the pinned version) does not emit an
+   * `isRest` flag on parameters, only `parameterName`/`isOptional`. Without
+   * recovering it, a rest-ness flip (`x: T[]` ↔ `...x: T[]`) is invisible to the
+   * callable diff, and adding a `...rest` param is misreported as a new required
+   * parameter. Recover it from the excerpt: the `...` lives in the Content token
+   * immediately before the parameter's type range, e.g. `"(...items: "` or
+   * `", ...rest: "`. Honor a real `isRest` flag first in case a future API
+   * Extractor starts emitting one.
+   */
+  private parameterIsRest(
+    excerptTokens: ExcerptToken[] | undefined,
+    p: ApiJsonParameter,
+  ): boolean {
+    if (p.isRest) return true;
+    const start = p.parameterTypeTokenRange?.startIndex;
+    if (!excerptTokens || typeof start !== "number" || start <= 0) {
+      return false;
+    }
+    const preceding = excerptTokens[start - 1]?.text;
+    if (!preceding) return false;
+    const name = p.parameterName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    // `...name` optionally followed by `?`, then the `:` that introduces the
+    // type, anchored to the end of the token that precedes the type range.
+    return new RegExp(`\\.\\.\\.\\s*${name}\\s*\\??\\s*:\\s*$`).test(preceding);
   }
 
   /**
