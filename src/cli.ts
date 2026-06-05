@@ -18,6 +18,7 @@ import {
   IncompatibleBaselineError,
 } from "./core/detector.js";
 import { MarkdownReporter } from "./reporters/markdown.js";
+import { getBreakCheckVersion } from "./utils/api-extractor.js";
 
 const program = new Command();
 const OUTPUT_FORMATS = ["markdown", "json"] as const;
@@ -34,7 +35,7 @@ const EXIT_INCOMPATIBLE_BASELINE = 3;
 program
   .name("break-check")
   .description("Detect API breaking changes in TypeScript packages")
-  .version("0.0.1");
+  .version(getBreakCheckVersion());
 
 /**
  * break-check init - Create default configuration file

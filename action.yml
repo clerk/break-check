@@ -64,6 +64,19 @@ inputs:
     description: "Fail the workflow when breaking changes are detected."
     required: false
     default: "false"
+  policy-mode:
+    description: |
+      Enforce the break-check config from the base ref instead of the PR head.
+      Without this, a PR can edit its own break-check.config.json (drop the
+      changed package, add an `acknowledgedChanges` entry, widen
+      `ignoreSubpaths`/`resolvableSpecifiers`) to suppress detection of its own
+      breaking change. With policy-mode on, the config is taken from the base
+      ref before the diff runs, so a config change only takes effect once it has
+      landed on the base branch. Recommended when this Action is a required
+      merge gate. A base ref that has no config yet (the PR introducing
+      break-check) falls back to the PR config.
+    required: false
+    default: "false"
   github-token:
     description: "Token used to read existing comments and post the report."
     required: false
@@ -254,6 +267,44 @@ runs:
           # checked out and diff that.
           bash -c "$SETUP_COMMAND"
           echo "CURRENT_DIR=$GITHUB_WORKSPACE" >> "$GITHUB_ENV"
+        fi
+
+    - name: Enforce base-ref config (policy mode)
+      if: inputs.policy-mode == 'true'
+      shell: bash
+      env:
+        BASE_REF: ${{ inputs.base-ref }}
+        CONFIG_PATH: ${{ inputs.config-path }}
+      run: |
+        set -euo pipefail
+
+        # The break-check config is part of the surface a PR can edit, so a PR
+        # could drop its own changed package, acknowledge its own break, or
+        # widen ignoreSubpaths/resolvableSpecifiers to green a breaking change
+        # (issue #1). In policy mode, take the config from the base ref and
+        # overwrite the head copy in place, so a config change only counts once
+        # it has landed on the base branch. Writing it over CONFIG_PATH (rather
+        # than pointing --config elsewhere) keeps the relative `packages` paths
+        # resolving against the PR head checkout in CURRENT_DIR.
+
+        # Resolve the base ref to a commit, preferring local history so a
+        # fetch-depth: 0 + persist-credentials: false checkout doesn't trigger
+        # an unauthenticated fetch (mirrors the baseline/head steps).
+        if git rev-parse --verify --quiet "$BASE_REF^{commit}" > /dev/null; then
+          BASE_TARGET="$BASE_REF"
+        else
+          git fetch --no-tags --depth=1 origin "$BASE_REF"
+          BASE_TARGET="FETCH_HEAD"
+        fi
+
+        if git cat-file -e "$BASE_TARGET:$CONFIG_PATH" 2>/dev/null; then
+          mkdir -p "$CURRENT_DIR/$(dirname "$CONFIG_PATH")"
+          git show "$BASE_TARGET:$CONFIG_PATH" > "$CURRENT_DIR/$CONFIG_PATH"
+          echo "::notice::policy-mode: enforcing break-check config from base ref '$BASE_REF'."
+        else
+          # Base ref has no config yet (e.g. the PR introduces break-check).
+          # There is no established policy to enforce, so keep the PR config.
+          echo "::notice::policy-mode: base ref '$BASE_REF' has no '$CONFIG_PATH'; using the PR config (first run)."
         fi
 
     - name: Detect API changes

@@ -4,8 +4,10 @@ import {
   existsSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -992,6 +994,115 @@ test("ignoreSubpaths drops matching subpaths from discovery", () => {
     );
     const subpaths = metadata.entries.map((e) => e.subpath);
     assert.deepEqual(subpaths, ["."]);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+const TRAVERSAL_SENTINEL = "BreakCheckTraversalSentinel";
+
+/**
+ * Assert that no snapshot artifact under `dir` contains the out-of-root
+ * sentinel symbol. If discovery had followed a `../` path traversal, the
+ * stolen .d.ts would be rolled up into one of these .api.json files.
+ */
+function assertSentinelAbsent(dir) {
+  for (const rel of readdirSync(dir, { recursive: true })) {
+    const file = join(dir, rel);
+    if (!statSync(file).isFile()) continue;
+    assert.ok(
+      !readFileSync(file, "utf-8").includes(TRAVERSAL_SENTINEL),
+      `out-of-root .d.ts content leaked into ${rel}`,
+    );
+  }
+}
+
+test("snapshot drops a subpath whose types escape the package root (issue #7)", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+
+    // A sentinel .d.ts OUTSIDE the package the manifest describes. The
+    // package.json is attacker-controlled in CI (the Action builds a PR's
+    // manifest), so a subpath pointing its types at this file via `../../`
+    // must not pull it into the snapshot (and from there the report + AI
+    // payload). See issue #7.
+    writeDts(
+      join(workspace, "outside", "secret.d.ts"),
+      `export declare const ${TRAVERSAL_SENTINEL}: number;\n`,
+    );
+
+    const packageDir = join(workspace, "packages", "pkg");
+    mkdirSync(packageDir, { recursive: true });
+    writeDts(
+      join(packageDir, "dist/index.d.ts"),
+      "export declare const root: number;\n",
+    );
+    writeJson(join(packageDir, "package.json"), {
+      name: "@demo/pkg",
+      version: "1.0.0",
+      exports: {
+        ".": { import: { types: "./dist/index.d.ts" } },
+        "./pwn": { import: { types: "../../outside/secret.d.ts" } },
+        "./package.json": "./package.json",
+      },
+    });
+
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+
+    // The traversal subpath is dropped entirely; only the legit root remains.
+    const pkgDir = join(workspace, "snapshots", "demo__pkg");
+    const metadata = JSON.parse(
+      readFileSync(join(pkgDir, "break-check.snapshot.json"), "utf-8"),
+    );
+    assert.deepEqual(
+      metadata.entries.map((e) => e.subpath),
+      ["."],
+      "the out-of-root ./pwn subpath must not be enumerated",
+    );
+    assertSentinelAbsent(pkgDir);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("snapshot ignores a root `types` field that escapes the package root (issue #7)", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    writeDts(
+      join(workspace, "outside", "secret.d.ts"),
+      `export declare const ${TRAVERSAL_SENTINEL}: number;\n`,
+    );
+
+    const packageDir = join(workspace, "packages", "pkg");
+    mkdirSync(packageDir, { recursive: true });
+    // A legit in-package declaration the resolver should land on after
+    // rejecting the out-of-root `types` (it falls through to `main` -> .d.ts).
+    writeDts(
+      join(packageDir, "dist/index.d.ts"),
+      "export declare const root: number;\n",
+    );
+    writeJson(join(packageDir, "package.json"), {
+      name: "@demo/pkg",
+      version: "1.0.0",
+      types: "../../outside/secret.d.ts",
+      main: "./dist/index.js",
+    });
+
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+
+    const pkgDir = join(workspace, "snapshots", "demo__pkg");
+    const metadata = JSON.parse(
+      readFileSync(join(pkgDir, "break-check.snapshot.json"), "utf-8"),
+    );
+    assert.deepEqual(
+      metadata.entries.map((e) => e.subpath),
+      ["."],
+    );
+    assertSentinelAbsent(pkgDir);
   } finally {
     rmSync(workspace, { recursive: true, force: true });
   }
