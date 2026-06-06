@@ -259,9 +259,10 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   diff fires. The only case `canonicalType` collapses to nothing is a
   resolvable-chunk -> resolvable-chunk move, which is benign (a resolvable chunk
   is importable by consumers).
-- **Action is preview**: it ships from this repo but isn't usable
-  until `@clerk/break-check` is on npm and a `v1` tag exists. The README
-  has the disclaimer; keep it in sync if the status changes.
+- **Action depends on the published package**: the composite Action's `npx`
+  step fetches `@clerk/break-check` from npm at runtime, so consumers pin the
+  repo's moving `v1` tag (`clerk/break-check@v1`). Keep the README's Actions
+  section in sync if this changes.
 
 ## Release flow
 
@@ -269,5 +270,6 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
 2. The release workflow (see `.github/workflows/`) opens a "Version
    Packages" PR. Merging it tags and publishes via
    `pnpm release` (which runs `changeset publish`).
-3. After the first published release, the GitHub Action's preview
-   disclaimer in `README.md` can be removed and a `v1` tag cut.
+3. After publishing, move the `v1` tag to the release commit so
+   `clerk/break-check@v1` tracks the latest (the Action's moving major tag is
+   decoupled from the npm version).
