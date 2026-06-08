@@ -62,3 +62,8 @@ jobs:
           # required CI checks instead of silently skipping them.
           GITHUB_TOKEN: ${{ secrets.CHANGESETS_PAT || secrets.GITHUB_TOKEN }}
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          # Re-enabled after 0.1.0. The repo is public, so npm provenance works;
+          # 0.1.0 shipped without it only because provenance was temporarily
+          # disabled while diagnosing the publish auth failure (a setup-node
+          # `registry-url` / NODE_AUTH_TOKEN shadowing bug, fixed in #78).
+          NPM_CONFIG_PROVENANCE: "true"
