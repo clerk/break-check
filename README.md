@@ -104,6 +104,7 @@ Options:
   -b, --baseline <path>   Baseline snapshots directory (required)
   -o, --output <path>     Output report path
   --format <format>       Output format: markdown|json
+  --json-output <path>    Also write the JSON report here, alongside --output
   --fail-on-breaking      Exit with code 1 if breaking changes found
   --fail-on-skipped       Exit with code 1 if any subpath could not be snapshotted
   --no-ai                 Disable the AI reviewer even if BREAK_CHECK_ANTHROPIC_API_KEY is set
@@ -121,6 +122,10 @@ exit, which is the safer default when producing a committed baseline.
 
 When `--format json` writes to stdout, progress and summary logs are written to
 stderr so stdout remains parseable JSON.
+
+`--json-output <path>` writes the JSON result to a file in addition to whatever
+`--output`/`--format` produce, so a single run can emit both a human report and
+a machine-readable verdict without running detection (and the AI reviewer) twice.
 
 ## Configuration
 
@@ -314,19 +319,20 @@ jobs:
 
 ### Action inputs
 
-| Input                    | Default                                        | Description                                                                                                         |
-| ------------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `config-path`            | `break-check.config.json`                      | Path to the config file, relative to the repo root.                                                                 |
-| `base-ref`               | PR base SHA                                    | Git ref or SHA to snapshot as the baseline.                                                                         |
-| `head-ref`               | PR head SHA                                    | Git ref or SHA to build as the "current" side. Pins the diff to the PR head, not the merge ref.                     |
-| `setup-command`          | `pnpm install --frozen-lockfile && pnpm build` | Shell command run inside both the base checkout and the current checkout to produce `.d.ts` files.                  |
-| `break-check-version`    | `latest`                                       | npm version of `@clerk/break-check` to fetch with `npx`.                                                            |
-| `baseline-artifact-name` | unset                                          | Name of a snapshot artifact uploaded from a push-to-`base-ref` workflow. See [Larger monorepos](#larger-monorepos). |
-| `baseline-max-age`       | unset                                          | Maximum age (hours) for a downloaded baseline artifact before falling back to a worktree rebuild.                   |
-| `comment`                | `true`                                         | Post or update a PR comment with the report.                                                                        |
-| `fail-on-breaking`       | `false`                                        | Fail the workflow when breaking changes are detected.                                                               |
-| `policy-mode`            | `false`                                        | Enforce the config from the base ref so a PR cannot suppress its own break by editing its config.                   |
-| `github-token`           | `${{ github.token }}`                          | Token used to read/write PR comments and (when `baseline-artifact-name` is set) fetch the artifact.                 |
+| Input                    | Default                                        | Description                                                                                                                                                                              |
+| ------------------------ | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `config-path`            | `break-check.config.json`                      | Path to the config file, relative to the repo root.                                                                                                                                      |
+| `base-ref`               | PR base SHA                                    | Git ref or SHA to snapshot as the baseline.                                                                                                                                              |
+| `head-ref`               | PR head SHA                                    | Git ref or SHA to build as the "current" side. Pins the diff to the PR head, not the merge ref.                                                                                          |
+| `setup-command`          | `pnpm install --frozen-lockfile && pnpm build` | Shell command run inside both the base checkout and the current checkout to produce `.d.ts` files.                                                                                       |
+| `break-check-version`    | `latest`                                       | npm version of `@clerk/break-check` to fetch with `npx`.                                                                                                                                 |
+| `baseline-artifact-name` | unset                                          | Name of a snapshot artifact uploaded from a push-to-`base-ref` workflow. See [Larger monorepos](#larger-monorepos).                                                                      |
+| `baseline-max-age`       | unset                                          | Maximum age (hours) for a downloaded baseline artifact before falling back to a worktree rebuild.                                                                                        |
+| `comment`                | `true`                                         | Post or update a PR comment with the report.                                                                                                                                             |
+| `fail-on-breaking`       | `false`                                        | Fail the workflow when breaking changes are detected.                                                                                                                                    |
+| `policy-mode`            | `false`                                        | Enforce the config from the base ref so a PR cannot suppress its own break by editing its config.                                                                                        |
+| `anthropic-api-key`      | unset                                          | Anthropic API key that enables the AI reviewer. Empty runs the rule-based diff only. Pass from a secret. The downgrade policy lives in `break-check.config.json` (`ai.applyDowngrades`). |
+| `github-token`           | `${{ github.token }}`                          | Token used to read/write PR comments and (when `baseline-artifact-name` is set) fetch the artifact.                                                                                      |
 
 ### Action outputs
 
@@ -334,6 +340,32 @@ jobs:
 | ---------------------- | -------------------------------------------------------------- |
 | `has-breaking-changes` | `"true"` if Break Check detected at least one breaking change. |
 | `report-path`          | Filesystem path to the generated markdown report.              |
+
+### AI review and the report comment
+
+To enable the AI reviewer (see [AI Review](#ai-review)), pass an Anthropic key
+from a secret:
+
+```yaml
+- uses: clerk/break-check@v1
+  with:
+    anthropic-api-key: ${{ secrets.ANTHROPIC_API_KEY }}
+```
+
+The key only turns the reviewer on. The downgrade policy stays in
+`break-check.config.json` (`ai.applyDowngrades`), so it is reviewed on the base
+branch rather than set per workflow. The Action runs `detect` once and renders
+both the comment and the `has-breaking-changes` output from that single result,
+so the AI is never billed twice and the comment can't disagree with the output.
+On pull requests from forks GitHub withholds secrets, so `anthropic-api-key` is
+empty there and the reviewer stays off; the rule-based diff still runs.
+
+The Action posts (or updates) one comment. A report larger than GitHub's
+comment-size limit is truncated, with the full report attached as the
+`break-check-report` artifact and linked from the comment. The comment is posted
+even when `fail-on-breaking` fails the run, so a blocked PR still shows why.
+That artifact name is run-global, so run the Action once per workflow run rather
+than across a matrix (parallel jobs would collide on the name).
 
 ### When the base ref doesn't yet have a config
 

@@ -139,6 +139,10 @@ program
   .requiredOption("-b, --baseline <path>", "Baseline snapshots directory")
   .option("-o, --output <path>", "Output report path")
   .option("--format <format>", "Output format (markdown|json)")
+  .option(
+    "--json-output <path>",
+    "Also write the JSON report to this path, alongside --output. Lets one detect run emit both the human report and the machine-readable result without re-running detection (and the AI reviewer) once per format.",
+  )
   .option("--fail-on-breaking", "Exit with code 1 if breaking changes found")
   .option(
     "--fail-on-skipped",
@@ -218,6 +222,19 @@ program
         logInfo(`Report written to: ${outputPath}`);
       } else {
         console.log(report);
+      }
+
+      // Optionally emit a JSON sidecar from the same result. A caller that needs
+      // both a human report and a machine-readable verdict (the GitHub Action
+      // reads has-breaking-changes from JSON while posting the markdown) would
+      // otherwise run detect twice, doubling the AI reviewer's cost and letting
+      // the two passes disagree. Writing both from one result avoids that.
+      if (options.jsonOutput) {
+        const jsonOutputPath = path.resolve(process.cwd(), options.jsonOutput);
+        const jsonReport =
+          format === "json" ? report : reporter.generateJson(result);
+        fs.writeFileSync(jsonOutputPath, jsonReport, "utf-8");
+        logInfo(`JSON report written to: ${jsonOutputPath}`);
       }
 
       // Summary

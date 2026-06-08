@@ -119,6 +119,65 @@ test("detect resolves relative baseline paths from the config directory", () => 
   }
 });
 
+test("detect --json-output writes a JSON sidecar next to the human report", () => {
+  const workspace = createWorkspace();
+
+  try {
+    writeConfig(workspace);
+    writePackage(workspace, {
+      version: "1.0.0",
+      declarations: "export declare function go(name: string): void;\n",
+    });
+
+    const snapshot = runBreakCheck(
+      ["snapshot", "-c", "break-check.config.json", "-o", "baseline"],
+      workspace,
+    );
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+
+    // Breaking change: a required parameter's type changed.
+    writePackage(workspace, {
+      version: "1.0.1",
+      declarations: "export declare function go(name: number): void;\n",
+    });
+
+    const detect = runBreakCheck(
+      [
+        "detect",
+        "-c",
+        "break-check.config.json",
+        "--baseline",
+        "baseline",
+        "--output",
+        "report.md",
+        "--json-output",
+        "report.json",
+        // Deterministic: assert the rule-based verdict even if a key is present.
+        "--no-ai",
+      ],
+      workspace,
+    );
+    assert.equal(detect.status, 0, detect.stderr);
+
+    const mdPath = join(workspace, "report.md");
+    const jsonPath = join(workspace, "report.json");
+    assert.ok(existsSync(mdPath), "the human report should be written");
+    assert.ok(existsSync(jsonPath), "the JSON sidecar should be written");
+
+    // The sidecar parses as the machine-readable verdict; the primary --output
+    // stays human-readable markdown (so it is not valid JSON).
+    const json = JSON.parse(readFileSync(jsonPath, "utf-8"));
+    assert.equal(json.hasBreakingChanges, true);
+    assert.equal(json.summary.breakingChanges, 1);
+    assert.throws(
+      () => JSON.parse(readFileSync(mdPath, "utf-8")),
+      "the primary --output should be markdown, not JSON",
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("snapshot supports declaration packages without a tsconfig", () => {
   const workspace = createWorkspace();
 
