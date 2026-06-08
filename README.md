@@ -276,13 +276,6 @@ Priority is `--ai-model` > `BREAK_CHECK_AI_MODEL` > `ai.model` in config >
 
 ## GitHub Actions Integration
 
-> **Status: preview.** The composite Action ships from this repo but is not
-> usable yet. It depends on `@clerk/break-check` being available on the npm
-> registry (which the `npx` step fetches at runtime) and on a `v1` tag
-> existing in this repo. Neither is true today. The Action becomes usable
-> with the first stable release; until then, copy the workflow from
-> `.github/workflows/api-check.yml` as a starting point.
-
 Use the bundled composite Action. It snapshots the base ref and the PR head in
 separate git worktrees, diffs them with `break-check detect`, and posts (or
 updates) a single PR comment. Pinning both sides to commit SHAs (rather than the
@@ -468,9 +461,6 @@ What Break Check does **not** yet do:
 
 Near-term, in rough priority order:
 
-- **First stable release.** Publish `@clerk/break-check` to npm and cut a `v1`
-  tag so the bundled GitHub Action becomes usable without copying the
-  workflow by hand.
 - **Type variance awareness.** Stop classifying strictly-widening type
   changes as breaking. Return type `string` → `string | number`, parameter
   type `string` → `unknown`, and similar should be non-breaking; only
