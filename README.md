@@ -1,12 +1,12 @@
 ```
-┌─ break-check ──────────────────────────────────────────┐
-│  - export function auth(o: Opts): Session              │
-│  + export function auth(o: Opts, ctx: Ctx): Session    │
-│                         ^^^^^^^^ required param added  │
-│                                                        │
-│  verdict        BREAKING, major version bump required  │
-│  your bump      1.4.2 -> 1.5.0   (insufficient)        │
-└────────────────────────────────────────────────────────┘
+┌─ break-check ───────────────────────────────────────────────────┐
+│  - export function auth(o: Opts): Session                       │
+│  + export function auth(o: Opts, ctx: Ctx): Session             │
+│                                  ^^^^^^^^ required param added  │
+│                                                                 │
+│  verdict        BREAKING, major version bump required           │
+│  your bump      1.4.2 -> 1.5.0   (insufficient)                 │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 # @clerk/break-check
