@@ -37,7 +37,10 @@ inputs:
     required: false
     default: "pnpm install --frozen-lockfile && pnpm build"
   break-check-version:
-    description: "Version of @clerk/break-check to fetch with `npx`."
+    description: |
+      Version of @clerk/break-check to fetch with `npx`. Requires >= 0.1.1, since
+      this revision calls `detect --json-output`. The default `latest` resolves
+      to a compatible version.
     required: false
     default: "latest"
   baseline-artifact-name:
@@ -77,6 +80,18 @@ inputs:
       break-check) falls back to the PR config.
     required: false
     default: "false"
+  anthropic-api-key:
+    description: |
+      Anthropic API key. When set, break-check routes the rule-based diff
+      through Claude for a second opinion: it escalates changes the rule pass
+      under-classified and adds a migration hint per breaking change. By default
+      the AI only records its breaking->non-breaking downgrades as suggestions
+      and cannot clear a real break; turn `ai.applyDowngrades` on in
+      break-check.config.json to act on them. Leave empty to run the
+      deterministic rule-based diff only. Always pass this from a secret, never
+      inline.
+    required: false
+    default: ""
   github-token:
     description: "Token used to read existing comments and post the report."
     required: false
@@ -314,6 +329,10 @@ runs:
         CONFIG_PATH: ${{ inputs.config-path }}
         BREAK_CHECK_VERSION: ${{ inputs.break-check-version }}
         FAIL_ON_BREAKING: ${{ inputs.fail-on-breaking }}
+        # Forwarded to the detect subprocess. Empty (the default) leaves the AI
+        # reviewer off: the CLI treats an empty key as "not set". The key is set
+        # only on this step, so the snapshot/build steps never see it.
+        BREAK_CHECK_ANTHROPIC_API_KEY: ${{ inputs.anthropic-api-key }}
       run: |
         set -uo pipefail
         REPORT_PATH="$RUNNER_TEMP/break-check-report.md"
@@ -325,23 +344,33 @@ runs:
         # absolute, so they resolve the same regardless of cwd.
         cd "$CURRENT_DIR"
 
-        detect_md() {
+        # One detect run emits both the human report (--output) and the
+        # machine-readable verdict (--json-output) from a single analysis.
+        # Running detect once per format would re-invoke the AI reviewer, which
+        # both doubles its cost and lets the two passes disagree, so the posted
+        # comment could contradict has-breaking-changes.
+        run_detect() {
           npx --yes "@clerk/break-check@$BREAK_CHECK_VERSION" detect \
             --config "$CONFIG_PATH" \
             --baseline "$BASELINE_DIR" \
-            --output "$REPORT_PATH"
+            --output "$REPORT_PATH" \
+            --json-output "$JSON_PATH"
         }
 
         # detect exits 3 when it refuses the baseline as incompatible with this
-        # break-check (API Extractor major or discovery version mismatch). Rebuild the
-        # baseline from the base ref with this break-check so both sides match, then
-        # retry once. This recovers when the baseline came from a different
-        # break-check (a cached or committed baseline); when it was just produced
-        # fresh at the same version the rebuild is identical, so a persistent
-        # exit 3 surfaces as a clear error below.
+        # break-check (API Extractor major or discovery version mismatch). Rebuild
+        # the baseline from the base ref with this break-check so both sides match,
+        # then retry once. The rebuild needs the base worktree, which only exists
+        # when the baseline was built locally; a downloaded artifact baseline has
+        # none, so surface a clear pin-your-versions error instead of dereferencing
+        # an unset path.
         status=0
-        detect_md || status=$?
+        run_detect || status=$?
         if [ "$status" = "3" ]; then
+          if [ -z "${BASE_CHECKOUT:-}" ]; then
+            echo "::error::break-check refused the downloaded baseline artifact as incompatible with break-check-version '$BREAK_CHECK_VERSION'. Pin the same break-check-version in the baseline producer and this check."
+            exit 1
+          fi
           echo "::notice::break-check refused the baseline as incompatible; rebuilding it from the base ref with this break-check and retrying."
           rm -rf "$BASELINE_DIR"
           (
@@ -351,7 +380,7 @@ runs:
               --output "$BASELINE_DIR"
           )
           status=0
-          detect_md || status=$?
+          run_detect || status=$?
         fi
         if [ "$status" = "3" ]; then
           echo "::error::break-check refused the baseline as incompatible even after rebuilding it from the base ref. The snapshot-time and detect-time break-check versions likely differ; pin a single break-check-version."
@@ -362,22 +391,13 @@ runs:
           exit "$status"
         fi
 
-        # Baseline is now compatible; the JSON pass reuses it. This pass is
-        # authoritative for has-breaking-changes, so it must fail closed: a
-        # swallowed nonzero exit or an unparseable report would otherwise default
-        # the flag to false and let fail-on-breaking pass on a real break. The
-        # markdown pass above already proved the baseline compatible (and handled
-        # the exit-3 rebuild), so a nonzero status here is a genuine failure.
-        json_status=0
-        npx --yes "@clerk/break-check@$BREAK_CHECK_VERSION" detect \
-          --config "$CONFIG_PATH" \
-          --baseline "$BASELINE_DIR" \
-          --format json > "$JSON_PATH" || json_status=$?
-        if [ "$json_status" != "0" ]; then
-          echo "::error::break-check JSON detect failed (exit $json_status); refusing to emit a fail-open result."
-          exit "$json_status"
+        # has-breaking-changes comes from the JSON sidecar the single run wrote.
+        # Fail closed: a missing or unparseable report must not default the flag
+        # to false and let fail-on-breaking pass on a real break.
+        if [ ! -s "$JSON_PATH" ]; then
+          echo "::error::break-check produced no JSON report at $JSON_PATH; refusing to emit a fail-open result."
+          exit 1
         fi
-
         HAS_BREAKING=$(node -e "
           const r = JSON.parse(require('fs').readFileSync(process.argv[1], 'utf-8'));
           process.stdout.write(r.hasBreakingChanges ? 'true' : 'false');
@@ -394,28 +414,73 @@ runs:
           exit 1
         fi
 
+    - name: Upload break-check report
+      # Always upload (even when fail-on-breaking failed the run) so the comment
+      # can link the full report when it has to truncate. Skip only when detect
+      # never produced one.
+      if: always() && steps.detect.outputs.report-path != ''
+      uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+      with:
+        name: break-check-report
+        path: ${{ steps.detect.outputs.report-path }}
+        if-no-files-found: ignore
+        retention-days: 5
+
     - name: Comment on PR
-      if: inputs.comment == 'true' && github.event_name == 'pull_request'
+      # Always comment, including when fail-on-breaking failed the run, so a
+      # blocked PR still shows why. The script no-ops when there is no report.
+      if: always() && inputs.comment == 'true' && github.event_name == 'pull_request'
       uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+      env:
+        REPORT_PATH: ${{ steps.detect.outputs.report-path }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        HEAD_SHA: ${{ github.event.pull_request.head.sha }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
           const fs = require('fs');
-          const reportPath = '${{ steps.detect.outputs.report-path }}';
-          if (!fs.existsSync(reportPath)) {
-            core.warning(`break-check report not found at ${reportPath}; skipping comment.`);
+          const reportPath = process.env.REPORT_PATH;
+          if (!reportPath || !fs.existsSync(reportPath)) {
+            core.warning(`break-check report not found at ${reportPath || '(unset)'}; skipping comment.`);
             return;
           }
           const marker = '<!-- break-check-action -->';
-          const body = `${marker}\n${fs.readFileSync(reportPath, 'utf-8')}`;
+          const report = fs.readFileSync(reportPath, 'utf-8');
 
-          const { data: comments } = await github.rest.issues.listComments({
+          // GitHub rejects issue-comment bodies over 65536 characters. Stay under
+          // that and, when the report is larger, truncate and point at the full
+          // report uploaded as the `break-check-report` artifact on this run.
+          const LIMIT = 64000;
+          const head = `${marker}\n`;
+          let body;
+          if (head.length + report.length <= LIMIT) {
+            body = head + report;
+          } else {
+            const notice =
+              `\n\n> **Note**\n> Report truncated to fit GitHub's comment limit. ` +
+              `The full report is attached as the \`break-check-report\` artifact on ` +
+              `[this run](${process.env.RUN_URL}).\n`;
+            const budget = LIMIT - head.length - notice.length;
+            body = head + report.slice(0, budget) + notice;
+          }
+
+          // Stamp the head SHA the report ran on, so a reviewer can tell whether
+          // the comment reflects the current push.
+          const ranSha = (process.env.HEAD_SHA || '').slice(0, 7);
+          if (ranSha) {
+            body += `\n\n<sub>Last ran on \`${ranSha}\`.</sub>`;
+          }
+
+          // Paginate: on a busy PR the existing bot comment can be past the first
+          // page, and missing it would post a duplicate instead of updating it.
+          const comments = await github.paginate(github.rest.issues.listComments, {
             owner: context.repo.owner,
             repo: context.repo.repo,
             issue_number: context.issue.number,
+            per_page: 100,
           });
           const existing = comments.find(
-            (c) => c.user.type === 'Bot' && c.body && c.body.includes(marker),
+            (c) => c.user?.type === 'Bot' && c.body && c.body.includes(marker),
           );
 
           if (existing) {
