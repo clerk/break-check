@@ -1,5 +1,11 @@
 # @clerk/break-check
 
+## 0.1.1
+
+### Patch Changes
+
+- [#81](https://github.com/clerk/break-check/pull/81) [`a4b6ff9`](https://github.com/clerk/break-check/commit/a4b6ff9f7a800eac386e81299b47b7f1d7715b07) Thanks [@jacekradko](https://github.com/jacekradko)! - The GitHub Action gains an `anthropic-api-key` input to enable the AI reviewer, and `detect` gains `--json-output` so the Action runs detect once instead of twice. Oversized PR comments are truncated with the full report attached as the `break-check-report` artifact. Requires `break-check-version` >= 0.1.1.
+
 ## 0.1.0
 
 First published release. Break Check is a CLI that snapshots a TypeScript package's public `.d.ts` surface with [Microsoft API Extractor](https://api-extractor.com/), diffs a branch against a baseline, and classifies every change as breaking, non-breaking, or an addition. It is built for PR gates: fail CI when a breaking API change is not matched by an adequate version bump.
