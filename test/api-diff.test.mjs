@@ -892,3 +892,144 @@ test("adding a rest parameter is non-breaking", () => {
   assert.equal(change.type, "non-breaking");
   assert.match(change.description, /Optional parameter `items` was added/);
 });
+
+// Issue #85: TypeScript emits inferred union members in an order keyed off an
+// unstable internal type-id table, so an unrelated edit rotates the order. A
+// pure reorder of identical members must not read as a change.
+
+test("reordering return-type union members is not a change (#85)", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare function go(): string | number;\n",
+    },
+    current: {
+      version: "1.0.1",
+      dts: "export declare function go(): number | string;\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 0,
+    nonBreaking: 0,
+    additions: 0,
+  });
+});
+
+test("adding a return-type union member is still breaking (#85 guard)", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare function go(): string | number;\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts: "export declare function go(): string | number | boolean;\n",
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+  assert.match(changesFor(result)[0].description, /Return type changed/);
+});
+
+test("reordering a parameter-type union is not a change (#85)", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare function go(x: string | number): void;\n",
+    },
+    current: {
+      version: "1.0.1",
+      dts: "export declare function go(x: number | string): void;\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 0,
+    nonBreaking: 0,
+    additions: 0,
+  });
+});
+
+test("reordering a property-type union is not a change (#85)", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export interface User { id: string | number; }\n",
+    },
+    current: {
+      version: "1.0.1",
+      dts: "export interface User { id: number | string; }\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 0,
+    nonBreaking: 0,
+    additions: 0,
+  });
+});
+
+test("reordering a union nested inside a generic is not a change (#85)", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare function go(): Array<string | number>;\n",
+    },
+    current: {
+      version: "1.0.1",
+      dts: "export declare function go(): Array<number | string>;\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 0,
+    nonBreaking: 0,
+    additions: 0,
+  });
+});
+
+test("reordering intersection members is not a change (#85)", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export type T = { a: number } & { b: string };\n",
+    },
+    current: {
+      version: "1.0.1",
+      dts: "export type T = { b: string } & { a: number };\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 0,
+    nonBreaking: 0,
+    additions: 0,
+  });
+});
+
+test("a string-literal member containing a pipe is not mis-split (#85)", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: 'export type T = "a|b" | "c";\n',
+    },
+    current: {
+      version: "1.0.1",
+      dts: 'export type T = "c" | "a|b";\n',
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 0,
+    nonBreaking: 0,
+    additions: 0,
+  });
+});
+
+test("a genuine string-literal union member change is still breaking (#85 guard)", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: 'export type T = "a" | "b";\n',
+    },
+    current: {
+      version: "2.0.0",
+      dts: 'export type T = "a" | "c";\n',
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+});

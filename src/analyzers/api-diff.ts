@@ -10,6 +10,7 @@ import {
   ChangeSeverity,
   ChangeCategory,
 } from "../types.js";
+import { canonicalizeType } from "../utils/canonicalize-type.js";
 
 interface ExcerptToken {
   kind: string;
@@ -738,13 +739,17 @@ export class ApiDiffAnalyzer {
 
   /**
    * Collapse whitespace and strip trailing punctuation so cosmetic
-   * differences don't show up as breaking changes.
+   * differences don't show up as breaking changes, then canonicalize the order
+   * of union/intersection members so a pure reorder (unstable TS emit order,
+   * issue #85) is not a change. Runs on both baseline and current reads, so the
+   * normalization is symmetric.
    */
   private normalizeType(text: string): string {
-    return text
+    const collapsed = text
       .replace(/\s+/g, " ")
       .replace(/\s*([,;:()<>[\]{}|&])\s*/g, "$1")
       .trim();
+    return canonicalizeType(collapsed);
   }
 
   private generateChangeId(change: Omit<ApiChange, "id">): string {
