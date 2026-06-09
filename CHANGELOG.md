@@ -1,5 +1,15 @@
 # @clerk/break-check
 
+## 0.1.2
+
+### Patch Changes
+
+- [#86](https://github.com/clerk/break-check/pull/86) [`b38f1fc`](https://github.com/clerk/break-check/commit/b38f1fc14c4c89f4746e3e4a5a49c26eff864c03) Thanks [@jacekradko](https://github.com/jacekradko)! - Stop reporting pure union/intersection member reorders as breaking changes
+  ([#85](https://github.com/clerk/break-check/issues/85)). TS emits inferred union members in an unstable order, so an unrelated
+  edit could rotate them and trip a phantom `Return type changed`; the differ now
+  sorts members before comparing. Compare-time only, so committed baselines need
+  no regeneration.
+
 ## 0.1.1
 
 ### Patch Changes
