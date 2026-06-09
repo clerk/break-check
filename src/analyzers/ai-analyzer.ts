@@ -22,6 +22,7 @@ import {
   ChangeSeverity,
   ChangeType,
 } from "../types.js";
+import { canonicalizeType } from "../utils/canonicalize-type.js";
 
 /* ------------------------------------------------------------------ types -- */
 
@@ -790,11 +791,16 @@ function extractSurface(apiJsonPath: string): string {
       return;
     }
     const qualified = parent ? `${parent}.${m.name}` : m.name;
-    const text = (m.excerptTokens ?? [])
-      .map((t) => t.text)
-      .join("")
-      .replace(/\s+/g, " ")
-      .trim();
+    // Canonicalize union/intersection order so the missed-breaks audit's own
+    // surface diff does not re-flag a pure reorder (issue #85); applied to both
+    // surfaces, so it is symmetric. Runs before the audit's size cap.
+    const text = canonicalizeType(
+      (m.excerptTokens ?? [])
+        .map((t) => t.text)
+        .join("")
+        .replace(/\s+/g, " ")
+        .trim(),
+    );
     if (text) {
       lines.push(`${m.kind} ${qualified}: ${text}`);
     }
@@ -885,11 +891,13 @@ interface WalkedSurface {
 }
 
 function normalizeExcerpt(tokens?: ExcerptToken[]): string {
-  return (tokens ?? [])
-    .map((t) => t.text)
-    .join("")
-    .replace(/\s+/g, " ")
-    .trim();
+  return canonicalizeType(
+    (tokens ?? [])
+      .map((t) => t.text)
+      .join("")
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
 }
 
 /**

@@ -136,6 +136,23 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   flagged as breaking, even when the new type is strictly wider. The
   AI reviewer is currently the only thing that can downgrade those.
   This is documented in the README; don't "fix" it silently.
+- **Union/intersection member order is canonicalized at compare time.** TS
+  emits inferred union members in an order keyed off an unstable internal
+  type-id table, so an unrelated edit rotates the order and the raw string
+  compare reads a pure reorder as a breaking `Return type changed` (issue #85).
+  `canonicalizeType` (`utils/canonicalize-type.ts`) sorts top-level
+  union/intersection members (recursing into brackets) before comparison. It is
+  the final step of `api-diff.ts#normalizeType`, so every structural compare
+  (returnType, param, property, enum initializer, opaque signature) and the
+  snippet fallback inherit it; the AI missed-breaks audit applies it too
+  (`ai-analyzer.ts#extractSurface`, `normalizeExcerpt`) so its own surface diff
+  can't re-flag a reorder. It is **reorder + exact-dedup only**, never semantic
+  normalization (preserving the pessimistic stance above), and **fail-closed**:
+  a function type (`=>`), a conditional (`extends ? :`), or any malformed string
+  is returned unchanged, so a bug can at worst leave a phantom break, never hide
+  a real one. It is compare-time only and applied symmetrically to both reads,
+  so it needs no snapshot/`schemaVersion`/`DISCOVERY_VERSION` bump and an old
+  baseline that recorded the other order reconciles without regeneration.
 - **API Extractor major bumps are break-check major bumps.** `@microsoft/api-extractor`
   is pinned to an exact version in `package.json` (no `^`). Each per-package
   metadata file records the producing `breakCheckVersion`, `apiExtractorVersion`,
