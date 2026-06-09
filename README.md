@@ -1,12 +1,58 @@
+```
+┌─ break-check ──────────────────────────────────────────┐
+│  - export function auth(o: Opts): Session              │
+│  + export function auth(o: Opts, ctx: Ctx): Session    │
+│                         ^^^^^^^^ required param added  │
+│                                                        │
+│  verdict        BREAKING, major version bump required  │
+│  your bump      1.4.2 -> 1.5.0   (insufficient)        │
+└────────────────────────────────────────────────────────┘
+```
+
 # @clerk/break-check
 
-CLI tool for detecting TypeScript API changes in packages that publish
-declaration files.
+[![npm](https://img.shields.io/npm/v/@clerk/break-check?style=flat-square&logo=npm&logoColor=white&label=npm&color=cb3837)](https://www.npmjs.com/package/@clerk/break-check)
+[![CI](https://img.shields.io/github/actions/workflow/status/clerk/break-check/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=CI)](https://github.com/clerk/break-check/actions/workflows/ci.yml)
+[![node](https://img.shields.io/node/v/@clerk/break-check?style=flat-square&logo=nodedotjs&logoColor=white&label=node&color=5fa04e)](https://github.com/clerk/break-check/blob/main/package.json)
+[![license](https://img.shields.io/npm/l/@clerk/break-check?style=flat-square&label=license&color=64748b)](https://github.com/clerk/break-check/blob/main/LICENSE)
 
-Break Check uses Microsoft API Extractor to snapshot public `.d.ts` surfaces, then
-compares a current snapshot against a baseline snapshot. It is designed for PR
-checks where a package should fail CI when a breaking API change is not matched
-by the expected version bump.
+**Catch breaking TypeScript API changes before they ship.**
+
+Break Check uses Microsoft API Extractor to snapshot public `.d.ts` surfaces,
+then compares the current snapshot against a baseline. It is built for PR
+checks: a package fails CI when a breaking API change is not matched by the
+expected version bump.
+
+## What it looks like
+
+`break-check detect` writes a Markdown report, and the bundled Action posts it
+straight into the pull request. A run that catches a break reads like this:
+
+**🔴 API Changes Report** · reviewed by `claude-sonnet-4-6`
+
+| Metric                  | Count |
+| ----------------------- | ----- |
+| Packages analyzed       | 1     |
+| Packages with changes   | 1     |
+| 🔴 Breaking changes     | 1     |
+| 🟡 Non-breaking changes | 1     |
+| 🟢 Additions            | 3     |
+
+> **Warning:** 1 breaking change detected, major version bump required.
+
+**`@acme/auth`** · current `1.4.2` · recommended **MAJOR → 2.0.0** · actual **MINOR ❌ (insufficient)**
+
+```diff
+- export function auth(o: Opts): Session
++ export function auth(o: Opts, ctx: Ctx): Session
+```
+
+> Added required parameter `ctx`; existing callers no longer compile.
+> 🤖 **Confirmed breaking** (98%): the new required parameter forces every call site to change.
+
+Non-breaking changes and additions are classified too (here, an optional param
+on `configure` and three new exports); they collapse by default so the breaks
+stay front and center.
 
 ## Requirements
 
