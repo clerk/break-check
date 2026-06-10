@@ -1033,3 +1033,177 @@ test("a genuine string-literal union member change is still breaking (#85 guard)
   });
   assert.equal(counts(result).breaking, 1);
 });
+
+test("making a property optional while changing its type is breaking", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export interface User { name: string; }\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts: "export interface User { name?: number; }\n",
+    },
+  });
+  // The relaxing optional flip must not mask the simultaneous type change.
+  assert.equal(counts(result).breaking, 1);
+  assert.equal(counts(result).nonBreaking, 0);
+  const change = changesFor(result).find((c) => c.name === "User.name");
+  assert.match(change.description, /Member became optional/);
+  assert.match(change.description, /Type changed/);
+});
+
+test("making a method optional while changing a parameter type is breaking", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export interface Api { go(x: string): void; }\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts: "export interface Api { go?(x: number): void; }\n",
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+  assert.equal(counts(result).nonBreaking, 0);
+});
+
+test("a pure optionality relaxation stays non-breaking and says so", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export interface User { name: string; }\n",
+    },
+    current: {
+      version: "1.1.0",
+      dts: "export interface User { name?: string; }\n",
+    },
+  });
+  assert.equal(counts(result).nonBreaking, 1);
+  assert.equal(counts(result).breaking, 0);
+  const change = changesFor(result).find((c) => c.name === "User.name");
+  assert.match(change.description, /Member became optional/);
+});
+
+test("removing the last function overload is breaking", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts:
+        "export declare function go(x: string): string;\n" +
+        "export declare function go(x: number): number;\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts: "export declare function go(x: string): string;\n",
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+  assert.equal(counts(result).additions, 0);
+  assert.match(changesFor(result)[0].description, /Removed function `go`/);
+});
+
+test("changing one overload's signature is breaking", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts:
+        "export declare function go(x: string): string;\n" +
+        "export declare function go(x: number): number;\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts:
+        "export declare function go(x: string): Promise<string>;\n" +
+        "export declare function go(x: number): number;\n",
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+  assert.match(changesFor(result)[0].description, /Return type changed/);
+});
+
+test("adding a trailing function overload is an addition", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare function go(x: string): string;\n",
+    },
+    current: {
+      version: "1.1.0",
+      dts:
+        "export declare function go(x: string): string;\n" +
+        "export declare function go(x: number): number;\n",
+    },
+  });
+  assert.deepEqual(counts(result), {
+    breaking: 0,
+    nonBreaking: 0,
+    additions: 1,
+  });
+});
+
+test("removing a non-last overload is reported, pessimistically as positional changes", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts:
+        "export declare function go(x: string): string;\n" +
+        "export declare function go(x: number): number;\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts: "export declare function go(x: number): number;\n",
+    },
+  });
+  // Overloads are matched positionally: slot 1 reads as a signature change and
+  // slot 2 as a removal. Two breaks instead of one is pessimistic, but never
+  // silent (this previously reported no change at all).
+  assert.equal(counts(result).breaking, 2);
+  assert.equal(counts(result).additions, 0);
+});
+
+test("two index signatures do not collide; changing one is breaking", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export interface M { [k: string]: number; [k: number]: number; }\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts: "export interface M { [k: string]: string; [k: number]: number; }\n",
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+});
+
+test("a method becoming static is breaking", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare class C { m(): void; }\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts: "export declare class C { static m(): void; }\n",
+    },
+  });
+  // The callable compare only sees parameters and return type, so without the
+  // member-level flag compare this flip was invisible.
+  assert.equal(counts(result).breaking, 1);
+  assert.match(changesFor(result)[0].description, /Member became static/);
+});
+
+test("a class becoming abstract is breaking", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare class C { m(): void; }\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts: "export declare abstract class C { m(): void; }\n",
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+  assert.match(changesFor(result)[0].description, /Member became abstract/);
+});

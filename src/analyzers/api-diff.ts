@@ -37,8 +37,15 @@ interface ApiJsonMember {
   members?: ApiJsonMember[];
   parameters?: ApiJsonParameter[];
   returnTypeTokenRange?: TokenRange;
+  /** Type range as serialized by TypeAlias. */
   typeTokenRange?: TokenRange;
+  /** Type range as serialized by Property / PropertySignature. */
+  propertyTypeTokenRange?: TokenRange;
+  /** Type range as serialized by Variable. */
+  variableTypeTokenRange?: TokenRange;
   initializerTokenRange?: TokenRange;
+  /** 1-based declaration-order index distinguishing overload signatures. */
+  overloadIndex?: number;
   isOptional?: boolean;
   isReadonly?: boolean;
   isStatic?: boolean;
@@ -67,6 +74,15 @@ type ParsedShape =
   | { kind: "container" }
   | { kind: "opaque"; signature: string };
 
+type CallableShape = Extract<ParsedShape, { kind: "callable" }>;
+type TypedShape = Extract<ParsedShape, { kind: "typed" }>;
+
+/** Classification plus human-readable detail for one compared aspect of an item. */
+interface ShapeVerdict {
+  type: ChangeType;
+  detail?: string;
+}
+
 interface ParsedApiItem {
   key: string;
   category: ChangeCategory;
@@ -77,6 +93,9 @@ interface ParsedApiItem {
   /** Raw snippet for diff display */
   snippet: string;
   isOptional: boolean;
+  isStatic: boolean;
+  isProtected: boolean;
+  isAbstract: boolean;
 }
 
 const CALLABLE_KINDS = new Set([
@@ -201,7 +220,12 @@ export class ApiDiffAnalyzer {
     // leaf name (`A.Inner.value` and `B.Inner.value`) don't collide and silently
     // overwrite each other. The stored `parentName` stays the immediate parent so
     // the human-facing display name (and the AI walkSurface alias) are unchanged.
-    const key = this.buildKey(member.kind, member.name, parentChain);
+    const key = this.buildKey(
+      member.kind,
+      member.name,
+      parentChain,
+      member.overloadIndex,
+    );
     const shape = this.parseShape(member);
     const snippet = this.tokensToText(member.excerptTokens);
 
@@ -214,6 +238,9 @@ export class ApiDiffAnalyzer {
       shape,
       snippet,
       isOptional: Boolean(member.isOptional),
+      isStatic: Boolean(member.isStatic),
+      isProtected: Boolean(member.isProtected),
+      isAbstract: Boolean(member.isAbstract),
     });
 
     if (member.members && member.members.length > 0) {
@@ -249,10 +276,22 @@ export class ApiDiffAnalyzer {
     }
 
     if (TYPED_KINDS.has(member.kind)) {
+      // Property/PropertySignature serialize their type as
+      // propertyTypeTokenRange and Variable as variableTypeTokenRange; the
+      // generic typeTokenRange exists only on TypeAlias. Without the
+      // kind-specific ranges this falls back to the full declaration text,
+      // which embeds the name and the `?` optionality marker, so an
+      // optionality flip would double-report as a type change. IndexSignature
+      // has no single type range; its full text (key and value types) is the
+      // right comparison unit, and it carries no optionality marker.
+      const range =
+        member.propertyTypeTokenRange ??
+        member.variableTypeTokenRange ??
+        member.typeTokenRange;
       return {
         kind: "typed",
-        type: member.typeTokenRange
-          ? this.canonicalType(member.excerptTokens, member.typeTokenRange)
+        type: range
+          ? this.canonicalType(member.excerptTokens, range)
           : this.canonicalType(member.excerptTokens),
         isReadonly: Boolean(member.isReadonly),
       };
@@ -327,14 +366,85 @@ export class ApiDiffAnalyzer {
     baseline: ParsedApiItem,
     current: ParsedApiItem,
   ): ApiChange | null {
-    // Optionality flip on the member itself (property/method optional marker)
+    // Member-level flag flips (optionality, static, protected, abstract) are
+    // folded into the overall verdict rather than short-circuiting: the same
+    // edit can also change the member's shape (`a: string` -> `a?: number`),
+    // and an early return on the relaxing required -> optional flip would read
+    // non-breaking while hiding the breaking type change. The modifier flags
+    // are compared here, not in the shape compare, so they are caught on
+    // callables too (the signature compare never sees the excerpt text).
+    const verdicts: ShapeVerdict[] = [];
     if (baseline.isOptional !== current.isOptional) {
-      const type = baseline.isOptional
-        ? ChangeType.BREAKING
-        : ChangeType.NON_BREAKING;
-      return this.buildModification(baseline, current, type, undefined);
+      verdicts.push(
+        baseline.isOptional
+          ? {
+              type: ChangeType.BREAKING,
+              detail: "Member is no longer optional",
+            }
+          : {
+              type: ChangeType.NON_BREAKING,
+              detail: "Member became optional",
+            },
+      );
+    }
+    // Any modifier flip can break a consumer (a static member moves off
+    // instances; a public member going protected disappears for callers;
+    // protected -> public breaks subclasses that re-declare it protected; an
+    // abstract member forces subclasses to implement it), so all directions
+    // are pessimistically breaking. The AI reviewer may downgrade the safe
+    // ones.
+    if (baseline.isStatic !== current.isStatic) {
+      verdicts.push({
+        type: ChangeType.BREAKING,
+        detail: current.isStatic
+          ? "Member became static"
+          : "Member is no longer static",
+      });
+    }
+    if (baseline.isProtected !== current.isProtected) {
+      verdicts.push({
+        type: ChangeType.BREAKING,
+        detail: current.isProtected
+          ? "Member became protected"
+          : "Member became public",
+      });
+    }
+    if (baseline.isAbstract !== current.isAbstract) {
+      verdicts.push({
+        type: ChangeType.BREAKING,
+        detail: current.isAbstract
+          ? "Member became abstract"
+          : "Member is no longer abstract",
+      });
     }
 
+    const shape = this.compareShapes(baseline, current);
+    if (shape) {
+      verdicts.push(shape);
+    }
+    if (verdicts.length === 0) {
+      return null;
+    }
+
+    const type = verdicts.some((v) => v.type === ChangeType.BREAKING)
+      ? ChangeType.BREAKING
+      : ChangeType.NON_BREAKING;
+    const detail =
+      verdicts
+        .map((v) => v.detail)
+        .filter(Boolean)
+        .join("; ") || undefined;
+    return this.buildModification(baseline, current, type, detail);
+  }
+
+  /**
+   * Compare the two items' shapes. Returns null when they match; otherwise a
+   * classification with a human-readable detail.
+   */
+  private compareShapes(
+    baseline: ParsedApiItem,
+    current: ParsedApiItem,
+  ): ShapeVerdict | null {
     // Container bodies are diffed via their members; skip the container itself.
     if (
       baseline.shape.kind === "container" &&
@@ -347,11 +457,11 @@ export class ApiDiffAnalyzer {
       baseline.shape.kind === "callable" &&
       current.shape.kind === "callable"
     ) {
-      return this.compareCallable(baseline, current);
+      return this.compareCallable(baseline.shape, current.shape);
     }
 
     if (baseline.shape.kind === "typed" && current.shape.kind === "typed") {
-      return this.compareTyped(baseline, current);
+      return this.compareTyped(baseline.shape, current.shape);
     }
 
     if (
@@ -361,22 +471,18 @@ export class ApiDiffAnalyzer {
       if (baseline.shape.initializer === current.shape.initializer) {
         return null;
       }
-      return this.buildModification(
-        baseline,
-        current,
-        ChangeType.BREAKING,
-        `Enum member value changed: \`${baseline.shape.initializer || "(implicit)"}\` → \`${current.shape.initializer || "(implicit)"}\``,
-      );
+      return {
+        type: ChangeType.BREAKING,
+        detail: `Enum member value changed: \`${baseline.shape.initializer || "(implicit)"}\` → \`${current.shape.initializer || "(implicit)"}\``,
+      };
     }
 
     // Kind mismatch (e.g., became a different shape); treat as breaking.
     if (baseline.shape.kind !== current.shape.kind) {
-      return this.buildModification(
-        baseline,
-        current,
-        ChangeType.BREAKING,
-        `Declaration kind changed from \`${baseline.originalKind}\` to \`${current.originalKind}\``,
-      );
+      return {
+        type: ChangeType.BREAKING,
+        detail: `Declaration kind changed from \`${baseline.originalKind}\` to \`${current.originalKind}\``,
+      };
     }
 
     // Opaque fallback: canonical signature compare. The opaque shape already
@@ -393,28 +499,13 @@ export class ApiDiffAnalyzer {
     if (a === b) {
       return null;
     }
-    return this.buildModification(
-      baseline,
-      current,
-      ChangeType.BREAKING,
-      undefined,
-    );
+    return { type: ChangeType.BREAKING };
   }
 
   private compareCallable(
-    baseline: ParsedApiItem,
-    current: ParsedApiItem,
-  ): ApiChange | null {
-    if (
-      baseline.shape.kind !== "callable" ||
-      current.shape.kind !== "callable"
-    ) {
-      return null;
-    }
-
-    const before = baseline.shape;
-    const after = current.shape;
-
+    before: CallableShape,
+    after: CallableShape,
+  ): ShapeVerdict | null {
     const notes: string[] = [];
     let severity: ChangeType | null = null;
 
@@ -498,25 +589,13 @@ export class ApiDiffAnalyzer {
       return null;
     }
 
-    return this.buildModification(
-      baseline,
-      current,
-      severity,
-      notes.join("; "),
-    );
+    return { type: severity, detail: notes.join("; ") };
   }
 
   private compareTyped(
-    baseline: ParsedApiItem,
-    current: ParsedApiItem,
-  ): ApiChange | null {
-    if (baseline.shape.kind !== "typed" || current.shape.kind !== "typed") {
-      return null;
-    }
-
-    const before = baseline.shape;
-    const after = current.shape;
-
+    before: TypedShape,
+    after: TypedShape,
+  ): ShapeVerdict | null {
     if (before.type === after.type && before.isReadonly === after.isReadonly) {
       return null;
     }
@@ -535,12 +614,7 @@ export class ApiDiffAnalyzer {
       );
     }
 
-    return this.buildModification(
-      baseline,
-      current,
-      ChangeType.BREAKING,
-      notes.join("; "),
-    );
+    return { type: ChangeType.BREAKING, detail: notes.join("; ") };
   }
 
   private buildModification(
@@ -606,9 +680,26 @@ export class ApiDiffAnalyzer {
     return { ...change, id: this.generateChangeId(change) };
   }
 
-  private buildKey(kind: string, name: string, parentChain?: string): string {
+  private buildKey(
+    kind: string,
+    name: string,
+    parentChain?: string,
+    overloadIndex?: number,
+  ): string {
     const k = this.mapCategory(kind);
-    return parentChain ? `${k}:${parentChain}:${name}` : `${k}:${name}`;
+    // API Extractor emits one member per overload signature, all sharing a
+    // name and disambiguated only by `overloadIndex` (also distinguishing
+    // multiple call/construct/index signatures on one container). Without it
+    // in the key, every overload after the first overwrites its predecessor in
+    // the item map, so removing or editing a non-last overload is a silent
+    // false negative. Overloads are matched positionally; the suffix is
+    // computed identically on both sides of the diff, so committed baselines
+    // need no regeneration.
+    const overload =
+      typeof overloadIndex === "number" ? `#${overloadIndex}` : "";
+    return parentChain
+      ? `${k}:${parentChain}:${name}${overload}`
+      : `${k}:${name}${overload}`;
   }
 
   private mapCategory(kind: string): ChangeCategory {
