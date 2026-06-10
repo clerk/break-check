@@ -61,3 +61,19 @@ jobs:
           # Version PR is opened/updated by that identity and triggers the
           # required CI checks instead of silently skipping them.
           GITHUB_TOKEN: ${{ secrets.CHANGESETS_PAT || secrets.GITHUB_TOKEN }}
+
+      # Consumers pin the composite Action as `clerk/break-check@v1`, a moving
+      # tag that must track the latest release. It used to be moved by hand
+      # after each publish, which predictably got skipped (v1 sat one release
+      # behind after 0.1.2). Move it here, on the same commit changesets just
+      # published from, so it can never drift again. A lightweight forced tag
+      # is intentional: the tag is a pointer, not a release artifact (the
+      # semver tag changesets creates is the durable one). NOTE: `v1` names
+      # the Action's INTERFACE major, decoupled from the npm version. If
+      # action.yml's inputs/outputs ever change incompatibly, freeze this at
+      # the last compatible commit and start pushing `v2` instead.
+      - name: Move the v1 Action tag to the release commit
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          git tag --force v1
+          git push --force origin v1
