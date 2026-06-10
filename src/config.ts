@@ -161,11 +161,15 @@ export function createDefaultConfig(): BreakCheckConfig {
 
 /**
  * Find the config file by walking up the directory tree
- * @param startDir - Directory to start searching from (defaults to cwd)
+ * @param startDir - Directory to start searching from (defaults to cwd);
+ *   a relative path is resolved against cwd
  * @returns Path to config file or null if not found
  */
 export function findConfigFile(startDir?: string): string | null {
-  let currentDir = startDir ?? process.cwd();
+  // Resolve before walking: for a relative path, `path.parse(...).root` is ""
+  // and `path.dirname(".")` is ".", so the loop below would never reach the
+  // root and spin forever.
+  let currentDir = path.resolve(startDir ?? process.cwd());
   const root = path.parse(currentDir).root;
 
   // Prefer the current name in each directory, then fall back to the legacy
