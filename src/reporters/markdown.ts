@@ -339,16 +339,31 @@ export class MarkdownReporter {
     }
 
     const bumpLabel = pkg.recommendedVersionBump.toUpperCase();
+    // The severity label stays as computed (MAJOR means "contains breaking
+    // changes"), but the projected target follows the same conventions bump
+    // validation applies: a 0.x package ships a breaking change in the minor
+    // position (`^0.x` ranges stop there), and a package on a prerelease tag
+    // advances its train rather than jumping a whole major. Keyed off the
+    // current version, since that is what the projection increments.
+    const zeroMajorBreaking =
+      pkg.recommendedVersionBump === ChangeSeverity.MAJOR &&
+      this.versionAnalyzer.isZeroMajor(pkg.version.current);
+    const effectiveBump = zeroMajorBreaking
+      ? ChangeSeverity.MINOR
+      : pkg.recommendedVersionBump;
     const targetVersion = versionUnchanged
-      ? this.versionAnalyzer.applyBump(
-          pkg.version.current,
-          pkg.recommendedVersionBump,
-        )
+      ? (this.versionAnalyzer.nextPrereleaseVersion(pkg.version.current) ??
+        this.versionAnalyzer.applyBump(pkg.version.current, effectiveBump))
       : null;
+    const bumpNote = zeroMajorBreaking
+      ? " _(0.x: a breaking change ships in the minor position)_"
+      : targetVersion && targetVersion.includes("-")
+        ? " _(any advance within the prerelease train satisfies the check)_"
+        : "";
     lines.push(
       targetVersion
-        ? `**Recommended bump:** ${bumpLabel} → ${targetVersion}`
-        : `**Recommended bump:** ${bumpLabel}`,
+        ? `**Recommended bump:** ${bumpLabel} → ${targetVersion}${bumpNote}`
+        : `**Recommended bump:** ${bumpLabel}${bumpNote}`,
     );
 
     if (pkg.actualVersionBump) {
