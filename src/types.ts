@@ -257,4 +257,13 @@ export interface PackageInfo {
   path: string;
   /** All resolved entry points (root + subpaths). Empty if the package has no exports map and no detectable root types. */
   entries: PackageEntry[];
+  /**
+   * Subpaths whose `exports` entry declares a type surface break-check could
+   * not turn into an entry point: the declared `.d.ts` file is missing, the
+   * target escapes the package directory, or a wildcard types pattern matched
+   * nothing. Subpaths with no declared types at all (JS-only or asset exports)
+   * are not listed; they are not a coverage hole. The detector surfaces these
+   * as skipped entries so `--fail-on-skipped` and the report see them.
+   */
+  unresolvedSubpaths?: Array<{ subpath: string; reason: string }>;
 }

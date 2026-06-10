@@ -358,3 +358,35 @@ test("init -o writes the config to a custom path", () => {
     rmSync(workspace, { recursive: true, force: true });
   }
 });
+
+test("detect refuses a baseline that is the configured snapshotDir", () => {
+  const workspace = createWorkspace();
+
+  try {
+    const configPath = writeConfig(workspace); // snapshotDir: "snapshots"
+    writePackage(workspace, {
+      version: "1.0.0",
+      declarations: "export declare const value: number;\n",
+    });
+
+    // Write a "baseline" into the snapshot dir itself, then point detect at
+    // it. detect regenerates current snapshots into snapshotDir before
+    // reading the baseline, so without the guard this would overwrite the
+    // baseline and self-compare, reporting no changes for any break.
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+
+    const detect = runBreakCheck([
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "snapshots",
+      "--no-ai",
+    ]);
+    assert.equal(detect.status, 1);
+    assert.match(detect.stderr, /resolve to the same path/);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
