@@ -487,3 +487,108 @@ test("markdown reporter: unresolvable-reference change shows the guard callout a
     "the downgrade nudge must be suppressed: the flag cannot be relaxed by it",
   );
 });
+
+function makeBumpResult({
+  previous,
+  current,
+  recommendedVersionBump,
+  actualVersionBump,
+  isValidBump,
+}) {
+  const change = {
+    id: "x",
+    type: ChangeType.BREAKING,
+    severity: ChangeSeverity.MAJOR,
+    category: "function",
+    name: "go",
+    description: "Breaking change in function `go`",
+  };
+  return {
+    timestamp: "2026-06-10T00:00:00.000Z",
+    summary: {
+      totalPackages: 1,
+      packagesWithChanges: 1,
+      breakingChanges: 1,
+      nonBreakingChanges: 0,
+      additions: 0,
+    },
+    hasBreakingChanges: true,
+    packages: [
+      {
+        packageName: "@demo/pkg",
+        version: { previous, current },
+        recommendedVersionBump,
+        actualVersionBump,
+        isValidBump,
+        hasBreakingChanges: true,
+        changes: [change],
+      },
+    ],
+  };
+}
+
+test("markdown reporter: 0.x breaking projects to the next minor with a note", () => {
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    makeBumpResult({
+      previous: "0.2.0",
+      current: "0.2.0",
+      recommendedVersionBump: "major",
+    }),
+  );
+  assert.ok(out.includes("**Recommended bump:** MAJOR → 0.3.0"), out);
+  assert.ok(out.includes("breaking change ships in the minor position"), out);
+  assert.ok(!out.includes("→ 1.0.0"), "must not project a 1.0.0 jump");
+});
+
+test("markdown reporter: stable breaking still projects the next major", () => {
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    makeBumpResult({
+      previous: "1.4.2",
+      current: "1.4.2",
+      recommendedVersionBump: "major",
+    }),
+  );
+  assert.ok(out.includes("**Recommended bump:** MAJOR → 2.0.0"), out);
+  assert.ok(!out.includes("minor position"), "no 0.x note on stable packages");
+});
+
+test("markdown reporter: prerelease package projects the next tag in the train", () => {
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    makeBumpResult({
+      previous: "1.0.0-beta.1",
+      current: "1.0.0-beta.1",
+      recommendedVersionBump: "major",
+    }),
+  );
+  assert.ok(out.includes("→ 1.0.0-beta.2"), out);
+  assert.ok(out.includes("advance within the prerelease train"), out);
+});
+
+test("markdown reporter: 0.x note also shown after the bump landed", () => {
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    makeBumpResult({
+      previous: "0.2.0",
+      current: "0.3.0",
+      recommendedVersionBump: "major",
+      actualVersionBump: "minor",
+      isValidBump: true,
+    }),
+  );
+  // Without the note, "Recommended: MAJOR / Actual: MINOR ✅" reads as a
+  // contradiction.
+  assert.ok(out.includes("**Recommended bump:** MAJOR"), out);
+  assert.ok(out.includes("breaking change ships in the minor position"), out);
+  assert.ok(out.includes("**Actual bump:** MINOR ✅"), out);
+});
+
+test("markdown reporter: 0.x minor recommendation projects without a note", () => {
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    makeBumpResult({
+      previous: "0.2.0",
+      current: "0.2.0",
+      recommendedVersionBump: "minor",
+    }),
+  );
+  assert.ok(out.includes("**Recommended bump:** MINOR → 0.3.0"), out);
+  assert.ok(!out.includes("minor position"), out);
+});

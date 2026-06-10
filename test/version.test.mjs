@@ -340,3 +340,31 @@ test("compareVersions: prerelease tags compare per spec", () => {
   assert.equal(analyzer.compareVersions("1.0.0-alpha", "1.0.0-beta"), -1);
   assert.equal(analyzer.compareVersions("1.0.0-beta.1", "1.0.0-beta.1"), 0);
 });
+
+// ---------- nextPrereleaseVersion ----------
+
+test("nextPrereleaseVersion: increments a numeric tail", () => {
+  assert.equal(analyzer.nextPrereleaseVersion("1.0.0-beta.1"), "1.0.0-beta.2");
+  assert.equal(analyzer.nextPrereleaseVersion("2.1.0-rc.9"), "2.1.0-rc.10");
+});
+
+test("nextPrereleaseVersion: appends .0 to a bare tag", () => {
+  assert.equal(analyzer.nextPrereleaseVersion("1.0.0-beta"), "1.0.0-beta.0");
+});
+
+test("nextPrereleaseVersion: result is a prerelease advance", () => {
+  for (const v of ["1.0.0-beta.1", "1.0.0-beta", "0.3.0-alpha.2.x"]) {
+    const next = analyzer.nextPrereleaseVersion(v);
+    assert.ok(next, `expected a next version for ${v}`);
+    assert.equal(
+      analyzer.isPrereleaseAdvance(v, next),
+      true,
+      `${v} -> ${next} should be an advance`,
+    );
+  }
+});
+
+test("nextPrereleaseVersion: null for untagged or unparseable versions", () => {
+  assert.equal(analyzer.nextPrereleaseVersion("1.0.0"), null);
+  assert.equal(analyzer.nextPrereleaseVersion("nope"), null);
+});

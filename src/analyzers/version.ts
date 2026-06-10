@@ -248,6 +248,28 @@ export class VersionAnalyzer {
   }
 
   /**
+   * The next version within `version`'s prerelease train: the trailing
+   * numeric identifier incremented (`1.0.0-beta.1` -> `1.0.0-beta.2`), or a
+   * `.0` appended when the tag has no numeric tail (`1.0.0-beta` ->
+   * `1.0.0-beta.0`, mirroring node-semver's `inc(..., "prerelease")`). Both
+   * results satisfy `isPrereleaseAdvance`. Returns null when the version has
+   * no prerelease tag (or doesn't parse), so callers can fall back to a
+   * normal bump projection.
+   */
+  nextPrereleaseVersion(version: string): string | null {
+    const parsed = this.parseSemver(version);
+    if (!parsed || parsed.prerelease === undefined) return null;
+    const ids = parsed.prerelease.split(".");
+    const last = ids[ids.length - 1];
+    if (/^\d+$/.test(last)) {
+      ids[ids.length - 1] = String(Number(last) + 1);
+    } else {
+      ids.push("0");
+    }
+    return `${parsed.major}.${parsed.minor}.${parsed.patch}-${ids.join(".")}`;
+  }
+
+  /**
    * Apply a bump level to a version string and return the resulting version.
    * Strips any pre-release suffix. Returns null if the input doesn't parse.
    */
