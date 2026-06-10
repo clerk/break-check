@@ -402,6 +402,7 @@ jobs:
 | `baseline-artifact-name` | unset                                          | Name of a snapshot artifact uploaded from a push-to-`base-ref` workflow. See [Larger monorepos](#larger-monorepos).                                                                      |
 | `baseline-max-age`       | unset                                          | Maximum age (hours) for a downloaded baseline artifact before falling back to a worktree rebuild.                                                                                        |
 | `comment`                | `true`                                         | Post or update a PR comment with the report.                                                                                                                                             |
+| `report-artifact-name`   | `break-check-report`                           | Name for the uploaded report artifact (and its PR comment). Give each invocation a distinct name when running more than once per workflow run.                                           |
 | `fail-on-breaking`       | `false`                                        | Fail the workflow when breaking changes are detected.                                                                                                                                    |
 | `policy-mode`            | `false`                                        | Enforce the config from the base ref so a PR cannot suppress its own break by editing its config.                                                                                        |
 | `anthropic-api-key`      | unset                                          | Anthropic API key that enables the AI reviewer. Empty runs the rule-based diff only. Pass from a secret. The downgrade policy lives in `break-check.config.json` (`ai.applyDowngrades`). |
@@ -426,19 +427,26 @@ from a secret:
 ```
 
 The key only turns the reviewer on. The downgrade policy stays in
-`break-check.config.json` (`ai.applyDowngrades`), so it is reviewed on the base
-branch rather than set per workflow. The Action runs `detect` once and renders
+`break-check.config.json` (`ai.applyDowngrades`) rather than being set per
+workflow, so it is code-reviewed like any other file; note that by default
+`detect` reads the PR head's config, so a PR can still flip it for its own run.
+Set `policy-mode: true` (see
+[Required-gate hardening](#required-gate-hardening)) to enforce the base ref's
+config instead. The Action runs `detect` once and renders
 both the comment and the `has-breaking-changes` output from that single result,
 so the AI is never billed twice and the comment can't disagree with the output.
 On pull requests from forks GitHub withholds secrets, so `anthropic-api-key` is
 empty there and the reviewer stays off; the rule-based diff still runs.
 
-The Action posts (or updates) one comment. A report larger than GitHub's
-comment-size limit is truncated, with the full report attached as the
-`break-check-report` artifact and linked from the comment. The comment is posted
-even when `fail-on-breaking` fails the run, so a blocked PR still shows why.
-That artifact name is run-global, so run the Action once per workflow run rather
-than across a matrix (parallel jobs would collide on the name).
+The Action posts (or updates) one comment per invocation. A report larger than
+GitHub's comment-size limit is truncated, with the full report attached as the
+`report-artifact-name` artifact (default `break-check-report`) and linked from
+the comment. The comment is posted even when `fail-on-breaking` fails the run,
+so a blocked PR still shows why. Artifact names are immutable and global to a
+workflow run, so when the Action runs more than once per run (a matrix, or
+per-package jobs) give each invocation a distinct `report-artifact-name`, e.g.
+`break-check-report-${{ matrix.package }}`; each then maintains its own PR
+comment too.
 
 ### When the base ref doesn't yet have a config
 

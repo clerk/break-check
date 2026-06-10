@@ -63,6 +63,15 @@ inputs:
     description: "Post (or update) a PR comment with the report."
     required: false
     default: "true"
+  report-artifact-name:
+    description: |
+      Name for the uploaded report artifact. Artifact names are immutable and
+      global to a workflow run, so when this Action runs more than once per
+      run (a matrix, or per-package jobs) the default name collides and the
+      second upload fails. Give each invocation a distinct name, e.g.
+      `break-check-report-${{ matrix.package }}`.
+    required: false
+    default: "break-check-report"
   fail-on-breaking:
     description: "Fail the workflow when breaking changes are detected."
     required: false
@@ -421,7 +430,7 @@ runs:
       if: always() && steps.detect.outputs.report-path != ''
       uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
       with:
-        name: break-check-report
+        name: ${{ inputs.report-artifact-name }}
         path: ${{ steps.detect.outputs.report-path }}
         if-no-files-found: ignore
         retention-days: 5
@@ -435,6 +444,7 @@ runs:
         REPORT_PATH: ${{ steps.detect.outputs.report-path }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        ARTIFACT_NAME: ${{ inputs.report-artifact-name }}
       with:
         github-token: ${{ inputs.github-token }}
         script: |
@@ -444,12 +454,20 @@ runs:
             core.warning(`break-check report not found at ${reportPath || '(unset)'}; skipping comment.`);
             return;
           }
-          const marker = '<!-- break-check-action -->';
+          // One comment per invocation. A custom artifact name (matrix /
+          // per-package runs) gets its own marker so parallel invocations
+          // update their own comments instead of clobbering one. The default
+          // keeps the historical marker so existing comments are still found
+          // and updated rather than duplicated.
+          const artifactName = process.env.ARTIFACT_NAME || 'break-check-report';
+          const marker = artifactName === 'break-check-report'
+            ? '<!-- break-check-action -->'
+            : `<!-- break-check-action:${artifactName} -->`;
           const report = fs.readFileSync(reportPath, 'utf-8');
 
           // GitHub rejects issue-comment bodies over 65536 characters. Stay under
           // that and, when the report is larger, truncate and point at the full
-          // report uploaded as the `break-check-report` artifact on this run.
+          // report uploaded as an artifact on this run.
           const LIMIT = 64000;
           const head = `${marker}\n`;
           let body;
@@ -458,7 +476,7 @@ runs:
           } else {
             const notice =
               `\n\n> **Note**\n> Report truncated to fit GitHub's comment limit. ` +
-              `The full report is attached as the \`break-check-report\` artifact on ` +
+              `The full report is attached as the \`${artifactName}\` artifact on ` +
               `[this run](${process.env.RUN_URL}).\n`;
             const budget = LIMIT - head.length - notice.length;
             body = head + report.slice(0, budget) + notice;
