@@ -10,5 +10,11 @@ to 1.0.0. An advance within one prerelease train (`1.0.0-beta.1 ->
 1.0.0-beta.2`, or finalizing to `1.0.0`) is no longer reported as "version was
 not bumped". `VersionAnalyzer.compareVersions` now honors prerelease
 precedence per the semver spec (`1.0.0-beta.1` ranks below `1.0.0`), and a new
-`VersionAnalyzer.isPrereleaseAdvance` is exported. Minor: the programmatic API
-gains a method and validation verdicts change for 0.x and prerelease packages.
+`VersionAnalyzer.isPrereleaseAdvance` is exported.
+
+BREAKING (programmatic API only): `VersionAnalyzer.isPreRelease` and
+`isValidPreReleaseBump` are renamed to `isZeroMajor` and
+`isValidZeroMajorBump`. The old names conflated the 0.x convention with semver
+prerelease tags, which this release starts handling as a distinct concept.
+Per the 0.x rule above (which break-check now applies to itself), this rename
+ships in a minor.

@@ -929,8 +929,8 @@ export class BreakingChangesDetector {
     // `1.0.0-beta.2`, or finalizing to `1.0.0`) is never an insufficient bump;
     // breaking between prereleases of the same version is what prereleases are
     // for.
-    const bumpSatisfied = this.versionAnalyzer.isPreRelease(previousVersion)
-      ? this.versionAnalyzer.isValidPreReleaseBump(recommendedBump, actualBump)
+    const bumpSatisfied = this.versionAnalyzer.isZeroMajor(previousVersion)
+      ? this.versionAnalyzer.isValidZeroMajorBump(recommendedBump, actualBump)
       : this.versionAnalyzer.isValidBump(recommendedBump, actualBump);
     const isValidBump =
       bumpSatisfied ||

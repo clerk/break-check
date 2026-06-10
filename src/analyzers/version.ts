@@ -156,12 +156,14 @@ export class VersionAnalyzer {
   }
 
   /**
-   * Check if a version is a pre-release (0.x.y)
-   * Pre-release versions have different semver semantics
+   * Check if a version is in initial development (major version zero, 0.x.y).
+   * Such versions follow the 0.x convention: `^0.2.3` ranges stop at the next
+   * minor, so the minor position is the breaking boundary. Not to be confused
+   * with a semver prerelease TAG (`1.0.0-beta.1`); see `isPrereleaseAdvance`.
    * @param version - Version string
    * @returns true if version is 0.x.y
    */
-  isPreRelease(version: string): boolean {
+  isZeroMajor(version: string): boolean {
     const parsed = this.parseSemver(version);
     return parsed !== null && parsed.major === 0;
   }
@@ -196,13 +198,13 @@ export class VersionAnalyzer {
   }
 
   /**
-   * Validate bump for pre-release versions (0.x.y)
-   * In pre-release, breaking changes are allowed in minor bumps
+   * Validate bump for initial-development versions (0.x.y)
+   * In 0.x, breaking changes are allowed in minor bumps
    * @param recommended - Recommended bump
    * @param actual - Actual bump
-   * @returns true if valid for pre-release semantics
+   * @returns true if valid for 0.x semantics
    */
-  isValidPreReleaseBump(
+  isValidZeroMajorBump(
     recommended: ChangeSeverity,
     actual: ChangeSeverity | null,
   ): boolean {
@@ -222,16 +224,16 @@ export class VersionAnalyzer {
    * Get a human-readable validation message
    * @param recommended - Recommended bump
    * @param actual - Actual bump
-   * @param isPreRelease - Whether this is a pre-release version
+   * @param zeroMajor - Whether the package is on a 0.x version
    * @returns Validation message or null if valid
    */
   getValidationMessage(
     recommended: ChangeSeverity,
     actual: ChangeSeverity | null,
-    isPreRelease: boolean = false,
+    zeroMajor: boolean = false,
   ): string | null {
-    const isValid = isPreRelease
-      ? this.isValidPreReleaseBump(recommended, actual)
+    const isValid = zeroMajor
+      ? this.isValidZeroMajorBump(recommended, actual)
       : this.isValidBump(recommended, actual);
 
     if (isValid) {
