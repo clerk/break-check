@@ -1,8 +1,10 @@
 ---
-"@clerk/break-check": patch
+"@clerk/break-check": minor
 ---
 
-Stop under-reporting surface break-check never actually checked. Entry-point
+Stop under-reporting surface break-check never actually checked. (Minor, per
+break-check's own verdict on this diff: `PackageInfo` gains an optional
+`unresolvedSubpaths` field in the programmatic API.) Entry-point
 discovery now resolves types declared under nested export conditions
 (`{ "node": { "import": { "types": ... } } }`) and `.d.cts` files, both
 previously skipped without a trace. A subpath that declares types break-check
