@@ -1207,3 +1207,64 @@ test("a class becoming abstract is breaking", () => {
   assert.equal(counts(result).breaking, 1);
   assert.match(changesFor(result)[0].description, /Member became abstract/);
 });
+
+test("a 0.x breaking change is satisfied by a minor bump", () => {
+  const result = setup({
+    baseline: {
+      version: "0.2.0",
+      dts: "export declare function go(x: string): void;\n",
+    },
+    current: {
+      version: "0.3.0",
+      dts: "export declare function go(x: number): void;\n",
+    },
+  });
+  const pkg = result.packages[0];
+  assert.equal(counts(result).breaking, 1);
+  assert.equal(pkg.recommendedVersionBump, "major");
+  assert.equal(pkg.actualVersionBump, "minor");
+  assert.equal(pkg.isValidBump, true);
+});
+
+test("a 0.x breaking change still rejects a patch bump", () => {
+  const result = setup({
+    baseline: {
+      version: "0.2.0",
+      dts: "export declare function go(x: string): void;\n",
+    },
+    current: {
+      version: "0.2.1",
+      dts: "export declare function go(x: number): void;\n",
+    },
+  });
+  assert.equal(result.packages[0].isValidBump, false);
+});
+
+test("a breaking change within one prerelease train is a valid bump", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0-beta.1",
+      dts: "export declare function go(x: string): void;\n",
+    },
+    current: {
+      version: "1.0.0-beta.2",
+      dts: "export declare function go(x: number): void;\n",
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+  assert.equal(result.packages[0].isValidBump, true);
+});
+
+test("a stable-version breaking change with a patch bump stays insufficient", () => {
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export declare function go(x: string): void;\n",
+    },
+    current: {
+      version: "1.0.1",
+      dts: "export declare function go(x: number): void;\n",
+    },
+  });
+  assert.equal(result.packages[0].isValidBump, false);
+});

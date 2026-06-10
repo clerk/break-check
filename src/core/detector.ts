@@ -922,8 +922,22 @@ export class BreakingChangesDetector {
       previousVersion,
       packageInfo.version,
     );
+    // Pick the validation rule by the BASELINE version, the contract consumers
+    // actually held. A 0.x package follows the 0.x convention (`^0.2.3` ranges
+    // stop at the next minor), so a breaking change is satisfied by a minor
+    // bump there. An advance within one prerelease train (`1.0.0-beta.1` ->
+    // `1.0.0-beta.2`, or finalizing to `1.0.0`) is never an insufficient bump;
+    // breaking between prereleases of the same version is what prereleases are
+    // for.
+    const bumpSatisfied = this.versionAnalyzer.isPreRelease(previousVersion)
+      ? this.versionAnalyzer.isValidPreReleaseBump(recommendedBump, actualBump)
+      : this.versionAnalyzer.isValidBump(recommendedBump, actualBump);
     const isValidBump =
-      this.versionAnalyzer.isValidBump(recommendedBump, actualBump) ||
+      bumpSatisfied ||
+      this.versionAnalyzer.isPrereleaseAdvance(
+        previousVersion,
+        packageInfo.version,
+      ) ||
       !this.config.checkVersionBump;
 
     return {

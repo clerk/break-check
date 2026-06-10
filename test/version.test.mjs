@@ -268,3 +268,78 @@ test("compareVersions: greater than", () => {
 test("compareVersions: unparseable input → null", () => {
   assert.equal(analyzer.compareVersions("nope", "1.0.0"), null);
 });
+
+// ---------- isPrereleaseAdvance ----------
+
+test("isPrereleaseAdvance: numeric tag increment within one train", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta.1", "1.0.0-beta.2"),
+    true,
+  );
+});
+
+test("isPrereleaseAdvance: numeric identifiers compare numerically, not lexically", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta.2", "1.0.0-beta.11"),
+    true,
+  );
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta.11", "1.0.0-beta.2"),
+    false,
+  );
+});
+
+test("isPrereleaseAdvance: alpha to beta advances", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("2.0.0-alpha.3", "2.0.0-beta.1"),
+    true,
+  );
+});
+
+test("isPrereleaseAdvance: finalizing the release advances", () => {
+  assert.equal(analyzer.isPrereleaseAdvance("1.0.0-rc.1", "1.0.0"), true);
+});
+
+test("isPrereleaseAdvance: re-tagging a final version is not an advance", () => {
+  assert.equal(analyzer.isPrereleaseAdvance("1.0.0", "1.0.0-beta.1"), false);
+});
+
+test("isPrereleaseAdvance: tag moving backwards is not an advance", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta.2", "1.0.0-beta.1"),
+    false,
+  );
+});
+
+test("isPrereleaseAdvance: a different triple is not a prerelease advance", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta.1", "1.0.1-beta.2"),
+    false,
+  );
+  assert.equal(analyzer.isPrereleaseAdvance("1.0.0-beta.1", "1.1.0"), false);
+});
+
+test("isPrereleaseAdvance: longer tag outranks its prefix", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta", "1.0.0-beta.1"),
+    true,
+  );
+});
+
+test("isPrereleaseAdvance: unparseable input → false", () => {
+  assert.equal(analyzer.isPrereleaseAdvance("nope", "1.0.0"), false);
+  assert.equal(analyzer.isPrereleaseAdvance("1.0.0-beta.1", "nope"), false);
+});
+
+// ---------- compareVersions: prerelease precedence ----------
+
+test("compareVersions: prerelease ranks below the final release", () => {
+  assert.equal(analyzer.compareVersions("1.0.0-beta.1", "1.0.0"), -1);
+  assert.equal(analyzer.compareVersions("1.0.0", "1.0.0-beta.1"), 1);
+});
+
+test("compareVersions: prerelease tags compare per spec", () => {
+  assert.equal(analyzer.compareVersions("1.0.0-beta.2", "1.0.0-beta.11"), -1);
+  assert.equal(analyzer.compareVersions("1.0.0-alpha", "1.0.0-beta"), -1);
+  assert.equal(analyzer.compareVersions("1.0.0-beta.1", "1.0.0-beta.1"), 0);
+});
