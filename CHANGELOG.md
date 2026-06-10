@@ -1,5 +1,38 @@
 # @clerk/break-check
 
+## 0.2.0
+
+### Minor Changes
+
+- [#89](https://github.com/clerk/break-check/pull/89) [`7c59947`](https://github.com/clerk/break-check/commit/7c599479f04a2ebfce09ae6fa3fda5de6e50ad72) Thanks [@jacekradko](https://github.com/jacekradko)! - Stop under-reporting surface break-check never actually checked. (Minor, per
+  break-check's own verdict on this diff: `PackageInfo` gains an optional
+  `unresolvedSubpaths` field in the programmatic API.) Entry-point
+  discovery now resolves types declared under nested export conditions
+  (`{ "node": { "import": { "types": ... } } }`) and `.d.cts` files, both
+  previously skipped without a trace. A subpath that declares types break-check
+  still cannot resolve (a missing file, a target escaping the package, an
+  unsupported wildcard pattern) is now recorded as a skipped entry, so it shows
+  up in the report and `--fail-on-skipped` catches it; JS-only and asset subpaths
+  stay silent. And `detect` now refuses a `--baseline` that resolves to the
+  configured `snapshotDir`, which previously overwrote the baseline with the
+  current snapshots and reported "no changes" for any break.
+
+### Patch Changes
+
+- [#88](https://github.com/clerk/break-check/pull/88) [`123300f`](https://github.com/clerk/break-check/commit/123300f964983403c9df4a325e91db80d980364f) Thanks [@jacekradko](https://github.com/jacekradko)! - Fix a family of false negatives in the rule-based differ. Overload signatures
+  now carry their `overloadIndex` in the comparison key, so removing or editing a
+  function or method overload (or one of several call/construct/index signatures)
+  is reported instead of silently collapsing onto the last overload. An
+  optionality flip no longer short-circuits the member compare, so a change like
+  `a: string` -> `a?: number` reports the breaking type change instead of a
+  non-breaking "became optional"; property and variable types are now compared
+  via their kind-specific token ranges (`propertyTypeTokenRange`,
+  `variableTypeTokenRange`) instead of the full declaration text. And
+  `static`/`protected`/`abstract` modifier flips are compared explicitly, which
+  also catches them on methods and classes where the signature compare never saw
+  them. All fixes are compare-time only; committed baselines need no
+  regeneration.
+
 ## 0.1.2
 
 ### Patch Changes
