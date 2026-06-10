@@ -287,6 +287,8 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
 2. The release workflow (see `.github/workflows/`) opens a "Version
    Packages" PR. Merging it tags and publishes via
    `pnpm release` (which runs `changeset publish`).
-3. After publishing, move the `v1` tag to the release commit so
-   `clerk/break-check@v1` tracks the latest (the Action's moving major tag is
-   decoupled from the npm version).
+3. After publishing, the release workflow force-moves the `v1` tag to the
+   release commit so `clerk/break-check@v1` tracks the latest. `v1` names the
+   Action's INTERFACE major, decoupled from the npm version; if action.yml's
+   inputs/outputs ever change incompatibly, freeze the tag step at the last
+   compatible commit and push `v2` instead.
