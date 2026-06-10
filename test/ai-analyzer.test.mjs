@@ -212,6 +212,138 @@ test("ai-analyzer: unresolvableReference refuses the downgrade even with applyDo
   }
 });
 
+test("ai-analyzer: repairedReference refuses an escalation back to breaking (#98)", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  // The detector already downgraded this change deterministically: the only
+  // diff is a blocked -> exported specifier swap.
+  const change = {
+    ...ruleBasedBreakingChange(),
+    type: ChangeType.NON_BREAKING,
+    severity: ChangeSeverity.MINOR,
+    ruleBasedType: ChangeType.BREAKING,
+    repairedReference: {
+      from: ["@clerk/shared/_chunks/index-Cr_OtBLq"],
+      to: ["@clerk/shared/types/utils"],
+    },
+    referenceResolutions: [
+      {
+        specifier: "@clerk/shared/_chunks/index-Cr_OtBLq",
+        side: "removed",
+        verdict: "blocked",
+      },
+      {
+        specifier: "@clerk/shared/types/utils",
+        side: "introduced",
+        verdict: "exported",
+      },
+    ],
+  };
+  const { client } = stubClient({
+    verdicts: [
+      {
+        id: change.id,
+        type: ChangeType.BREAKING,
+        confidence: 0.7,
+        rationale: "Cannot verify the new specifier resolves.",
+        migration: "Update imports.",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    const [result] = await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    // The deterministic repair wins: the change stays non-breaking, the
+    // model's opinion is recorded as a (non-applied) suggestion, and nothing
+    // is counted as an override.
+    assert.equal(result.type, ChangeType.NON_BREAKING);
+    assert.equal(result.severity, ChangeSeverity.MINOR);
+    assert.equal(result.aiAnalysis.source, "ai-suggested-escalation");
+    assert.equal(result.aiAnalysis.migration, undefined);
+    assert.deepEqual(result.repairedReference, change.repairedReference);
+    assert.equal(analyzer.overriddenCount, 0);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("ai-analyzer: reference resolution facts ride in the review request (#98)", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  const change = {
+    ...ruleBasedBreakingChange(),
+    referenceResolutions: [
+      {
+        specifier: "@clerk/shared/_chunks/index-Cr_OtBLq",
+        side: "removed",
+        verdict: "blocked",
+      },
+      {
+        specifier: "@clerk/shared/types/utils",
+        side: "introduced",
+        verdict: "exported",
+      },
+    ],
+  };
+  const { client, calls } = stubClient({
+    verdicts: [
+      {
+        id: change.id,
+        type: ChangeType.BREAKING,
+        confidence: 0.9,
+        rationale: "Return type narrowed.",
+        migration: "Update callers.",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    assert.equal(calls.length, 1);
+    const params = calls[0];
+    const userText = params.messages
+      .flatMap((m) =>
+        typeof m.content === "string"
+          ? [m.content]
+          : m.content.map((b) => b.text ?? ""),
+      )
+      .join("\n");
+    // The per-change review JSON must carry the exports-map verdicts so the
+    // model never guesses resolvability from path shapes (rules 12/13).
+    assert.match(userText, /referenceResolutions/);
+    assert.match(userText, /@clerk\/shared\/types\/utils/);
+    assert.match(userText, /"verdict":"exported"/);
+    // The prompt teaches the repair rule.
+    const systemText =
+      typeof params.system === "string"
+        ? params.system
+        : (params.system ?? []).map((b) => b.text ?? "").join("\n");
+    assert.match(systemText, /repair, not a break/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test("ai-analyzer: lean mode records a suggested downgrade but keeps it breaking", async () => {
   const { dir, baseline, current } = makeWorkspace();
   const change = ruleBasedBreakingChange();

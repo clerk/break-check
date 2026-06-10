@@ -16,6 +16,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { isHashedChunkSubpath } from "./api-extractor.js";
+import type { ReferenceResolution, RepairedReference } from "../types.js";
 
 export interface ParsedSpecifier {
   /** Bare package name, including scope (`@clerk/shared`, `react`). */
@@ -273,4 +274,153 @@ export function findUnresolvableReference(
     }
   }
   return null;
+}
+
+/**
+ * Classify every inline import specifier a change's signature dropped or
+ * introduced, judging each against the dependency's `exports` map. Specifiers
+ * present on both sides are unchanged references, not transitions, and are
+ * skipped. Returns an empty array when the specifier sets match.
+ */
+export function collectReferenceTransitions(
+  change: { beforeSnippet?: string; afterSnippet?: string },
+  fromDir: string,
+): ReferenceResolution[] {
+  const before = extractInlineImportSpecifiers(change.beforeSnippet);
+  const after = extractInlineImportSpecifiers(change.afterSnippet);
+  if (before.length === 0 && after.length === 0) return [];
+  const beforeSet = new Set(before);
+  const afterSet = new Set(after);
+  const out: ReferenceResolution[] = [];
+  for (const spec of before) {
+    if (!afterSet.has(spec))
+      out.push(classifyTransition(spec, "removed", fromDir));
+  }
+  for (const spec of after) {
+    if (!beforeSet.has(spec)) {
+      out.push(classifyTransition(spec, "introduced", fromDir));
+    }
+  }
+  return out;
+}
+
+function classifyTransition(
+  specifier: string,
+  side: ReferenceResolution["side"],
+  fromDir: string,
+): ReferenceResolution {
+  const verdict = classifyReference(specifier, fromDir);
+  const resolution: ReferenceResolution = { specifier, side, verdict };
+  if (verdict === "unknown" && looksLikeInternalChunk(specifier)) {
+    resolution.internalChunk = true;
+  }
+  return resolution;
+}
+
+/**
+ * Decide whether a breaking modification is a reference *repair*: the inverse
+ * of `findUnresolvableReference` (issue #98). A repair holds when
+ *
+ * 1. the signature dropped at least one specifier and every dropped specifier
+ *    was unconsumable (deterministically export-blocked, or chunk-shaped with
+ *    the dependency unlocatable) and not exempted via `resolvableSpecifiers`,
+ * 2. every introduced specifier deterministically resolves to a public export,
+ * 3. the before/after signatures are identical once the swapped
+ *    `import("...").Name` units are masked, so the swap is the entire diff.
+ *
+ * The before state already errored (TS2307) or degraded to `any` downstream,
+ * so consumers could never have depended on the referenced type's shape; the
+ * swap strictly improves resolvability. The imported member name is allowed to
+ * change with the specifier (bundlers minify the names of chunk-internal
+ * symbols, e.g. `Xm` for `Without`), which is safe under the same reasoning.
+ * Anything else differing fails the masked comparison and the change stays
+ * breaking, so the check fails closed.
+ */
+export function findRepairedReference(
+  change: { beforeSnippet?: string; afterSnippet?: string },
+  transitions: ReferenceResolution[],
+  isAllowed: (specifier: string) => boolean = () => false,
+): RepairedReference | null {
+  const removed = transitions.filter((t) => t.side === "removed");
+  const introduced = transitions.filter((t) => t.side === "introduced");
+  if (removed.length === 0 || introduced.length === 0) return null;
+  const removedUnconsumable = removed.every(
+    (t) =>
+      !isAllowed(t.specifier) &&
+      (t.verdict === "blocked" ||
+        (t.verdict === "unknown" && t.internalChunk === true)),
+  );
+  if (!removedUnconsumable) return null;
+  if (!introduced.every((t) => t.verdict === "exported")) return null;
+  if (
+    !signaturesMatchModuloSwappedReferences(
+      change.beforeSnippet,
+      change.afterSnippet,
+      removed.map((t) => t.specifier),
+      introduced.map((t) => t.specifier),
+    )
+  ) {
+    return null;
+  }
+  return {
+    from: removed.map((t) => t.specifier),
+    to: introduced.map((t) => t.specifier),
+  };
+}
+
+/**
+ * Placeholder the masked comparison substitutes for a swapped reference. Word
+ * characters only, so the whitespace/punctuation normalization below cannot
+ * split or merge it with neighboring tokens.
+ */
+const REF_PLACEHOLDER = "__break_check_swapped_ref__";
+
+/**
+ * Replace each `import("<specifier>")` unit, plus its immediate `.Member`
+ * access when present, with a fixed placeholder. Only the first member access
+ * is masked: in `import("x").Foo.Bar` the trailing `.Bar` must still match on
+ * both sides, keeping the comparison as tight as possible while allowing the
+ * specifier-and-alias swap that bundler repairs produce.
+ */
+function maskReferences(snippet: string, specifiers: string[]): string {
+  let out = snippet;
+  for (const spec of specifiers) {
+    const re = new RegExp(
+      `import\\(\\s*(['"])${escapeRegExp(spec)}\\1\\s*\\)` +
+        `(\\s*\\.\\s*[A-Za-z_$][A-Za-z0-9_$]*)?`,
+      "g",
+    );
+    out = out.replace(re, REF_PLACEHOLDER);
+  }
+  return out;
+}
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/** Collapse whitespace the way `api-diff`'s normalizeType does, so formatting noise cannot block or fake a match. */
+function normalizeMasked(text: string): string {
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/\s*([,;:()<>[\]{}|&])\s*/g, "$1")
+    .trim();
+}
+
+/**
+ * True when the before/after snippets are textually identical after masking
+ * the swapped reference units and normalizing whitespace. Both snippets must
+ * be present; a removal or addition is never a repair.
+ */
+export function signaturesMatchModuloSwappedReferences(
+  beforeSnippet: string | undefined,
+  afterSnippet: string | undefined,
+  removedSpecifiers: string[],
+  introducedSpecifiers: string[],
+): boolean {
+  if (!beforeSnippet || !afterSnippet) return false;
+  return (
+    normalizeMasked(maskReferences(beforeSnippet, removedSpecifiers)) ===
+    normalizeMasked(maskReferences(afterSnippet, introducedSpecifiers))
+  );
 }

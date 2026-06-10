@@ -235,7 +235,8 @@ Reasoning rules:
 9. Adding a *new optional* property to an object type is non-breaking, for both input and output types: existing consumers neither passed it nor relied on reading it. (This is distinct from rule 4, which is about flipping an *existing* output field to optional.)
 10. \`Pick\`, \`Omit\`, \`Partial\`, \`Required\`, and other mapped types preserve each member's optionality from the source type. Resolve the member against the referenced source definition before judging; a property newly included by a \`Pick\` (or surviving an \`Omit\`) is optional in the result whenever the source declares it optional, so do not treat it as required unless the source does.
 11. Adding a *required* property to a type is breaking only when consumers construct or assign values of that type (a parameter / input position, or an object literal they author against the type). For a type consumers only read (a return / response / output type, e.g. the resolved value of a \`Promise<T>\` return or a hook result field), adding a property is non-breaking. Determine the direction from the "Usage sites" block: a \`Promise<T>\` result, a function return, or a result field is output. If any usage is an input position, or no usage sites are shown, keep "breaking".
-12. A reference whose module specifier is not a public, exported entry point of its package is breaking regardless of structural shape: the consumer cannot resolve the module, so the type degrades to \`any\` (skipLibCheck) or fails to compile (TS2307). Treat a specifier that contains a \`/_chunks/\` segment, ends in a content-hashed bundler chunk basename (a \`-<hash>\` suffix), or names a subpath a package blocks/omits in its \`exports\` as non-resolvable. Do NOT downgrade such a change on structural-equivalence grounds (rule 2 does not apply): "the shape is identical" is true but irrelevant when the consumer never receives the type.
+12. A reference whose module specifier is not a public, exported entry point of its package is breaking regardless of structural shape: the consumer cannot resolve the module, so the type degrades to \`any\` (skipLibCheck) or fails to compile (TS2307). Treat a specifier that contains a \`/_chunks/\` segment, ends in a content-hashed bundler chunk basename (a \`-<hash>\` suffix), or names a subpath a package blocks/omits in its \`exports\` as non-resolvable. Do NOT downgrade such a change on structural-equivalence grounds (rule 2 does not apply): "the shape is identical" is true but irrelevant when the consumer never receives the type. When a change carries a \`referenceResolutions\` list, those verdicts are deterministic, resolved against the dependency's actual \`exports\` map: \`blocked\` means consumers cannot resolve the specifier, \`exported\` means it is a public entry point. Trust them over any guess from the specifier's path shape.
+13. The inverse swap is a repair, not a break: when a change's only difference is that a non-resolvable specifier (per rule 12) was replaced by one whose \`referenceResolutions\` verdict is \`exported\`, the old type was never consumable (it errored or degraded to \`any\`), so no well-typed consumer can be broken by the swap. Judge it "non-breaking" even though the imported alias name changed with the specifier (bundlers minify chunk-internal names, e.g. \`Xm\` for \`Without\`). A change carrying \`repairedReference\` was already verified this way deterministically; confirm it as non-breaking rather than escalating.
 
 Output protocol:
 - Always respond by calling the submit_review tool. Never reply with plain text.
@@ -538,6 +539,28 @@ export class AiChangeAnalyzer {
         continue;
       }
 
+      // The mirror guard for repaired references (issue #98): the detector's
+      // downgrade is deterministic (every dropped specifier unconsumable, every
+      // introduced one exported, signature otherwise identical), and the swap
+      // is the entire diff, so a model escalation cannot be adding information.
+      // Record the opinion without applying it; the reporter explains why.
+      const isEscalation =
+        change.type === ChangeType.NON_BREAKING &&
+        verdictType === ChangeType.BREAKING;
+      if (isEscalation && change.repairedReference) {
+        enriched.push({
+          ...change,
+          aiAnalysis: {
+            source: "ai-suggested-escalation",
+            confidence: clamp01(v.confidence),
+            rationale: v.rationale,
+            migration: undefined,
+            model: this.model,
+          },
+        });
+        continue;
+      }
+
       const overrode = verdictType !== change.type;
       if (overrode) this.overriddenCount += 1;
       const aiAnalysis: AiAnalysis = {
@@ -610,6 +633,16 @@ export class AiChangeAnalyzer {
       // referenced type definitions ride in the surface block.
       beforeSnippet: capSnippet(c.beforeSnippet),
       afterSnippet: capSnippet(c.afterSnippet),
+      // Deterministic exports-map verdicts for dropped/introduced specifiers
+      // (rules 12/13), so the model never guesses resolvability from path
+      // shapes. Only present when the specifier sets differ, so the common
+      // change pays no tokens for them.
+      ...(c.referenceResolutions
+        ? { referenceResolutions: c.referenceResolutions }
+        : {}),
+      ...(c.repairedReference
+        ? { repairedReference: c.repairedReference }
+        : {}),
     }));
 
     // Compact JSON (no indentation): this block is in the non-cached part of

@@ -488,6 +488,44 @@ test("markdown reporter: unresolvable-reference change shows the guard callout a
   );
 });
 
+test("markdown reporter: a repaired reference shows the repair callout and the AI escalation label (#98)", () => {
+  const change = {
+    id: "r1",
+    type: ChangeType.NON_BREAKING,
+    severity: ChangeSeverity.MINOR,
+    category: "function",
+    name: "SignInWithMetamaskButton",
+    description: "Parameter `props` type changed",
+    beforeSnippet:
+      'declare const SignInWithMetamaskButton: (props: import("@clerk/shared/_chunks/index-Cr_OtBLq").Xm) => null;',
+    afterSnippet:
+      'declare const SignInWithMetamaskButton: (props: import("@clerk/shared/types/utils").Without) => null;',
+    ruleBasedType: ChangeType.BREAKING,
+    repairedReference: {
+      from: ["@clerk/shared/_chunks/index-Cr_OtBLq"],
+      to: ["@clerk/shared/types/utils"],
+    },
+    aiAnalysis: {
+      source: "ai-suggested-escalation",
+      confidence: 0.7,
+      rationale: "Cannot verify the new specifier resolves.",
+      model: "claude-test",
+    },
+  };
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    makeResult(change),
+  );
+  assert.match(out, /Repaired reference/);
+  assert.ok(
+    out.includes("@clerk/shared/_chunks/index-Cr_OtBLq") &&
+      out.includes("@clerk/shared/types/utils"),
+    "callout should name both sides of the swap",
+  );
+  assert.match(out, /reported non-breaking/);
+  // The refused escalation is labeled as a recorded, non-applied opinion.
+  assert.match(out, /suggests breaking, not applied/);
+});
+
 function makeBumpResult({
   previous,
   current,

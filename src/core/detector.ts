@@ -25,7 +25,11 @@ import { ApiDiffAnalyzer } from "../analyzers/api-diff.js";
 import { VersionAnalyzer } from "../analyzers/version.js";
 import { AiChangeAnalyzer } from "../analyzers/ai-analyzer.js";
 import { makeAcknowledgedMatcher } from "../utils/acknowledged.js";
-import { findUnresolvableReference } from "../utils/exports-resolution.js";
+import {
+  collectReferenceTransitions,
+  findRepairedReference,
+  findUnresolvableReference,
+} from "../utils/exports-resolution.js";
 import {
   AnalysisResult,
   ApiChange,
@@ -846,6 +850,14 @@ export class BreakingChangesDetector {
       // --ai-apply-downgrades. See `findUnresolvableReference`.
       this.flagUnresolvableReferences(entryChanges, packageInfo.path);
 
+      // The same machinery in the opposite direction (issue #98): record
+      // exports-map verdicts for every specifier a signature dropped or
+      // introduced (the AI reads these instead of guessing from path shapes),
+      // and downgrade a breaking change whose only diff is swapping
+      // unconsumable specifiers for exported ones. Runs after the guard above
+      // so a change it flagged is never downgraded.
+      this.applyReferenceRepairs(entryChanges, packageInfo.path);
+
       const ai = this.ensureAiAnalyzer();
       // No rule-based changes means baseline and current matched for this
       // entry, so there is nothing to review. We deliberately do not invoke the
@@ -999,6 +1011,50 @@ export class BreakingChangesDetector {
         change.unresolvableReference = true;
         change.unresolvableSpecifier = hit.specifier;
       }
+    }
+  }
+
+  /**
+   * Attach exports-map resolvability facts for every change whose signature
+   * dropped or introduced inline import specifiers, and apply the deterministic
+   * repair downgrade (issue #98): a breaking modification whose only diff is
+   * swapping unconsumable specifiers (export-blocked, or chunk-shaped with the
+   * dependency unlocatable) for deterministically exported ones is flipped to
+   * non-breaking. The before state already errored (TS2307) or degraded to
+   * `any` downstream, so consumers could never have depended on the referenced
+   * type; the swap strictly improves resolvability.
+   *
+   * Mirrors the conservatism of `flagUnresolvableReferences` in the risky
+   * direction: the downgrade clears a break, so the introduced side must be
+   * *deterministically* exported (resolved against the dependency's `exports`),
+   * and anything in the signature beyond the specifier/alias swap fails the
+   * masked comparison and keeps the change breaking. A change the unresolvable
+   * guard flagged is never downgraded. `acknowledgedChanges` and the
+   * `downgradeRepairedReferences` config toggle remain the maintainer's
+   * overrides. Additions are left alone.
+   */
+  private applyReferenceRepairs(changes: ApiChange[], fromDir: string): void {
+    for (const change of changes) {
+      if (change.type === ChangeType.ADDITION) continue;
+      const transitions = collectReferenceTransitions(change, fromDir);
+      if (transitions.length === 0) continue;
+      // Facts are attached even when no repair applies (and even with the
+      // downgrade toggled off): the AI reviewer reads them per rule 12/13
+      // instead of guessing resolvability from path shapes.
+      change.referenceResolutions = transitions;
+      if (this.config.downgradeRepairedReferences === false) continue;
+      if (change.type !== ChangeType.BREAKING) continue;
+      if (change.unresolvableReference) continue;
+      const repair = findRepairedReference(
+        change,
+        transitions,
+        this.resolvableSpecifierMatcher,
+      );
+      if (!repair) continue;
+      change.ruleBasedType = change.ruleBasedType ?? change.type;
+      change.type = ChangeType.NON_BREAKING;
+      change.severity = ChangeSeverity.MINOR;
+      change.repairedReference = repair;
     }
   }
 

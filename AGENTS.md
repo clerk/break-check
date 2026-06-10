@@ -276,6 +276,30 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   diff fires. The only case `canonicalType` collapses to nothing is a
   resolvable-chunk -> resolvable-chunk move, which is benign (a resolvable chunk
   is importable by consumers).
+- **The repair downgrade is the guard's deterministic inverse (issue #98).**
+  When a breaking modification's only diff is swapping unconsumable specifiers
+  for exported ones, `detector.ts#applyReferenceRepairs` (running right after
+  `flagUnresolvableReferences`, before the AI) flips it to non-breaking and
+  records `repairedReference: { from, to }`. The gate is
+  `findRepairedReference` (`utils/exports-resolution.ts`): every removed
+  specifier must classify `blocked` (or `unknown` + chunk-shaped when the
+  dependency is unlocatable) and not match `resolvableSpecifiers`; every
+  introduced specifier must classify `exported` DETERMINISTICALLY (the
+  downgrade clears a break, so the heuristic may never vouch for the after
+  side); and the snippets must be identical after masking each swapped
+  `import("spec").Name` unit (the alias name may change with the specifier,
+  bundlers minify chunk-internal names; only the first member access is
+  masked, deeper chains must still match). Anything else fails the masked
+  compare and stays breaking, fail-closed. A change the unresolvable guard
+  flagged is never downgraded; `downgradeRepairedReferences: false` is the
+  config opt-out. The AI cannot escalate a repaired change: the analyzer
+  records the refused verdict as `ai-suggested-escalation`, mirroring the
+  downgrade refusal for `unresolvableReference`. The same pass attaches
+  `referenceResolutions` (per-specifier exports-map verdicts, both sides) to
+  any change whose specifier sets differ, regardless of repair outcome or the
+  toggle; the per-change review JSON ships them and system-prompt rules 12/13
+  tell the model to trust those verdicts over path shapes. Keep
+  `repairedReference` and `referenceResolutions` OUT of `generateChangeId`.
 - **Action depends on the published package**: the composite Action's `npx`
   step fetches `@clerk/break-check` from npm at runtime, so consumers pin the
   repo's moving `v1` tag (`clerk/break-check@v1`). Keep the README's Actions
