@@ -15,6 +15,42 @@ interface SemverComponents {
 }
 
 /**
+ * Compare two prerelease tags per semver spec item 11: a version without a
+ * tag outranks any tagged one; otherwise dot-separated identifiers compare
+ * left to right (numerics numerically, numerics below alphanumerics,
+ * alphanumerics lexically), and when one tag is a prefix of the other the
+ * longer one ranks higher. Returns -1 / 0 / 1.
+ */
+function comparePrereleaseTags(
+  a: string | undefined,
+  b: string | undefined,
+): number {
+  if (a === undefined && b === undefined) return 0;
+  if (a === undefined) return 1;
+  if (b === undefined) return -1;
+  const as = a.split(".");
+  const bs = b.split(".");
+  const len = Math.min(as.length, bs.length);
+  for (let i = 0; i < len; i++) {
+    const x = as[i];
+    const y = bs[i];
+    const xNumeric = /^\d+$/.test(x);
+    const yNumeric = /^\d+$/.test(y);
+    if (xNumeric && yNumeric) {
+      const dx = Number(x);
+      const dy = Number(y);
+      if (dx !== dy) return dx < dy ? -1 : 1;
+    } else if (xNumeric !== yNumeric) {
+      return xNumeric ? -1 : 1;
+    } else if (x !== y) {
+      return x < y ? -1 : 1;
+    }
+  }
+  if (as.length !== bs.length) return as.length < bs.length ? -1 : 1;
+  return 0;
+}
+
+/**
  * Analyzer for version bump validation
  */
 export class VersionAnalyzer {
@@ -120,24 +156,55 @@ export class VersionAnalyzer {
   }
 
   /**
-   * Check if a version is a pre-release (0.x.y)
-   * Pre-release versions have different semver semantics
+   * Check if a version is in initial development (major version zero, 0.x.y).
+   * Such versions follow the 0.x convention: `^0.2.3` ranges stop at the next
+   * minor, so the minor position is the breaking boundary. Not to be confused
+   * with a semver prerelease TAG (`1.0.0-beta.1`); see `isPrereleaseAdvance`.
    * @param version - Version string
    * @returns true if version is 0.x.y
    */
-  isPreRelease(version: string): boolean {
+  isZeroMajor(version: string): boolean {
     const parsed = this.parseSemver(version);
     return parsed !== null && parsed.major === 0;
   }
 
   /**
-   * Validate bump for pre-release versions (0.x.y)
-   * In pre-release, breaking changes are allowed in minor bumps
+   * Whether `currentVersion` is a forward move within `previousVersion`'s
+   * prerelease train: the numeric triple is unchanged and the prerelease tag
+   * advanced (`1.0.0-beta.1` -> `1.0.0-beta.2`) or was dropped to finalize
+   * the release (`1.0.0-beta.1` -> `1.0.0`). Such a move is never an
+   * insufficient bump, whatever the changes: shipping breaking changes
+   * between prereleases of the same version is the point of a prerelease.
+   * The reverse direction (re-tagging a final version, or beta.2 -> beta.1)
+   * is not an advance.
+   */
+  isPrereleaseAdvance(
+    previousVersion: string,
+    currentVersion: string,
+  ): boolean {
+    const prev = this.parseSemver(previousVersion);
+    const curr = this.parseSemver(currentVersion);
+    if (!prev || !curr || prev.prerelease === undefined) {
+      return false;
+    }
+    if (
+      prev.major !== curr.major ||
+      prev.minor !== curr.minor ||
+      prev.patch !== curr.patch
+    ) {
+      return false;
+    }
+    return comparePrereleaseTags(prev.prerelease, curr.prerelease) < 0;
+  }
+
+  /**
+   * Validate bump for initial-development versions (0.x.y)
+   * In 0.x, breaking changes are allowed in minor bumps
    * @param recommended - Recommended bump
    * @param actual - Actual bump
-   * @returns true if valid for pre-release semantics
+   * @returns true if valid for 0.x semantics
    */
-  isValidPreReleaseBump(
+  isValidZeroMajorBump(
     recommended: ChangeSeverity,
     actual: ChangeSeverity | null,
   ): boolean {
@@ -157,16 +224,16 @@ export class VersionAnalyzer {
    * Get a human-readable validation message
    * @param recommended - Recommended bump
    * @param actual - Actual bump
-   * @param isPreRelease - Whether this is a pre-release version
+   * @param zeroMajor - Whether the package is on a 0.x version
    * @returns Validation message or null if valid
    */
   getValidationMessage(
     recommended: ChangeSeverity,
     actual: ChangeSeverity | null,
-    isPreRelease: boolean = false,
+    zeroMajor: boolean = false,
   ): string | null {
-    const isValid = isPreRelease
-      ? this.isValidPreReleaseBump(recommended, actual)
+    const isValid = zeroMajor
+      ? this.isValidZeroMajorBump(recommended, actual)
       : this.isValidBump(recommended, actual);
 
     if (isValid) {
@@ -228,7 +295,10 @@ export class VersionAnalyzer {
   }
 
   /**
-   * Compare two versions
+   * Compare two versions, including prerelease precedence per the semver
+   * spec: when the numeric triples are equal, a tagged version ranks below
+   * the untagged one (`1.0.0-beta.1` < `1.0.0`) and tags compare identifier
+   * by identifier (`beta.2` < `beta.11`, `alpha` < `beta`).
    * @param a - First version
    * @param b - Second version
    * @returns -1 if a < b, 0 if a === b, 1 if a > b, null if invalid
@@ -253,6 +323,6 @@ export class VersionAnalyzer {
       return parsedA.patch < parsedB.patch ? -1 : 1;
     }
 
-    return 0;
+    return comparePrereleaseTags(parsedA.prerelease, parsedB.prerelease);
   }
 }

@@ -123,57 +123,54 @@ test("isValidBump: null actual only valid when nothing was required", () => {
   assert.equal(analyzer.isValidBump(ChangeSeverity.MAJOR, null), false);
 });
 
-// ---------- isPreRelease ----------
+// ---------- isZeroMajor ----------
 
-test("isPreRelease: 0.x.y is pre-release", () => {
-  assert.equal(analyzer.isPreRelease("0.0.1"), true);
-  assert.equal(analyzer.isPreRelease("0.5.0"), true);
+test("isZeroMajor: 0.x.y is initial development", () => {
+  assert.equal(analyzer.isZeroMajor("0.0.1"), true);
+  assert.equal(analyzer.isZeroMajor("0.5.0"), true);
 });
 
-test("isPreRelease: 1.x.y and above are not pre-release", () => {
-  assert.equal(analyzer.isPreRelease("1.0.0"), false);
-  assert.equal(analyzer.isPreRelease("10.4.2"), false);
+test("isZeroMajor: 1.x.y and above are not", () => {
+  assert.equal(analyzer.isZeroMajor("1.0.0"), false);
+  assert.equal(analyzer.isZeroMajor("10.4.2"), false);
 });
 
-test("isPreRelease: unparseable input → false", () => {
-  assert.equal(analyzer.isPreRelease("nope"), false);
+test("isZeroMajor: unparseable input → false", () => {
+  assert.equal(analyzer.isZeroMajor("nope"), false);
 });
 
-// ---------- isValidPreReleaseBump ----------
+// ---------- isValidZeroMajorBump ----------
 
-test("isValidPreReleaseBump: breaking change accepts a minor bump", () => {
+test("isValidZeroMajorBump: breaking change accepts a minor bump", () => {
   // 0.x.y semver allows breaking changes inside minor bumps
   assert.equal(
-    analyzer.isValidPreReleaseBump(ChangeSeverity.MAJOR, ChangeSeverity.MINOR),
+    analyzer.isValidZeroMajorBump(ChangeSeverity.MAJOR, ChangeSeverity.MINOR),
     true,
   );
 });
 
-test("isValidPreReleaseBump: breaking change still rejects a patch bump", () => {
+test("isValidZeroMajorBump: breaking change still rejects a patch bump", () => {
   assert.equal(
-    analyzer.isValidPreReleaseBump(ChangeSeverity.MAJOR, ChangeSeverity.PATCH),
+    analyzer.isValidZeroMajorBump(ChangeSeverity.MAJOR, ChangeSeverity.PATCH),
     false,
   );
 });
 
-test("isValidPreReleaseBump: non-breaking changes follow normal rules", () => {
+test("isValidZeroMajorBump: non-breaking changes follow normal rules", () => {
   assert.equal(
-    analyzer.isValidPreReleaseBump(ChangeSeverity.MINOR, ChangeSeverity.PATCH),
+    analyzer.isValidZeroMajorBump(ChangeSeverity.MINOR, ChangeSeverity.PATCH),
     false,
   );
   assert.equal(
-    analyzer.isValidPreReleaseBump(ChangeSeverity.MINOR, ChangeSeverity.MINOR),
+    analyzer.isValidZeroMajorBump(ChangeSeverity.MINOR, ChangeSeverity.MINOR),
     true,
   );
 });
 
-test("isValidPreReleaseBump: null actual only valid when nothing was required", () => {
+test("isValidZeroMajorBump: null actual only valid when nothing was required", () => {
+  assert.equal(analyzer.isValidZeroMajorBump(ChangeSeverity.PATCH, null), true);
   assert.equal(
-    analyzer.isValidPreReleaseBump(ChangeSeverity.PATCH, null),
-    true,
-  );
-  assert.equal(
-    analyzer.isValidPreReleaseBump(ChangeSeverity.MAJOR, null),
+    analyzer.isValidZeroMajorBump(ChangeSeverity.MAJOR, null),
     false,
   );
 });
@@ -203,7 +200,7 @@ test("getValidationMessage: insufficient bump mentions both severities", () => {
   assert.match(msg ?? "", /major/);
 });
 
-test("getValidationMessage: pre-release flag relaxes the rule", () => {
+test("getValidationMessage: zero-major flag relaxes the rule", () => {
   assert.equal(
     analyzer.getValidationMessage(
       ChangeSeverity.MAJOR,
@@ -267,4 +264,79 @@ test("compareVersions: greater than", () => {
 
 test("compareVersions: unparseable input → null", () => {
   assert.equal(analyzer.compareVersions("nope", "1.0.0"), null);
+});
+
+// ---------- isPrereleaseAdvance ----------
+
+test("isPrereleaseAdvance: numeric tag increment within one train", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta.1", "1.0.0-beta.2"),
+    true,
+  );
+});
+
+test("isPrereleaseAdvance: numeric identifiers compare numerically, not lexically", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta.2", "1.0.0-beta.11"),
+    true,
+  );
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta.11", "1.0.0-beta.2"),
+    false,
+  );
+});
+
+test("isPrereleaseAdvance: alpha to beta advances", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("2.0.0-alpha.3", "2.0.0-beta.1"),
+    true,
+  );
+});
+
+test("isPrereleaseAdvance: finalizing the release advances", () => {
+  assert.equal(analyzer.isPrereleaseAdvance("1.0.0-rc.1", "1.0.0"), true);
+});
+
+test("isPrereleaseAdvance: re-tagging a final version is not an advance", () => {
+  assert.equal(analyzer.isPrereleaseAdvance("1.0.0", "1.0.0-beta.1"), false);
+});
+
+test("isPrereleaseAdvance: tag moving backwards is not an advance", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta.2", "1.0.0-beta.1"),
+    false,
+  );
+});
+
+test("isPrereleaseAdvance: a different triple is not a prerelease advance", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta.1", "1.0.1-beta.2"),
+    false,
+  );
+  assert.equal(analyzer.isPrereleaseAdvance("1.0.0-beta.1", "1.1.0"), false);
+});
+
+test("isPrereleaseAdvance: longer tag outranks its prefix", () => {
+  assert.equal(
+    analyzer.isPrereleaseAdvance("1.0.0-beta", "1.0.0-beta.1"),
+    true,
+  );
+});
+
+test("isPrereleaseAdvance: unparseable input → false", () => {
+  assert.equal(analyzer.isPrereleaseAdvance("nope", "1.0.0"), false);
+  assert.equal(analyzer.isPrereleaseAdvance("1.0.0-beta.1", "nope"), false);
+});
+
+// ---------- compareVersions: prerelease precedence ----------
+
+test("compareVersions: prerelease ranks below the final release", () => {
+  assert.equal(analyzer.compareVersions("1.0.0-beta.1", "1.0.0"), -1);
+  assert.equal(analyzer.compareVersions("1.0.0", "1.0.0-beta.1"), 1);
+});
+
+test("compareVersions: prerelease tags compare per spec", () => {
+  assert.equal(analyzer.compareVersions("1.0.0-beta.2", "1.0.0-beta.11"), -1);
+  assert.equal(analyzer.compareVersions("1.0.0-alpha", "1.0.0-beta"), -1);
+  assert.equal(analyzer.compareVersions("1.0.0-beta.1", "1.0.0-beta.1"), 0);
 });

@@ -200,6 +200,21 @@ a machine-readable verdict without running detection (and the AI reviewer) twice
 | `resolvableSpecifiers` | string[] | `[]`             | Module-specifier globs to exempt from the unresolvable-reference guard |
 | `ai`                   | object   | unset            | AI reviewer options (see below)                                        |
 
+Version-bump validation (`checkVersionBump`) compares the bump between the
+baseline and current versions against the severity of the detected changes,
+following semver range semantics rather than the raw labels:
+
+- For a stable package (`>= 1.0.0`), a breaking change requires a major bump,
+  and additions or non-breaking changes require at least a minor.
+- For a `0.x` package, a breaking change is satisfied by a minor bump:
+  `^0.2.3` ranges stop at the next minor, so `0.2.x -> 0.3.0` is the breaking
+  boundary consumers actually experience. The convention is keyed off the
+  baseline version.
+- Moving forward within one prerelease train (`1.0.0-beta.1 -> 1.0.0-beta.2`,
+  or finalizing to `1.0.0`) is never flagged as insufficient; shipping
+  breaking changes between prereleases of the same version is what
+  prereleases are for.
+
 A `"./*"` export that points into a bundler output dir will glob in the shared
 chunks emitted by rolldown/tsdown/esbuild/rollup (`index-Dq-_K2VH.mjs`,
 `url-CcPzUbGM.mjs`, ...). Those chunks are not public API, and their content
