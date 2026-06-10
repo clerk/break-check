@@ -1,5 +1,45 @@
 # @clerk/break-check
 
+## 0.3.0
+
+### Minor Changes
+
+- [#93](https://github.com/clerk/break-check/pull/93) [`d3297f3`](https://github.com/clerk/break-check/commit/d3297f330ba4947cef51510ae8dfb312f3ebb600) Thanks [@jacekradko](https://github.com/jacekradko)! - Version-bump validation now follows semver range semantics instead of raw
+  labels. A breaking change in a `0.x` package is satisfied by a minor bump
+  (`^0.2.3` ranges stop at the next minor, so that IS the breaking boundary);
+  previously every 0.x breaking change was flagged "insufficient" unless it went
+  to 1.0.0. An advance within one prerelease train (`1.0.0-beta.1 ->
+1.0.0-beta.2`, or finalizing to `1.0.0`) is no longer reported as "version was
+  not bumped". `VersionAnalyzer.compareVersions` now honors prerelease
+  precedence per the semver spec (`1.0.0-beta.1` ranks below `1.0.0`), and a new
+  `VersionAnalyzer.isPrereleaseAdvance` is exported.
+
+  BREAKING (programmatic API only): `VersionAnalyzer.isPreRelease` and
+  `isValidPreReleaseBump` are renamed to `isZeroMajor` and
+  `isValidZeroMajorBump`. The old names conflated the 0.x convention with semver
+  prerelease tags, which this release starts handling as a distinct concept.
+  Per the 0.x rule above (which break-check now applies to itself), this rename
+  ships in a minor.
+
+- [#94](https://github.com/clerk/break-check/pull/94) [`a6c4eb9`](https://github.com/clerk/break-check/commit/a6c4eb93c20d69c3a19ffb47725f5a12ba71e069) Thanks [@jacekradko](https://github.com/jacekradko)! - The report's projected bump target now follows the same conventions bump
+  validation applies. A 0.x package with breaking changes projects the next
+  minor (`0.2.0 -> 0.3.0`) instead of suggesting a jump to `1.0.0`, with a note
+  explaining the 0.x convention (shown after the bump lands too, so
+  "Recommended: MAJOR / Actual: MINOR ✅" doesn't read as a contradiction). A
+  package on a prerelease tag projects the next tag in its train
+  (`1.0.0-beta.1 -> 1.0.0-beta.2`) instead of a whole-major jump. Adds
+  `VersionAnalyzer.nextPrereleaseVersion` to the programmatic API. The JSON
+  output is unchanged: `recommendedVersionBump` remains the severity label.
+
+### Patch Changes
+
+- [#96](https://github.com/clerk/break-check/pull/96) [`fd0f124`](https://github.com/clerk/break-check/commit/fd0f124f89938c8977e0297682836649b9b5f485) Thanks [@jacekradko](https://github.com/jacekradko)! - `findConfigFile` no longer hangs when called with a relative start directory.
+  The walk-up loop compared against `path.parse(startDir).root`, which is empty
+  for a relative path while `path.dirname` bottoms out at `"."`, so the loop
+  never terminated. The start directory is now resolved against cwd before
+  walking. The CLI always passed absolute paths, so this only affected
+  programmatic callers of the exported function.
+
 ## 0.2.0
 
 ### Minor Changes
