@@ -121,6 +121,8 @@ jobs:
         # separately in ai-smoke.yml, which only runs in trusted contexts
         # (workflow_dispatch + nightly schedule on main).
         continue-on-error: true
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -uo pipefail
           # Diff from the PR head worktree. The baseline dir and report path live
@@ -137,12 +139,22 @@ jobs:
           # step runs the PR's break-check. When the PR changes producer semantics
           # (API Extractor major, discovery version), detect refuses the
           # baseline with exit code 3. That's expected here; rebuild the
-          # baseline with the current build (against the already-built base
-          # checkout) so both sides match, then retry once.
+          # baseline with the current build (against the base checkout) so both
+          # sides match, then retry once.
           status=0
           run_detect || status=$?
           if [ "$status" = "3" ]; then
             echo "::notice::Baseline was produced by a different break-check (producer/discovery mismatch); rebuilding it with the current build and retrying."
+            # The base worktree only exists when the baseline was rebuilt
+            # locally; the artifact fast path above never creates it. Create
+            # and build it on demand so the retry works on both paths
+            # (previously this dereferenced a missing /tmp/base-checkout and
+            # failed with a confusing snapshot error).
+            if [ ! -d /tmp/base-checkout ]; then
+              git -C "$GITHUB_WORKSPACE" worktree add --detach /tmp/base-checkout "$BASE_SHA"
+              cp -n "$GITHUB_WORKSPACE/break-check.config.json" /tmp/base-checkout/break-check.config.json || true
+              (cd /tmp/base-checkout && pnpm install --frozen-lockfile && pnpm build)
+            fi
             # --output is resolved relative to the --config dir, so it must be
             # absolute to land back in the workspace where detect reads it.
             rm -rf "$GITHUB_WORKSPACE/.api-baseline-main"

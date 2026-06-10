@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { loadConfig } from "../dist/config.js";
+import { findConfigFile, loadConfig } from "../dist/config.js";
 
 function withConfig(obj, fn) {
   const dir = mkdtempSync(join(tmpdir(), "break-check-config-"));
@@ -66,4 +66,33 @@ test("config: acknowledgedChanges rejects a non-string entry", () => {
   withConfig({ packages: ["pkg"], acknowledgedChanges: [123] }, (file) => {
     assert.throws(() => loadConfig(file), /acknowledgedChanges/);
   });
+});
+
+test("config: findConfigFile terminates on a relative startDir", () => {
+  // A relative path used to spin forever: `path.parse(rel).root` is "" and
+  // `path.dirname(".")` is ".", so the walk-up loop never reached the root.
+  const dir = mkdtempSync(join(tmpdir(), "break-check-config-"));
+  const nested = join(dir, "a", "b");
+  mkdirSync(nested, { recursive: true });
+  const previousCwd = process.cwd();
+  try {
+    process.chdir(dir);
+    // No config anywhere up the tmpdir tree: must return null, not hang.
+    assert.equal(findConfigFile(join("a", "b")), null);
+
+    // A config above the relative start dir is still found. Compare against
+    // process.cwd() (the realpath) since macOS tmpdirs are symlinked
+    // (/var/folders -> /private/var/folders).
+    writeFileSync(
+      join(dir, "break-check.config.json"),
+      JSON.stringify({ packages: ["pkg"] }),
+    );
+    assert.equal(
+      findConfigFile(join("a", "b")),
+      join(process.cwd(), "break-check.config.json"),
+    );
+  } finally {
+    process.chdir(previousCwd);
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
