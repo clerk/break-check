@@ -272,11 +272,13 @@ test("collectReferenceTransitions: classifies dropped and introduced specifiers,
         specifier: "@clerk/shared/_chunks/index-Cr_OtBLq",
         side: "removed",
         verdict: "blocked",
+        deterministic: true,
       },
       {
         specifier: "@clerk/shared/types/utils",
         side: "introduced",
         verdict: "exported",
+        deterministic: true,
       },
     ]);
 
@@ -317,6 +319,8 @@ test("collectReferenceTransitions: marks an unlocatable chunk-shaped specifier i
         specifier: "gone-dep/_chunks/index-Cr_OtBLq",
         side: "removed",
         verdict: "unknown",
+        deterministic: false,
+        packageNotFound: true,
         internalChunk: true,
       },
     ]);
@@ -437,6 +441,107 @@ test("findRepairedReference: refuses when the swap is not strictly an improvemen
       ),
       null,
     );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("findRepairedReference: only the exports map may vouch for the introduced side", () => {
+  const dir = makeDepWorkspace({
+    "./_chunks/*": null,
+    "./*": { types: "./dist/*.d.ts" },
+  });
+  try {
+    const before =
+      'type A = import("@clerk/shared/_chunks/index-Cr_OtBLq").Xm;';
+    // Introduced specifier's package is not installed: verdict `unknown`, and
+    // `unknown` must never satisfy the introduced side, with or without a
+    // chunk-shaped name. (A mutation relaxing `verdict === "exported"` to
+    // `verdict !== "blocked"` must fail these.)
+    assert.equal(
+      repairFor(
+        {
+          beforeSnippet: before,
+          afterSnippet: 'type A = import("gone-dep/types").Foo;',
+        },
+        dir,
+      ),
+      null,
+    );
+    assert.equal(
+      repairFor(
+        {
+          beforeSnippet: before,
+          afterSnippet:
+            'type A = import("gone-dep/_chunks/index-Ab12Cd34").Foo;',
+        },
+        dir,
+      ),
+      null,
+    );
+    // Relative and absolute specifiers bypass exports maps entirely;
+    // classifyReference calls them "exported" for the fail-safe escalation
+    // guard, but nothing deterministic vouches for them here. An absolute
+    // path is tsc's non-portable declaration emit, which consumers can never
+    // resolve.
+    assert.equal(
+      repairFor(
+        {
+          beforeSnippet: before,
+          afterSnippet: 'type A = import("./chunks/index-Cr_OtBLq.js").Xm;',
+        },
+        dir,
+      ),
+      null,
+    );
+    assert.equal(
+      repairFor(
+        {
+          beforeSnippet: before,
+          afterSnippet:
+            'type A = import("/home/runner/work/clerk/dist/utils").Without;',
+        },
+        dir,
+      ),
+      null,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("findRepairedReference: a located dependency without an exports map cannot vouch for a removed chunk", () => {
+  // No `exports` field at all: legacy resolution serves every file, so the
+  // chunk-shaped subpath may genuinely have resolved for consumers (the .d.ts
+  // ships on disk). The before state was consumable; downgrading would hide a
+  // real type swap. Only an unlocatable package lets the chunk heuristic vouch.
+  const dir = makeDepWorkspace(undefined);
+  try {
+    // Second dependency for the exported after side, installed in the same tree.
+    const otherDep = join(dir, "node_modules", "new-dep");
+    mkdirSync(otherDep, { recursive: true });
+    writeFileSync(
+      join(otherDep, "package.json"),
+      JSON.stringify({
+        name: "new-dep",
+        version: "1.0.0",
+        exports: { "./*": { types: "./dist/*.d.ts" } },
+      }),
+    );
+    const change = {
+      beforeSnippet:
+        'type A = import("@clerk/shared/_chunks/index-Cr_OtBLq").Xm;',
+      afterSnippet: 'type A = import("new-dep/utils").Without;',
+    };
+    const transitions = collectReferenceTransitions(change, dir);
+    assert.deepEqual(transitions[0], {
+      specifier: "@clerk/shared/_chunks/index-Cr_OtBLq",
+      side: "removed",
+      verdict: "unknown",
+      deterministic: false,
+      internalChunk: true,
+    });
+    assert.equal(findRepairedReference(change, transitions), null);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

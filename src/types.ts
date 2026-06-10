@@ -76,9 +76,11 @@ export interface AiAnalysis {
 /**
  * Resolvability verdict for one inline `import("...")` specifier a change's
  * signature dropped or introduced. `verdict` comes from resolving the specifier
- * against the dependency's `exports` map (`unknown` when the dependency cannot
- * be located or has no `exports`); `internalChunk` is set when the verdict is
- * `unknown` but the specifier is shaped like an internal bundler chunk.
+ * against the dependency's `exports` map; `unknown` covers everything that map
+ * could not settle: the dependency is not installed, it has no usable `exports`
+ * field (legacy resolution then serves every file, so the subpath may well
+ * resolve), or the specifier is not a bare package specifier at all (relative,
+ * absolute, or malformed).
  */
 export interface ReferenceResolution {
   /** The module specifier, e.g. `@clerk/shared/_chunks/index-DcO1-lAR`. */
@@ -87,8 +89,21 @@ export interface ReferenceResolution {
   side: "removed" | "introduced";
   /** Exports-map verdict for the specifier. */
   verdict: "exported" | "blocked" | "unknown";
+  /**
+   * True when `verdict` was settled by the dependency's actual `exports` map.
+   * False for every `unknown`, including a relative/absolute/malformed
+   * specifier, where nothing was verified in either direction.
+   */
+  deterministic: boolean;
   /** Set when `verdict` is `unknown` and the specifier looks like an internal bundler chunk. */
   internalChunk?: boolean;
+  /**
+   * Set when the specifier's dependency package could not be located on disk.
+   * Distinguishes "unlocatable" from "installed but no `exports` map": in the
+   * latter case legacy resolution serves every file, so even a chunk-shaped
+   * subpath may genuinely resolve for consumers.
+   */
+  packageNotFound?: boolean;
 }
 
 /**

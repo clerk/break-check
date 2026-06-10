@@ -886,8 +886,14 @@ test("detect: repairing a blocked chunk reference to an exported subpath is down
         specifier: "dep/_chunks/index-DcO1-lAR",
         side: "removed",
         verdict: "blocked",
+        deterministic: true,
       },
-      { specifier: "dep/types", side: "introduced", verdict: "exported" },
+      {
+        specifier: "dep/types",
+        side: "introduced",
+        verdict: "exported",
+        deterministic: true,
+      },
     ]);
     assert.equal(change.unresolvableReference, undefined);
     assert.equal(result.packages[0].hasBreakingChanges, false);

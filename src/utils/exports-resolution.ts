@@ -304,17 +304,58 @@ export function collectReferenceTransitions(
   return out;
 }
 
+/**
+ * Like `classifyReference`, but preserves the distinctions the repair gate
+ * needs. `classifyReference` deliberately collapses them in the fail-safe
+ * direction (a relative specifier reads "exported", a located-without-exports
+ * dependency reads the same "unknown" as an unlocatable one); reusing those
+ * collapsed verdicts on the vouching side of a downgrade would be fail-open.
+ */
 function classifyTransition(
   specifier: string,
   side: ReferenceResolution["side"],
   fromDir: string,
 ): ReferenceResolution {
-  const verdict = classifyReference(specifier, fromDir);
-  const resolution: ReferenceResolution = { specifier, side, verdict };
-  if (verdict === "unknown" && looksLikeInternalChunk(specifier)) {
-    resolution.internalChunk = true;
+  const parsed = parseModuleSpecifier(specifier);
+  if (!parsed) {
+    // Relative, absolute, or malformed: no exports map governs it and nothing
+    // was verified in either direction. (An absolute path is a known tsc
+    // non-portable-emit failure mode that consumers definitely cannot
+    // resolve; a relative path usually ships with the package. Either way it
+    // is not a deterministic "exported".)
+    return { specifier, side, verdict: "unknown", deterministic: false };
   }
-  return resolution;
+  const { found, exports } = readDependencyExports(parsed.pkg, fromDir);
+  if (!found) {
+    const resolution: ReferenceResolution = {
+      specifier,
+      side,
+      verdict: "unknown",
+      deterministic: false,
+      packageNotFound: true,
+    };
+    if (looksLikeInternalChunk(specifier)) resolution.internalChunk = true;
+    return resolution;
+  }
+  const verdict = isSubpathExported(exports, parsed.subpath);
+  if (verdict === null) {
+    // Located but no usable `exports` map: legacy resolution serves every
+    // file, so even a chunk-shaped subpath may genuinely resolve.
+    const resolution: ReferenceResolution = {
+      specifier,
+      side,
+      verdict: "unknown",
+      deterministic: false,
+    };
+    if (looksLikeInternalChunk(specifier)) resolution.internalChunk = true;
+    return resolution;
+  }
+  return {
+    specifier,
+    side,
+    verdict: verdict ? "exported" : "blocked",
+    deterministic: true,
+  };
 }
 
 /**
@@ -323,8 +364,15 @@ function classifyTransition(
  *
  * 1. the signature dropped at least one specifier and every dropped specifier
  *    was unconsumable (deterministically export-blocked, or chunk-shaped with
- *    the dependency unlocatable) and not exempted via `resolvableSpecifiers`,
- * 2. every introduced specifier deterministically resolves to a public export,
+ *    the dependency package not found on disk; a located dependency without an
+ *    `exports` map does NOT qualify, since legacy resolution serves every file
+ *    and the chunk may genuinely have resolved) and not exempted via
+ *    `resolvableSpecifiers`,
+ * 2. every introduced specifier is a bare package specifier that
+ *    deterministically resolves to a public export against the dependency's
+ *    actual `exports` map (a relative, absolute, or otherwise unverifiable
+ *    specifier never qualifies: nothing may vouch for the after side except
+ *    the exports map itself),
  * 3. the before/after signatures are identical once the swapped
  *    `import("...").Name` units are masked, so the swap is the entire diff.
  *
@@ -347,11 +395,15 @@ export function findRepairedReference(
   const removedUnconsumable = removed.every(
     (t) =>
       !isAllowed(t.specifier) &&
-      (t.verdict === "blocked" ||
-        (t.verdict === "unknown" && t.internalChunk === true)),
+      ((t.verdict === "blocked" && t.deterministic) ||
+        (t.verdict === "unknown" &&
+          t.internalChunk === true &&
+          t.packageNotFound === true)),
   );
   if (!removedUnconsumable) return null;
-  if (!introduced.every((t) => t.verdict === "exported")) return null;
+  if (!introduced.every((t) => t.verdict === "exported" && t.deterministic)) {
+    return null;
+  }
   if (
     !signaturesMatchModuloSwappedReferences(
       change.beforeSnippet,

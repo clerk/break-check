@@ -282,11 +282,17 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   `flagUnresolvableReferences`, before the AI) flips it to non-breaking and
   records `repairedReference: { from, to }`. The gate is
   `findRepairedReference` (`utils/exports-resolution.ts`): every removed
-  specifier must classify `blocked` (or `unknown` + chunk-shaped when the
-  dependency is unlocatable) and not match `resolvableSpecifiers`; every
-  introduced specifier must classify `exported` DETERMINISTICALLY (the
-  downgrade clears a break, so the heuristic may never vouch for the after
-  side); and the snippets must be identical after masking each swapped
+  specifier must classify `blocked` deterministically, or `unknown` +
+  chunk-shaped + `packageNotFound` (a LOCATED dependency without an `exports`
+  map never qualifies: legacy resolution serves every file, so the chunk may
+  genuinely have resolved), and must not match `resolvableSpecifiers`; every
+  introduced specifier must be a bare specifier classified `exported`
+  DETERMINISTICALLY against the dependency's actual `exports` map (the
+  downgrade clears a break, so nothing else may vouch for the after side;
+  note `classifyReference` calls a relative/absolute/malformed specifier
+  "exported" for the guard's fail-safe direction, which is why the repair
+  pass uses `classifyTransition`'s richer verdicts, not `classifyReference`);
+  and the snippets must be identical after masking each swapped
   `import("spec").Name` unit (the alias name may change with the specifier,
   bundlers minify chunk-internal names; only the first member access is
   masked, deeper chains must still match). Anything else fails the masked
