@@ -129,6 +129,8 @@ export class BreakingChangesDetector {
   private extractor: ApiExtractorRunner;
   private diffAnalyzer: ApiDiffAnalyzer;
   private versionAnalyzer: VersionAnalyzer;
+  /** Resolved directory `generateSnapshots()` writes the current snapshots to. */
+  private snapshotOutputDir: string;
   private aiAnalyzer: AiChangeAnalyzer | null = null;
   private aiInitialized = false;
   private aiApplyDowngrades: boolean;
@@ -156,10 +158,10 @@ export class BreakingChangesDetector {
       detectorOptions.configPath ?? path.join(process.cwd(), CONFIG_FILE_NAME),
     );
     this.configDir = path.dirname(this.configPath);
-    this.extractor = new ApiExtractorRunner(
-      this.resolveOutputDir(config.snapshotDir),
-      { verbose: this.verbose },
-    );
+    this.snapshotOutputDir = this.resolveOutputDir(config.snapshotDir);
+    this.extractor = new ApiExtractorRunner(this.snapshotOutputDir, {
+      verbose: this.verbose,
+    });
     this.diffAnalyzer = new ApiDiffAnalyzer();
     this.versionAnalyzer = new VersionAnalyzer();
     this.aiApplyDowngrades = this.resolveAiFlag(
@@ -315,6 +317,22 @@ export class BreakingChangesDetector {
         continue;
       }
 
+      // Surface subpaths whose declared types could not be resolved into
+      // entry points (missing file, target escaping the package, a dead
+      // wildcard types pattern). Without this they are silent coverage
+      // holes: the diff never inspects the surface, the report stays green,
+      // and --fail-on-skipped has nothing to catch.
+      for (const u of packageInfo.unresolvedSubpaths ?? []) {
+        this.skippedEntries.push({
+          packageName: packageInfo.name,
+          subpath: u.subpath,
+          reason: u.reason,
+        });
+        process.stderr.write(
+          `[break-check] warning: skipping ${packageInfo.name} ${u.subpath}: ${u.reason}\n`,
+        );
+      }
+
       this.log(
         `Generating snapshot for ${packageInfo.name} (${packageInfo.entries.length} entr${packageInfo.entries.length === 1 ? "y" : "ies"})...`,
       );
@@ -367,6 +385,22 @@ export class BreakingChangesDetector {
 
     if (!fs.existsSync(resolvedBaselineDir)) {
       throw new Error(`Baseline directory not found: ${resolvedBaselineDir}`);
+    }
+
+    // `generateSnapshots()` below writes the CURRENT snapshots into
+    // snapshotDir before the baseline is ever read. If the baseline is that
+    // same directory, the current snapshots overwrite it and the diff
+    // compares the build against itself, reporting "no changes" for any
+    // break (fail-open). Refuse upfront.
+    if (path.resolve(resolvedBaselineDir) === this.snapshotOutputDir) {
+      throw new Error(
+        `Baseline directory and snapshotDir resolve to the same path ` +
+          `(${this.snapshotOutputDir}). 'detect' regenerates current ` +
+          `snapshots into snapshotDir before reading the baseline, which ` +
+          `would overwrite the baseline and diff the build against itself. ` +
+          `Point --baseline at a directory produced separately, e.g. ` +
+          `\`break-check snapshot --output <dir>\`.`,
+      );
     }
 
     this.log("Generating current API snapshots...");

@@ -174,6 +174,13 @@ interface DiscoveryResult {
   entries: PackageEntry[];
   skippedWildcards: string[];
   missingFiles: Array<{ subpath: string; path: string }>;
+  /**
+   * Subpaths whose `exports` value declares a types target that could not be
+   * turned into an entry point (the target escapes the package directory, or a
+   * wildcard types pattern matched no files). Subpaths declaring no types at
+   * all are NOT listed; a JS-only or asset export is not a coverage hole.
+   */
+  unresolvedTypes: Array<{ subpath: string; declared: string }>;
 }
 
 /**
@@ -293,7 +300,7 @@ export class ApiExtractorRunner {
     packagePath: string,
     options: FindEntryPointsOptions = {},
   ): PackageEntry[] {
-    const discovery = this.discoverEntries(packagePath, options);
+    const discovery = discoverPackageEntries(packagePath, options);
 
     if (discovery.skippedWildcards.length > 0) {
       this.warn(
@@ -303,6 +310,11 @@ export class ApiExtractorRunner {
     for (const m of discovery.missingFiles) {
       this.warn(
         `${packagePath}: subpath \`${m.subpath}\` resolved to missing file ${m.path}`,
+      );
+    }
+    for (const u of discovery.unresolvedTypes) {
+      this.warn(
+        `${packagePath}: subpath \`${u.subpath}\` declares types ${u.declared} that could not be resolved`,
       );
     }
 
@@ -319,90 +331,9 @@ export class ApiExtractorRunner {
     return root?.typesEntry ?? null;
   }
 
-  private discoverEntries(
-    packagePath: string,
-    options: FindEntryPointsOptions,
-  ): DiscoveryResult {
-    const result: DiscoveryResult = {
-      entries: [],
-      skippedWildcards: [],
-      missingFiles: [],
-    };
-
-    const packageJsonPath = path.join(packagePath, "package.json");
-    if (!fs.existsSync(packageJsonPath)) return result;
-
-    let packageJson: Record<string, unknown>;
-    try {
-      packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
-    } catch {
-      return result;
-    }
-
-    const ignoreMatch = makeSubpathMatcher(options.ignoreSubpaths ?? []);
-    const dropHashedChunks = options.ignoreHashedChunks ?? true;
-    const exports = packageJson.exports;
-
-    if (exports && typeof exports === "object" && !Array.isArray(exports)) {
-      const seen = new Set<string>();
-      for (const [subpath, value] of Object.entries(
-        exports as Record<string, unknown>,
-      )) {
-        if (!subpath.startsWith(".")) continue;
-        if (ignoreMatch(subpath)) continue;
-        if (subpath === "./package.json") continue;
-
-        if (subpath.includes("*")) {
-          // Wildcard subpaths (e.g. `"./*": "./dist/runtime/*.d.mts"`) are
-          // how packages like @clerk/shared expose most of their API. Glob
-          // the filesystem and synthesize one concrete entry per match so
-          // breaking changes under wildcard surfaces aren't invisible.
-          const expanded = expandWildcardSubpath(subpath, value, packagePath);
-          if (expanded.length === 0) {
-            result.skippedWildcards.push(subpath);
-            continue;
-          }
-          for (const e of expanded) {
-            if (ignoreMatch(e.subpath)) continue;
-            // Content-hashed bundler chunks caught by a `./*` glob are not
-            // public API and their names change every build; dropping them
-            // keeps the diff from churning. See `isHashedChunkSubpath`.
-            if (dropHashedChunks && isHashedChunkSubpath(e.subpath)) continue;
-            if (seen.has(e.subpath)) continue;
-            seen.add(e.subpath);
-            result.entries.push(e);
-          }
-          continue;
-        }
-
-        const typesPath = resolveTypesFromExportValue(value, packagePath);
-        if (!typesPath) continue;
-
-        if (!fs.existsSync(typesPath)) {
-          result.missingFiles.push({ subpath, path: typesPath });
-          continue;
-        }
-
-        if (seen.has(subpath)) continue;
-        seen.add(subpath);
-        result.entries.push({ subpath, typesEntry: typesPath });
-      }
-
-      // If we found entries via exports map, we're done.
-      if (result.entries.length > 0) return result;
-    }
-
-    // Fallback path: no exports map (or it produced no usable entries).
-    // Resolve a single root entry from `types`/`typings`/`main` + sensible defaults.
-    if (ignoreMatch(".")) return result;
-
-    const rootTypes = resolveRootTypes(packageJson, packagePath);
-    if (rootTypes) {
-      result.entries.push({ subpath: ".", typesEntry: rootTypes });
-    }
-
-    return result;
-  }
+  // Entry-point discovery lives in the module-level `discoverPackageEntries`
+  // so `readPackageInfo` can surface the full discovery result (including the
+  // subpaths that could NOT be resolved), not just the entries.
 
   /**
    * Create API Extractor configuration for a single entry point.
@@ -518,6 +449,118 @@ export class ApiExtractorRunner {
   }
 }
 
+/**
+ * Discover every entry point declared via the package's `exports` map, plus the
+ * root entry inferred from `types`/`typings`/`main` when no exports map is
+ * present. Module-level (it touches no extractor state) so `readPackageInfo`
+ * can expose the full result, including the subpaths that could not be
+ * resolved, rather than just the entries.
+ */
+function discoverPackageEntries(
+  packagePath: string,
+  options: FindEntryPointsOptions,
+): DiscoveryResult {
+  const result: DiscoveryResult = {
+    entries: [],
+    skippedWildcards: [],
+    missingFiles: [],
+    unresolvedTypes: [],
+  };
+
+  const packageJsonPath = path.join(packagePath, "package.json");
+  if (!fs.existsSync(packageJsonPath)) return result;
+
+  let packageJson: Record<string, unknown>;
+  try {
+    packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
+  } catch {
+    return result;
+  }
+
+  const ignoreMatch = makeSubpathMatcher(options.ignoreSubpaths ?? []);
+  const dropHashedChunks = options.ignoreHashedChunks ?? true;
+  const exports = packageJson.exports;
+
+  if (exports && typeof exports === "object" && !Array.isArray(exports)) {
+    const seen = new Set<string>();
+    for (const [subpath, value] of Object.entries(
+      exports as Record<string, unknown>,
+    )) {
+      if (!subpath.startsWith(".")) continue;
+      if (ignoreMatch(subpath)) continue;
+      if (subpath === "./package.json") continue;
+
+      if (subpath.includes("*")) {
+        // Wildcard subpaths (e.g. `"./*": "./dist/runtime/*.d.mts"`) are
+        // how packages like @clerk/shared expose most of their API. Glob
+        // the filesystem and synthesize one concrete entry per match so
+        // breaking changes under wildcard surfaces aren't invisible.
+        const expansion = expandWildcardSubpath(subpath, value, packagePath);
+        if (expansion.entries.length === 0) {
+          result.skippedWildcards.push(subpath);
+          // A wildcard whose declared types pattern could not be honored
+          // (multi-star, escaping target, glob failure) may hide real files,
+          // so record it as a coverage hole. An empty match or a wildcard
+          // with no types target exposes no surface and stays silent.
+          if (expansion.unsupported) {
+            const declared = findTypesTarget(value);
+            if (declared) {
+              result.unresolvedTypes.push({ subpath, declared });
+            }
+          }
+          continue;
+        }
+        for (const e of expansion.entries) {
+          if (ignoreMatch(e.subpath)) continue;
+          // Content-hashed bundler chunks caught by a `./*` glob are not
+          // public API and their names change every build; dropping them
+          // keeps the diff from churning. See `isHashedChunkSubpath`.
+          if (dropHashedChunks && isHashedChunkSubpath(e.subpath)) continue;
+          if (seen.has(e.subpath)) continue;
+          seen.add(e.subpath);
+          result.entries.push(e);
+        }
+        continue;
+      }
+
+      const typesPath = resolveTypesFromExportValue(value, packagePath);
+      if (!typesPath) {
+        // A declared target that `resolveWithinPackage` refused (it escapes
+        // the package directory) is a coverage hole; a subpath declaring no
+        // types at all has nothing to snapshot and stays silent.
+        const declared = findTypesTarget(value);
+        if (declared) {
+          result.unresolvedTypes.push({ subpath, declared });
+        }
+        continue;
+      }
+
+      if (!fs.existsSync(typesPath)) {
+        result.missingFiles.push({ subpath, path: typesPath });
+        continue;
+      }
+
+      if (seen.has(subpath)) continue;
+      seen.add(subpath);
+      result.entries.push({ subpath, typesEntry: typesPath });
+    }
+
+    // If we found entries via exports map, we're done.
+    if (result.entries.length > 0) return result;
+  }
+
+  // Fallback path: no exports map (or it produced no usable entries).
+  // Resolve a single root entry from `types`/`typings`/`main` + sensible defaults.
+  if (ignoreMatch(".")) return result;
+
+  const rootTypes = resolveRootTypes(packageJson, packagePath);
+  if (rootTypes) {
+    result.entries.push({ subpath: ".", typesEntry: rootTypes });
+  }
+
+  return result;
+}
+
 function sanitizePackageName(name: string): string {
   return name.replace(/^@/, "").replace(/\//g, "__");
 }
@@ -556,37 +599,49 @@ function resolveTypesFromExportValue(
   value: unknown,
   packagePath: string,
 ): string | null {
-  if (typeof value === "string") {
-    return /\.d\.m?ts$/.test(value)
-      ? resolveWithinPackage(packagePath, value)
-      : null;
-  }
+  const declared = findTypesTarget(value);
+  return declared ? resolveWithinPackage(packagePath, declared) : null;
+}
 
+/**
+ * Find the type-declaration target declared by an `exports` value, searching
+ * nested condition objects recursively (e.g. `{ node: { import: { types } } }`,
+ * which Node/TS resolve fine but a single-level scan misses). At each level the
+ * `types` condition wins, then the common conditions in Node's preference
+ * order, then any remaining branch in declaration order. A plain string matches
+ * only when it is a declaration file (`.d.ts`/`.d.mts`/`.d.cts`); a `types`
+ * condition's string value is taken as declared regardless of extension.
+ * Returns the raw (unresolved) target, or null when the value declares no type
+ * surface at all, so callers can tell a typed subpath break-check failed to
+ * resolve apart from a JS-only or asset subpath that has nothing to snapshot.
+ */
+function findTypesTarget(value: unknown): string | null {
+  if (typeof value === "string") {
+    return /\.d\.[cm]?ts$/.test(value) ? value : null;
+  }
+  if (Array.isArray(value)) {
+    for (const branch of value) {
+      const found = findTypesTarget(branch);
+      if (found) return found;
+    }
+    return null;
+  }
   if (!value || typeof value !== "object") return null;
   const conditional = value as Record<string, unknown>;
 
-  // Order matches Node's "types-first" resolution preference, scanning the
-  // most common condition keys.
-  for (const condition of ["import", "require", "default"]) {
-    const branch = conditional[condition];
-    if (!branch) continue;
-    if (typeof branch === "string" && /\.d\.m?ts$/.test(branch)) {
-      return resolveWithinPackage(packagePath, branch);
-    }
-    if (branch && typeof branch === "object") {
-      const types = (branch as Record<string, unknown>).types;
-      if (typeof types === "string") {
-        return resolveWithinPackage(packagePath, types);
-      }
-    }
-  }
+  if (typeof conditional.types === "string") return conditional.types;
 
-  // Top-level `types` inside the conditional block ({"types": "...", ...})
-  const topTypes = conditional.types;
-  if (typeof topTypes === "string") {
-    return resolveWithinPackage(packagePath, topTypes);
+  const preferred = ["types", "import", "require", "default"];
+  for (const condition of preferred) {
+    if (!(condition in conditional)) continue;
+    const found = findTypesTarget(conditional[condition]);
+    if (found) return found;
   }
-
+  for (const [condition, branch] of Object.entries(conditional)) {
+    if (preferred.includes(condition)) continue;
+    const found = findTypesTarget(branch);
+    if (found) return found;
+  }
   return null;
 }
 
@@ -598,27 +653,46 @@ function resolveTypesFromExportValue(
  * the value to find the actual `.d.ts`.
  *
  * Only single-wildcard patterns are supported (the common case and the
- * shape the Node spec actually documents). Multi-wildcard or wildcards
- * with no resolvable types target return an empty array, which the
- * caller surfaces as a skipped wildcard.
+ * shape the Node spec actually documents). Multi-wildcard patterns and
+ * targets that escape the package return no entries with `unsupported`
+ * set, which the caller surfaces as an unresolved (skipped) subpath.
  *
  * The glob uses a single-segment `*`, so this catches packages like
  * `@clerk/shared` that expose `./file`, `./url`, `./error` flat; nested
  * `./internal/foo/bar` style wildcards are not auto-expanded yet.
  */
+interface WildcardExpansion {
+  entries: PackageEntry[];
+  /**
+   * True when the value DECLARES a types target but the expansion machinery
+   * could not honor it: a multi-star pattern, a target escaping the package, or
+   * a glob failure. Files may exist behind such a pattern, so an empty result
+   * is a coverage hole. False when the value declares no types at all (a JS or
+   * asset wildcard) or the pattern simply matched no files; in both of those
+   * cases there is no actual type surface a consumer could resolve either, so
+   * an empty result is benign.
+   */
+  unsupported: boolean;
+}
+
 function expandWildcardSubpath(
   keyPattern: string,
   value: unknown,
   packagePath: string,
-): PackageEntry[] {
-  if (value === null) return [];
+): WildcardExpansion {
+  if (value === null) return { entries: [], unsupported: false };
 
-  const typesPath = resolveTypesFromExportValue(value, packagePath);
-  if (!typesPath) return [];
+  const declared = findTypesTarget(value);
+  if (!declared) return { entries: [], unsupported: false };
+
+  const typesPath = resolveWithinPackage(packagePath, declared);
+  if (!typesPath) return { entries: [], unsupported: true };
 
   const keyStarCount = (keyPattern.match(/\*/g) ?? []).length;
   const valStarCount = (typesPath.match(/\*/g) ?? []).length;
-  if (keyStarCount !== 1 || valStarCount !== 1) return [];
+  if (keyStarCount !== 1 || valStarCount !== 1) {
+    return { entries: [], unsupported: true };
+  }
 
   const starIdx = typesPath.indexOf("*");
   const prefix = typesPath.slice(0, starIdx);
@@ -628,7 +702,7 @@ function expandWildcardSubpath(
   try {
     matches = fs.globSync(typesPath) as string[];
   } catch {
-    return [];
+    return { entries: [], unsupported: true };
   }
 
   const entries: PackageEntry[] = [];
@@ -647,7 +721,7 @@ function expandWildcardSubpath(
   // runners produce byte-identical metadata instead of spurious
   // order-only baseline churn.
   entries.sort((a, b) => a.subpath.localeCompare(b.subpath));
-  return entries;
+  return { entries, unsupported: false };
 }
 
 function resolveRootTypes(
@@ -711,14 +785,30 @@ export function readPackageInfo(
 
   try {
     const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
-    const runner = new ApiExtractorRunner("");
-    const entries = runner.findEntryPoints(packagePath, options);
+    const discovery = discoverPackageEntries(packagePath, options);
+
+    // Subpaths that declare a type surface break-check could not snapshot.
+    // Exposed so the detector can record them as skipped entries; otherwise
+    // they are silent coverage holes that even --fail-on-skipped misses.
+    const unresolvedSubpaths = [
+      ...discovery.unresolvedTypes.map((u) => ({
+        subpath: u.subpath,
+        reason:
+          `exports declares types \`${u.declared}\` that could not be ` +
+          `resolved to a file inside the package`,
+      })),
+      ...discovery.missingFiles.map((m) => ({
+        subpath: m.subpath,
+        reason: `types entry resolved to missing file ${m.path}`,
+      })),
+    ];
 
     return {
       name: packageJson.name,
       version: packageJson.version,
       path: packagePath,
-      entries,
+      entries: discovery.entries,
+      ...(unresolvedSubpaths.length > 0 ? { unresolvedSubpaths } : {}),
     };
   } catch {
     return null;

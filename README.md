@@ -162,9 +162,21 @@ Options:
 
 By default a subpath that API Extractor can't process (ambient-global
 augmentations, a `.d.ts` outside `dist/`, etc.) is skipped with a warning and
-the run continues; the report lists what was omitted. Pass `--fail-on-skipped`
-(available on both `snapshot` and `detect`) to turn those skips into a non-zero
-exit, which is the safer default when producing a committed baseline.
+the run continues; the report lists what was omitted. The same applies to a
+subpath whose `exports` entry declares types break-check cannot resolve: a
+missing declaration file, a target outside the package directory, or an
+unsupported wildcard pattern. (Subpaths that declare no types at all, such as
+JS-only or asset exports, have no type surface to check and are not flagged.)
+Pass `--fail-on-skipped` (available on both `snapshot` and `detect`) to turn
+those skips into a non-zero exit, which is the safer default when producing a
+committed baseline.
+
+Type declarations are discovered from each `exports` entry's conditions,
+including nested condition objects (`{ "node": { "import": { "types": ... } } }`)
+and `.d.ts`/`.d.mts`/`.d.cts` files. `detect` also refuses to run when
+`--baseline` points at the configured `snapshotDir`, since regenerating the
+current snapshots would overwrite the baseline and silently diff the build
+against itself.
 
 When `--format json` writes to stdout, progress and summary logs are written to
 stderr so stdout remains parseable JSON.

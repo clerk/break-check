@@ -1062,6 +1062,10 @@ test("snapshot drops a subpath whose types escape the package root (issue #7)", 
       "the out-of-root ./pwn subpath must not be enumerated",
     );
     assertSentinelAbsent(pkgDir);
+
+    // The dropped surface is no longer silent: it is reported as skipped so
+    // --fail-on-skipped (and the report) can see the hole.
+    assert.match(snapshot.stderr, /skipping @demo\/pkg \.\/pwn/);
   } finally {
     rmSync(workspace, { recursive: true, force: true });
   }
@@ -1103,6 +1107,229 @@ test("snapshot ignores a root `types` field that escapes the package root (issue
       ["."],
     );
     assertSentinelAbsent(pkgDir);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("discovery resolves types nested under runtime conditions and .d.cts files", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+
+    const packageDir = join(workspace, "packages", "pkg");
+    mkdirSync(packageDir, { recursive: true });
+    writeDts(
+      join(packageDir, "dist/index.d.ts"),
+      "export declare const root: number;\n",
+    );
+    writeDts(
+      join(packageDir, "dist/deep.d.ts"),
+      "export declare const deep: boolean;\n",
+    );
+    writeDts(
+      join(packageDir, "dist/legacy.d.cts"),
+      "export declare const legacy: string;\n",
+    );
+    writeJson(join(packageDir, "package.json"), {
+      name: "@demo/pkg",
+      version: "1.0.0",
+      exports: {
+        ".": { import: { types: "./dist/index.d.ts" } },
+        // A single-level scan misses both of these shapes; Node and TS
+        // resolve them fine, so they are real public surface.
+        "./deep": { node: { import: { types: "./dist/deep.d.ts" } } },
+        "./legacy": { require: "./dist/legacy.d.cts" },
+        "./package.json": "./package.json",
+      },
+    });
+
+    const snapshot = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "--fail-on-skipped",
+    ]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+
+    const metadata = JSON.parse(
+      readFileSync(
+        join(workspace, "snapshots", "demo__pkg", "break-check.snapshot.json"),
+        "utf-8",
+      ),
+    );
+    assert.deepEqual(metadata.entries.map((e) => e.subpath).sort(), [
+      ".",
+      "./deep",
+      "./legacy",
+    ]);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("a JS-only or asset subpath is not reported as a skipped surface", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+
+    const packageDir = join(workspace, "packages", "pkg");
+    mkdirSync(packageDir, { recursive: true });
+    writeDts(
+      join(packageDir, "dist/index.d.ts"),
+      "export declare const root: number;\n",
+    );
+    writeFileSync(join(packageDir, "styles.css"), "body {}\n");
+    writeFileSync(join(packageDir, "dist", "util.js"), "module.exports = 1;\n");
+    writeJson(join(packageDir, "package.json"), {
+      name: "@demo/pkg",
+      version: "1.0.0",
+      exports: {
+        ".": { import: { types: "./dist/index.d.ts" } },
+        "./styles.css": "./styles.css",
+        "./util": { import: "./dist/util.js" },
+        "./package.json": "./package.json",
+      },
+    });
+
+    // No declared types on those subpaths means nothing to snapshot and
+    // nothing to warn about; strict mode must stay green.
+    const snapshot = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "--fail-on-skipped",
+    ]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("a declared types file that is missing surfaces as a skipped subpath", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+
+    const packageDir = join(workspace, "packages", "pkg");
+    mkdirSync(packageDir, { recursive: true });
+    writeDts(
+      join(packageDir, "dist/index.d.ts"),
+      "export declare const root: number;\n",
+    );
+    writeJson(join(packageDir, "package.json"), {
+      name: "@demo/pkg",
+      version: "1.0.0",
+      exports: {
+        ".": { import: { types: "./dist/index.d.ts" } },
+        "./gone": { import: { types: "./dist/gone.d.ts" } },
+        "./package.json": "./package.json",
+      },
+    });
+
+    // Fail-soft: the run succeeds but the hole is visible.
+    const soft = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
+    assert.equal(soft.status, 0, soft.stderr);
+    assert.match(soft.stderr, /skipping @demo\/pkg \.\/gone/);
+
+    // Strict: the hole is a hard error.
+    const strict = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "--fail-on-skipped",
+    ]);
+    assert.equal(strict.status, 1);
+
+    // The hole also rides into detect's result so reports show it.
+    const detect = runBreakCheck([
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "baseline",
+      "--format",
+      "json",
+      "--no-ai",
+    ]);
+    assert.equal(detect.status, 0, detect.stderr);
+    const result = JSON.parse(detect.stdout);
+    assert.ok(
+      (result.skippedEntries ?? []).some((s) => s.subpath === "./gone"),
+      "detect result should list ./gone as skipped",
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("an unsupported multi-star wildcard types pattern surfaces as skipped", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+
+    const packageDir = join(workspace, "packages", "pkg");
+    mkdirSync(packageDir, { recursive: true });
+    writeDts(
+      join(packageDir, "dist/index.d.ts"),
+      "export declare const root: number;\n",
+    );
+    // Real surface hides behind a pattern shape break-check cannot expand.
+    writeDts(
+      join(packageDir, "dist/a/x.d.ts"),
+      "export declare const x: number;\n",
+    );
+    writeJson(join(packageDir, "package.json"), {
+      name: "@demo/pkg",
+      version: "1.0.0",
+      exports: {
+        ".": { import: { types: "./dist/index.d.ts" } },
+        "./m/*": { types: "./dist/*/*.d.ts" },
+        "./package.json": "./package.json",
+      },
+    });
+
+    const strict = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "--fail-on-skipped",
+    ]);
+    assert.equal(strict.status, 1);
+    assert.match(strict.stderr, /skipping @demo\/pkg \.\/m\/\*/);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("a wildcard types pattern that matches no files stays silent", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    // The shared fixture's "./*" wildcard maps to ./dist/wild/*.d.ts, which
+    // matches nothing: no file exists, so no consumer could resolve anything
+    // through it either. Not a coverage hole; strict mode stays green.
+    writeSubpathOnlyPackage(workspace, {
+      version: "1.0.0",
+      surfaces: {
+        dts: { ".": "export declare const root: number;\n" },
+        wildcards: ["./*"],
+      },
+    });
+
+    const strict = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "--fail-on-skipped",
+    ]);
+    assert.equal(strict.status, 0, strict.stderr);
   } finally {
     rmSync(workspace, { recursive: true, force: true });
   }
