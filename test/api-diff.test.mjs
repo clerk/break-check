@@ -753,6 +753,181 @@ test("detect: a non-breaking change is escalated to breaking when it adds an exp
   }
 });
 
+test("detect: repairing a blocked chunk reference to an exported subpath is downgraded to non-breaking (end-to-end, #98)", () => {
+  const workspace = mkdtempSync(join(tmpdir(), "break-check-repair-"));
+  try {
+    const pkgDir = join(workspace, "packages", "pkg");
+    mkdirSync(join(pkgDir, "dist"), { recursive: true });
+
+    // A dependency that blocks `_chunks` but exposes `./types` publicly,
+    // mirroring @clerk/shared.
+    const depDir = join(pkgDir, "node_modules", "dep");
+    mkdirSync(join(depDir, "dist", "_chunks"), { recursive: true });
+    writeFileSync(
+      join(depDir, "package.json"),
+      JSON.stringify({
+        name: "dep",
+        version: "1.0.0",
+        types: "dist/index.d.ts",
+        exports: {
+          ".": { types: "./dist/index.d.ts" },
+          "./types": { types: "./dist/types.d.ts" },
+          "./_chunks/*": null,
+        },
+      }),
+    );
+    writeFileSync(
+      join(depDir, "dist", "_chunks", "index-DcO1-lAR.d.ts"),
+      "export interface Jwt { sub: string; }\n",
+    );
+    writeFileSync(
+      join(depDir, "dist", "types.d.ts"),
+      "export interface Jwt { sub: string; }\n",
+    );
+    writeFileSync(
+      join(depDir, "dist", "index.d.ts"),
+      'export * from "./types";\n',
+    );
+
+    writeFileSync(
+      join(workspace, "break-check.config.json"),
+      JSON.stringify(
+        {
+          packages: ["packages/pkg"],
+          snapshotDir: "current",
+          mainBranch: "main",
+          checkVersionBump: true,
+          outputFormat: "json",
+        },
+        null,
+        2,
+      ),
+    );
+    // Same config with the repair downgrade opted out, sharing the baseline.
+    writeFileSync(
+      join(workspace, "break-check.no-repair.config.json"),
+      JSON.stringify(
+        {
+          packages: ["packages/pkg"],
+          snapshotDir: "current",
+          mainBranch: "main",
+          checkVersionBump: true,
+          outputFormat: "json",
+          downgradeRepairedReferences: false,
+        },
+        null,
+        2,
+      ),
+    );
+
+    const writePkg = (version, dts) => {
+      writeFileSync(
+        join(pkgDir, "package.json"),
+        JSON.stringify(
+          { name: "@demo/pkg", version, types: "dist/index.d.ts" },
+          null,
+          2,
+        ) + "\n",
+      );
+      writeFileSync(join(pkgDir, "dist", "index.d.ts"), dts);
+    };
+
+    // Baseline: the published signature references the export-blocked chunk
+    // (the issue #60 regression). Current: the repair points it at the public
+    // `./types` subpath; the signature is otherwise identical.
+    writePkg(
+      "1.0.0",
+      'export declare function decodeJwt(token: string): import("dep/_chunks/index-DcO1-lAR").Jwt;\n',
+    );
+    const snap = runBreakCheck(
+      [
+        "snapshot",
+        "-c",
+        join(workspace, "break-check.config.json"),
+        "-o",
+        "baseline",
+      ],
+      workspace,
+    );
+    assert.equal(snap.status, 0, snap.stderr || snap.stdout);
+
+    writePkg(
+      "1.1.0",
+      'export declare function decodeJwt(token: string): import("dep/types").Jwt;\n',
+    );
+    const detect = runBreakCheck(
+      [
+        "detect",
+        "-c",
+        join(workspace, "break-check.config.json"),
+        "--baseline",
+        "baseline",
+        "--format",
+        "json",
+        "--no-ai",
+      ],
+      workspace,
+    );
+    assert.equal(detect.status, 0, detect.stderr || detect.stdout);
+
+    const result = JSON.parse(detect.stdout);
+    const change = (result.packages[0]?.changes ?? []).find(
+      (c) => c.name === "decodeJwt",
+    );
+    assert.ok(change, "expected a decodeJwt change");
+    assert.equal(change.type, "non-breaking", "repair should be downgraded");
+    assert.equal(change.ruleBasedType, "breaking");
+    assert.deepEqual(change.repairedReference, {
+      from: ["dep/_chunks/index-DcO1-lAR"],
+      to: ["dep/types"],
+    });
+    assert.deepEqual(change.referenceResolutions, [
+      {
+        specifier: "dep/_chunks/index-DcO1-lAR",
+        side: "removed",
+        verdict: "blocked",
+        deterministic: true,
+      },
+      {
+        specifier: "dep/types",
+        side: "introduced",
+        verdict: "exported",
+        deterministic: true,
+      },
+    ]);
+    assert.equal(change.unresolvableReference, undefined);
+    assert.equal(result.packages[0].hasBreakingChanges, false);
+    assert.equal(result.packages[0].recommendedVersionBump, "minor");
+
+    // Maintainer opt-out: the same diff stays breaking, with the resolvability
+    // facts still attached for the report/AI.
+    const detectOff = runBreakCheck(
+      [
+        "detect",
+        "-c",
+        join(workspace, "break-check.no-repair.config.json"),
+        "--baseline",
+        "baseline",
+        "--format",
+        "json",
+        "--no-ai",
+      ],
+      workspace,
+    );
+    // Breaking changes exit non-zero; only the report content matters here.
+    const resultOff = JSON.parse(detectOff.stdout);
+    const changeOff = (resultOff.packages[0]?.changes ?? []).find(
+      (c) => c.name === "decodeJwt",
+    );
+    assert.ok(changeOff, "expected a decodeJwt change");
+    assert.equal(changeOff.type, "breaking");
+    assert.equal(changeOff.repairedReference, undefined);
+    assert.equal(changeOff.referenceResolutions?.length, 2);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
 test("changing an enum member value is breaking", () => {
   const result = setup({
     baseline: {

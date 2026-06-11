@@ -594,6 +594,21 @@ export class MarkdownReporter {
       );
     }
 
+    // The guard's inverse: the only diff is swapping unresolvable specifiers
+    // for exported ones, so the previously unconsumable reference was repaired
+    // and the change was deterministically downgraded.
+    if (change.repairedReference) {
+      const from = change.repairedReference.from
+        .map((s) => `\`${mdCode(s)}\``)
+        .join(", ");
+      const to = change.repairedReference.to
+        .map((s) => `\`${mdCode(s)}\``)
+        .join(", ");
+      lines.push(
+        `> 🔧 **Repaired reference**: previously referenced ${from}, which consumers could not resolve (export-blocked or an internal bundler chunk); now references ${to}, a public export, and the signature is otherwise identical. The old type was never consumable downstream, so this is reported non-breaking. Set \`downgradeRepairedReferences: false\` to keep repairs breaking.\n`,
+      );
+    }
+
     if (ai) {
       const confidence = Math.round(ai.confidence * 100);
       const label = this.aiReviewLabel(change);
@@ -801,6 +816,8 @@ export class MarkdownReporter {
         return "AI review (additional finding)";
       case "ai-suggested-downgrade":
         return "AI review (suggests non-breaking, not applied)";
+      case "ai-suggested-escalation":
+        return "AI review (suggests breaking, not applied)";
     }
   }
 

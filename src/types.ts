@@ -45,12 +45,18 @@ export type ChangeCategory =
  * rule-based breaking change to be non-breaking, but downgrades are not applied
  * by default, so the change is kept breaking and the model's suggestion is
  * recorded for a human to apply via `--ai-apply-downgrades`.
+ *
+ * `ai-suggested-escalation` is the mirror image for a change the detector
+ * deterministically downgraded as a repaired reference (`repairedReference`):
+ * the model judged it breaking, but the deterministic verdict wins, so the
+ * change stays non-breaking and the model's opinion is recorded.
  */
 export type AiAnalysisSource =
   | "rule-confirmed"
   | "rule-overridden"
   | "ai-discovered"
-  | "ai-suggested-downgrade";
+  | "ai-suggested-downgrade"
+  | "ai-suggested-escalation";
 
 /**
  * AI-authored analysis attached to an ApiChange
@@ -65,6 +71,51 @@ export interface AiAnalysis {
   migration?: string;
   /** Model identifier that produced this verdict */
   model: string;
+}
+
+/**
+ * Resolvability verdict for one inline `import("...")` specifier a change's
+ * signature dropped or introduced. `verdict` comes from resolving the specifier
+ * against the dependency's `exports` map; `unknown` covers everything that map
+ * could not settle: the dependency is not installed, it has no usable `exports`
+ * field (legacy resolution then serves every file, so the subpath may well
+ * resolve), or the specifier is not a bare package specifier at all (relative,
+ * absolute, or malformed).
+ */
+export interface ReferenceResolution {
+  /** The module specifier, e.g. `@clerk/shared/_chunks/index-DcO1-lAR`. */
+  specifier: string;
+  /** Whether the specifier was dropped from the before side or introduced on the after side. */
+  side: "removed" | "introduced";
+  /** Exports-map verdict for the specifier. */
+  verdict: "exported" | "blocked" | "unknown";
+  /**
+   * True when `verdict` was settled by the dependency's actual `exports` map.
+   * False for every `unknown`, including a relative/absolute/malformed
+   * specifier, where nothing was verified in either direction.
+   */
+  deterministic: boolean;
+  /** Set when `verdict` is `unknown` and the specifier looks like an internal bundler chunk. */
+  internalChunk?: boolean;
+  /**
+   * Set when the specifier's dependency package could not be located on disk.
+   * Distinguishes "unlocatable" from "installed but no `exports` map": in the
+   * latter case legacy resolution serves every file, so even a chunk-shaped
+   * subpath may genuinely resolve for consumers.
+   */
+  packageNotFound?: boolean;
+}
+
+/**
+ * Recorded when a breaking modification was deterministically downgraded
+ * because its only diff is swapping unresolvable module specifiers for
+ * exported ones (see `ApiChange.repairedReference`).
+ */
+export interface RepairedReference {
+  /** Removed specifiers, each export-blocked (or chunk-shaped with the dependency unlocatable). */
+  from: string[];
+  /** Introduced specifiers, each deterministically exported. */
+  to: string[];
 }
 
 /**
@@ -116,6 +167,26 @@ export interface ApiChange {
   unresolvableReference?: boolean;
   /** The offending module specifier when `unresolvableReference` is set. */
   unresolvableSpecifier?: string;
+  /**
+   * Set when the change was deterministically downgraded to non-breaking
+   * because its only diff is a reference repair: every specifier the signature
+   * dropped was unconsumable (export-blocked in the dependency's `exports`, or
+   * an internal-chunk-shaped path with the dependency unlocatable), every
+   * specifier it introduced resolves to a public export, and the signatures are
+   * otherwise identical once the swapped `import("...").Name` units are masked.
+   * The before state errored (TS2307) or degraded to `any` downstream, so the
+   * swap strictly improves resolvability (issue #98, the inverse of
+   * `unresolvableReference`). The AI may not escalate a change carrying this
+   * field; `ruleBasedType` records the original verdict.
+   */
+  repairedReference?: RepairedReference;
+  /**
+   * Exports-map verdicts for the inline import specifiers this change dropped
+   * or introduced. Attached whenever the specifier sets differ between the
+   * before and after snippets, so the AI reviewer (and JSON consumers) get
+   * deterministic resolvability facts instead of guessing from path shapes.
+   */
+  referenceResolutions?: ReferenceResolution[];
   /** Present when the AI analyzer reviewed (or produced) this change */
   aiAnalysis?: AiAnalysis;
 }

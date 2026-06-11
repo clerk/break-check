@@ -128,6 +128,19 @@ export const ConfigSchema = z.object({
    */
   resolvableSpecifiers: z.array(z.string()).default([]),
 
+  /**
+   * Downgrade reference *repairs* to non-breaking. A repair is the inverse of
+   * the unresolvable-reference guard: a breaking modification whose only diff
+   * is swapping specifiers consumers could not resolve (export-blocked or
+   * internal bundler chunks) for deterministically exported ones, leaving the
+   * signature otherwise identical. The before state already errored (TS2307)
+   * or degraded to `any` downstream, so the swap strictly improves
+   * resolvability. On by default; set to `false` to keep reporting repairs as
+   * breaking (e.g. when `skipLibCheck` consumers who saw `any` must be treated
+   * as a compatibility surface).
+   */
+  downgradeRepairedReferences: z.boolean().default(true),
+
   /** Optional AI analyzer configuration. */
   ai: AiConfigSchema.optional(),
 });
@@ -156,6 +169,7 @@ export function createDefaultConfig(): BreakCheckConfig {
     ignoreHashedChunks: true,
     acknowledgedChanges: [],
     resolvableSpecifiers: [],
+    downgradeRepairedReferences: true,
   };
 }
 

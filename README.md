@@ -187,18 +187,19 @@ a machine-readable verdict without running detection (and the AI reviewer) twice
 
 ## Configuration
 
-| Option                 | Type     | Default          | Description                                                            |
-| ---------------------- | -------- | ---------------- | ---------------------------------------------------------------------- |
-| `packages`             | string[] | required         | Package paths to analyze                                               |
-| `snapshotDir`          | string   | `.api-snapshots` | Snapshot output directory                                              |
-| `mainBranch`           | string   | `main`           | Base branch name for repo-specific workflows                           |
-| `checkVersionBump`     | boolean  | `true`           | Mark insufficient version bumps in reports                             |
-| `outputFormat`         | string   | `markdown`       | Default report format                                                  |
-| `ignoreSubpaths`       | string[] | `[]`             | Subpath exports to skip (exact, or glob with `*`/`**`)                 |
-| `ignoreHashedChunks`   | boolean  | `true`           | Drop content-hashed bundler chunks matched by `./*`                    |
-| `acknowledgedChanges`  | string[] | `[]`             | Breaking changes you've verified safe (downgraded + tagged)            |
-| `resolvableSpecifiers` | string[] | `[]`             | Module-specifier globs to exempt from the unresolvable-reference guard |
-| `ai`                   | object   | unset            | AI reviewer options (see below)                                        |
+| Option                        | Type     | Default          | Description                                                                      |
+| ----------------------------- | -------- | ---------------- | -------------------------------------------------------------------------------- |
+| `packages`                    | string[] | required         | Package paths to analyze                                                         |
+| `snapshotDir`                 | string   | `.api-snapshots` | Snapshot output directory                                                        |
+| `mainBranch`                  | string   | `main`           | Base branch name for repo-specific workflows                                     |
+| `checkVersionBump`            | boolean  | `true`           | Mark insufficient version bumps in reports                                       |
+| `outputFormat`                | string   | `markdown`       | Default report format                                                            |
+| `ignoreSubpaths`              | string[] | `[]`             | Subpath exports to skip (exact, or glob with `*`/`**`)                           |
+| `ignoreHashedChunks`          | boolean  | `true`           | Drop content-hashed bundler chunks matched by `./*`                              |
+| `acknowledgedChanges`         | string[] | `[]`             | Breaking changes you've verified safe (downgraded + tagged)                      |
+| `resolvableSpecifiers`        | string[] | `[]`             | Module-specifier globs to exempt from the unresolvable-reference guard           |
+| `downgradeRepairedReferences` | boolean  | `true`           | Report a blocked-to-exported specifier swap (a reference repair) as non-breaking |
+| `ai`                          | object   | unset            | AI reviewer options (see below)                                                  |
 
 Version-bump validation (`checkVersionBump`) compares the bump between the
 baseline and current versions against the severity of the detected changes,
@@ -253,6 +254,27 @@ entry also clears it. The guard applies to changed and removed exports, includin
 escalating an otherwise non-breaking modification (say a new optional parameter)
 when its type is provably export-blocked. A brand-new export is still reported as
 an addition, not a breaking change, even when its type is unresolvable.
+
+The guard's inverse is a _repair_: the PR that fixes such a regression swaps the
+blocked specifier back to a public subpath
+(`import("@clerk/shared/_chunks/index-Cr_OtBLq").Xm` becomes
+`import("@clerk/shared/types/utils").Without`). The raw text differs, so the
+differ would flag it breaking, but the old reference was never consumable
+downstream; nobody can be broken by fixing it. When every specifier a signature
+drops is export-blocked (or chunk-shaped with the dependency unlocatable), every
+specifier it introduces provably resolves against the dependency's `exports`,
+and the signature is otherwise identical once the swapped `import("...").Name`
+units are masked (the imported alias may change with the specifier; bundlers
+minify chunk-internal names), the change is downgraded to non-breaking and
+tagged as a repaired reference in the report. The downgrade is deterministic,
+runs with or without the AI reviewer, and the AI cannot escalate it back.
+Anything beyond the swap, an introduced specifier that does not provably
+resolve, or a dropped specifier that was actually public fails the check and
+the change stays breaking. Set `downgradeRepairedReferences: false` to opt out
+(for example when `skipLibCheck` consumers who saw `any` must be treated as a
+compatibility surface). Both directions surface their exports-map verdicts to
+the AI reviewer, so it judges resolvability from resolved facts rather than
+path shapes.
 
 ### AI reviewer config
 
@@ -544,7 +566,7 @@ Break Check classifies each diff as one of three types.
 | Type         | Severity | What it covers                                                                                                                                                                                                                                            |
 | ------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Breaking     | Major    | Removed exports or members; required parameter added; optional parameter or property made required; a parameter's rest-ness changed; parameter or property type changed; return type changed; a member's `static`/`protected`/`abstract` modifier changed |
-| Non-breaking | Minor    | Optional parameter added; rest parameter added; required parameter or property made optional                                                                                                                                                              |
+| Non-breaking | Minor    | Optional parameter added; rest parameter added; required parameter or property made optional; a type change whose only diff is swapping an unresolvable specifier for an exported one (a reference repair, see Configuration)                             |
 | Addition     | Minor    | New exports, new interface/class members                                                                                                                                                                                                                  |
 
 The analyzer compares parameters, return types, property types, and enum values
