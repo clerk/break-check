@@ -91,6 +91,13 @@ export const ConfigSchema = z.object({
    * entry containing `*` is treated as a glob (`*` within a path segment, `**`
    * across segments), e.g. `./internal-*`. This is the explicit escape hatch
    * for surfaces the hashed-chunk heuristic doesn't cover.
+   *
+   * A bare entry applies to every configured package. To scope an entry to one
+   * package, prefix it with the package name and `#` (the same separator
+   * `acknowledgedChanges` uses): `@clerk/astro#./env` ignores `./env` only
+   * there, leaving another package's `./env` tracked. The package part also
+   * accepts globs (`@clerk/*#./internal`); that part goes beyond
+   * `acknowledgedChanges`, whose package part is matched exactly.
    */
   ignoreSubpaths: z.array(z.string()).default([]),
 

@@ -194,7 +194,7 @@ a machine-readable verdict without running detection (and the AI reviewer) twice
 | `mainBranch`                  | string   | `main`           | Base branch name for repo-specific workflows                                     |
 | `checkVersionBump`            | boolean  | `true`           | Mark insufficient version bumps in reports                                       |
 | `outputFormat`                | string   | `markdown`       | Default report format                                                            |
-| `ignoreSubpaths`              | string[] | `[]`             | Subpath exports to skip (exact, or glob with `*`/`**`)                           |
+| `ignoreSubpaths`              | string[] | `[]`             | Subpath exports to skip (exact or glob, optionally package-scoped via `pkg#`)    |
 | `ignoreHashedChunks`          | boolean  | `true`           | Drop content-hashed bundler chunks matched by `./*`                              |
 | `acknowledgedChanges`         | string[] | `[]`             | Breaking changes you've verified safe (downgraded + tagged)                      |
 | `resolvableSpecifiers`        | string[] | `[]`             | Module-specifier globs to exempt from the unresolvable-reference guard           |
@@ -225,6 +225,15 @@ default) drops wildcard matches whose basename ends in a `-<8-char hash>`
 suffix. For anything the heuristic misses, `ignoreSubpaths` accepts globs
 (`./internal-*`, `./chunk-*`). Set `ignoreHashedChunks: false` to treat every
 wildcard match as a real subpath.
+
+A bare `ignoreSubpaths` entry applies to every configured package. When two
+packages export the same subpath and only one should be ignored (say,
+`@clerk/astro`'s ambient `./env` versus `@clerk/express`'s module `./env`),
+scope the entry with a package prefix and `#`, the same separator
+`acknowledgedChanges` uses: `"@clerk/astro#./env"`. Both sides take globs, so
+`"@clerk/*#./internal"` scopes a subpath to one npm scope (unlike
+`acknowledgedChanges`, whose package part is matched exactly). Skip-reason
+warnings for unsnapshotable subpaths name the exact scoped entry to copy.
 
 `acknowledgedChanges` is the escape hatch for a change the differ flags as
 breaking that you have verified is safe. Each entry is the change's qualified
