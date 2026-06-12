@@ -16,6 +16,7 @@ import {
   DISCOVERY_VERSION,
   METADATA_FILENAME,
   LEGACY_METADATA_FILENAME,
+  describeExtractionFailure,
   getApiExtractorVersion,
   readPackageInfo,
   isHashedChunkSubpath,
@@ -353,7 +354,9 @@ export class BreakingChangesDetector {
           packageSnapshots.push(snapshot);
           this.log(`  ✓ ${packageInfo.name} ${entry.subpath}`);
         } catch (error) {
-          const reason = error instanceof Error ? error.message : String(error);
+          const reason = describeExtractionFailure(
+            error instanceof Error ? error.message : String(error),
+          );
           this.skippedEntries.push({
             packageName: packageInfo.name,
             subpath: entry.subpath,

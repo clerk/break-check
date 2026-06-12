@@ -170,6 +170,75 @@ export function makeSubpathMatcher(
     exact.has(subpath) || regexes.some((re) => re.test(subpath));
 }
 
+/**
+ * Trailing boilerplate API Extractor appends to its InternalError messages.
+ * Stripped from skip reasons so reports don't tell maintainers to file an
+ * upstream bug for conditions that are expected and actionable on their side.
+ */
+const AE_INTERNAL_ERROR_BOILERPLATE =
+  "\n\nYou have encountered a software defect. Please consider reporting " +
+  "the issue to the maintainers of this application.";
+
+/**
+ * Translate an API Extractor failure message into an actionable skip reason.
+ *
+ * Matching is on message strings because break-check has no runtime
+ * `typescript` dependency to re-diagnose the entry point with. That is
+ * acceptable: `@microsoft/api-extractor` is pinned to an exact version and an
+ * AE bump mandates a break-check major (see AGENTS.md), so the strings are
+ * stable for any given release. An unrecognized message passes through with
+ * only the boilerplate stripped, so a new AE failure shape is still reported
+ * verbatim rather than misclassified.
+ */
+export function describeExtractionFailure(message: string): string {
+  const stripped = message.endsWith(AE_INTERNAL_ERROR_BOILERPLATE)
+    ? message.slice(0, -AE_INTERNAL_ERROR_BOILERPLATE.length).trim()
+    : message.trim();
+
+  // Fires when the entry .d.ts is an ambient script (no top-level
+  // import/export). AE can never analyze such surfaces; see rushstack
+  // issues #1176 / #2142.
+  const ambient = /^Internal Error: Unable to determine module for: .+$/.exec(
+    stripped,
+  );
+  if (ambient) {
+    return (
+      "ambient declaration file (no top-level import or export): " +
+      "API Extractor can only analyze module entry points, so this " +
+      "global-augmentation surface cannot be snapshotted; add the subpath " +
+      "to `ignoreSubpaths` to acknowledge it " +
+      `(API Extractor: ${stripFirstLinePrefix(stripped)})`
+    );
+  }
+
+  // Three AE code paths for the same root cause: the shipped declarations
+  // name a type that cannot be resolved from the entry point. Identifier
+  // capture is (.+), not (\w+): identifiers can be `$`, quoted, or dotted.
+  // The third shape (ExportAnalyzer's import-type variant) appends a source
+  // location on the next line, so it is matched on the first line only.
+  const unresolved =
+    /^Internal Error: Unable to follow symbol for "(.+)"$/.exec(stripped) ??
+    /^Symbol not found for identifier: (.+)$/.exec(stripped) ??
+    /^Internal Error: Symbol not found for identifier: (.+)\n/.exec(stripped);
+  if (unresolved) {
+    return (
+      `the shipped declarations reference the type name "${unresolved[1]}", ` +
+      "which cannot be resolved from the entry point; the published types " +
+      "are likely broken for consumers (often a dropped import or a types " +
+      "package that is only a devDependency); fix the published types, or " +
+      "add the subpath to `ignoreSubpaths` as a stopgap " +
+      `(API Extractor: ${stripFirstLinePrefix(stripped)})`
+    );
+  }
+
+  return stripped;
+}
+
+function stripFirstLinePrefix(message: string): string {
+  const firstLine = message.split("\n", 1)[0];
+  return firstLine.replace(/^Internal Error: /, "");
+}
+
 interface DiscoveryResult {
   entries: PackageEntry[];
   skippedWildcards: string[];
