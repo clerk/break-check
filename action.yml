@@ -68,8 +68,10 @@ inputs:
       Name for the uploaded report artifact. Artifact names are immutable and
       global to a workflow run, so when this Action runs more than once per
       run (a matrix, or per-package jobs) the default name collides and the
-      second upload fails. Give each invocation a distinct name, e.g.
-      `break-check-report-${{ matrix.package }}`.
+      second upload fails. Give each invocation a distinct name, e.g. append
+      the matrix package name: `break-check-report-pkg-a`. (The runner
+      template-parses expression syntax anywhere in this manifest, so an
+      expression cannot be written literally here.)
     required: false
     default: "break-check-report"
   fail-on-breaking:
