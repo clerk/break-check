@@ -1,5 +1,37 @@
 # @clerk/break-check
 
+## 0.4.0
+
+### Minor Changes
+
+- [#101](https://github.com/clerk/break-check/pull/101) [`1860598`](https://github.com/clerk/break-check/commit/18605980a7d67bc4c086518801e3a9b3f7369c78) Thanks [@jacekradko](https://github.com/jacekradko)! - Skip reasons for subpaths API Extractor cannot snapshot are now classified
+  into actionable messages instead of echoing AE's raw InternalError text. An
+  ambient entry `.d.ts` (no top-level import or export) is reported as a surface
+  AE can never analyze, and an unresolvable type name in the shipped
+  declarations is reported as likely-broken published types; both point at
+  `ignoreSubpaths` as the acknowledgment path and keep the original AE first
+  line for traceability. Unrecognized messages pass through with only the
+  "software defect" boilerplate stripped.
+
+- [#99](https://github.com/clerk/break-check/pull/99) [`4c81537`](https://github.com/clerk/break-check/commit/4c81537a77f8bd447e5209b859961b8a02a96eb4) Thanks [@jacekradko](https://github.com/jacekradko)! - A reference _repair_ is now reported non-breaking (issue [#98](https://github.com/clerk/break-check/issues/98)). When a breaking
+  modification's only diff is swapping module specifiers consumers could not
+  resolve (export-blocked, e.g. `@clerk/shared/_chunks/index-Cr_OtBLq` under
+  `"./_chunks/*": null`, or chunk-shaped with the dependency unlocatable) for
+  specifiers that provably resolve against the dependency's `exports`, the change
+  is deterministically downgraded and tagged as a repaired reference in the
+  report. The old reference errored (TS2307) or degraded to `any` downstream, so
+  fixing it cannot break anyone. The check is fail-closed: any difference beyond
+  the specifier/alias swap, or an introduced specifier that does not provably
+  resolve, keeps the change breaking. Opt out with
+  `downgradeRepairedReferences: false`.
+
+  The AI reviewer now also receives deterministic exports-map verdicts
+  (`referenceResolutions`) for every specifier a signature drops or introduces,
+  instead of guessing resolvability from path shapes, and cannot escalate a
+  deterministically repaired change back to breaking (recorded as
+  `ai-suggested-escalation`, mirroring the downgrade refusal for unresolvable
+  references).
+
 ## 0.3.0
 
 ### Minor Changes
