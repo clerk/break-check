@@ -1384,6 +1384,19 @@ test("makeScopedSubpathMatcher: a leading-dot entry containing # is never split"
   assert.ok(!match("./weird", "name"));
 });
 
+test("makeScopedSubpathMatcher: bare glob entries keep their historical matching", () => {
+  // No leading dot and no '#', yet these DO match exports keys; the bare
+  // branch is back compat, not dead config. `**` ignores everything and `*`
+  // matches the root key.
+  const everything = makeScopedSubpathMatcher(["**"]);
+  assert.ok(everything("@clerk/astro", "./env"));
+  assert.ok(everything("any-pkg", "."));
+
+  const rootOnly = makeScopedSubpathMatcher(["*"]);
+  assert.ok(rootOnly("@clerk/astro", "."));
+  assert.ok(!rootOnly("@clerk/astro", "./env"));
+});
+
 /**
  * Like writeSubpathOnlyPackage but parameterized by directory and package
  * name, for scoped-ignoreSubpaths tests that need two packages exporting the

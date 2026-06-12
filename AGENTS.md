@@ -131,12 +131,14 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   baseline read in `detector.ts#analyzePackage`, so an older baseline that
   recorded chunk subpaths reconciles without a `DISCOVERY_VERSION` bump.
   `ignoreSubpaths` is glob-aware and optionally package-scoped
-  (`makeScopedSubpathMatcher`): a bare entry (leading `.`) applies to every
-  configured package, while `@clerk/astro#./env` pins one package using the
-  `acknowledgedChanges` `#` syntax with globs on both sides. It is the explicit
-  escape hatch for anything the heuristic misses, applied at the same two
-  symmetric sites as the chunk filter; skip-reason guidance emits the exact
-  scoped entry to copy. `makeSubpathMatcher` (unscoped) remains for
+  (`makeScopedSubpathMatcher`): a bare entry (anything not shaped
+  `pkg#subpath`, including glob forms like `**`) applies to every configured
+  package, while `@clerk/astro#./env` pins one package using the
+  `acknowledgedChanges` `#` separator. Globs work on both sides here, which
+  goes beyond `acknowledgedChanges` (its package part is exact-match). It is
+  the explicit escape hatch for anything the heuristic misses, applied at the
+  same two symmetric sites as the chunk filter; skip-reason guidance emits the
+  exact scoped entry to copy. `makeSubpathMatcher` (unscoped) remains for
   `resolvableSpecifiers`.
 - **Type variance is intentionally pessimistic**: any type change is
   flagged as breaking, even when the new type is strictly wider. The

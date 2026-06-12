@@ -193,13 +193,23 @@ interface ScopedSubpathPattern {
  * legally contain `#`, so the leading `.` short-circuits the scope split). Any
  * other entry containing `#` is split at the first `#` into
  * `<packagePattern>#<subpathPattern>`, mirroring the `acknowledgedChanges`
- * syntax; the entry then only ignores the subpath in packages matching the
- * package pattern. Both sides accept the same globs as `makeSubpathMatcher`
- * (`*` within a `/`-segment, `**` across), so `@clerk/*#./internal` scopes to
- * one npm scope while `@clerk/astro#./env` pins one package. An empty package
- * part (`#./env`) means "any package". An entry with neither a leading `.` nor
- * a `#` can never match an exports key (they all start with `.`) and is kept
- * only for symmetry with the unscoped matcher.
+ * `#` separator (but note: `acknowledgedChanges` matches its package part
+ * exactly; the glob package part here is an `ignoreSubpaths` extension); the
+ * entry then only ignores the subpath in packages matching the package
+ * pattern. Both sides accept the same globs as `makeSubpathMatcher` (`*`
+ * within a `/`-segment, `**` across), so `@clerk/*#./internal` scopes to one
+ * npm scope while `@clerk/astro#./env` pins one package. An empty package part
+ * (`#./env`) means "any package".
+ *
+ * An entry with neither a leading `.` nor a `#` stays a bare subpath pattern.
+ * That branch is load-bearing back compat, not decoration: a non-glob entry of
+ * that shape can never match an exports key (they all start with `.`), but
+ * glob forms can and keep their historical meaning (`**` matches every key,
+ * `*` matches the root `.`). The only input class this function reinterprets
+ * is a non-dot entry CONTAINING `#` (e.g. `**#./env`), previously a subpath
+ * glob over a literal `#` in the key, now a scoped entry; exports keys
+ * containing `#` are pathological, so no realistic existing config changes
+ * meaning.
  */
 export function makeScopedSubpathMatcher(
   patterns: string[],
@@ -264,8 +274,15 @@ export function describeExtractionFailure(
     ? message.slice(0, -AE_INTERNAL_ERROR_BOILERPLATE.length).trim()
     : message.trim();
 
+  // The hint rides inside a backtick code span in the markdown report, and
+  // the reporter's mdProse intentionally preserves backticks. package.json is
+  // attacker-controlled in CI, so a backtick smuggled into the name or an
+  // exports key must not terminate the span early; neutralize it the same way
+  // the reporter's mdCode does (backtick -> apostrophe).
+  const mdSafe = (value: string): string => value.replace(/`/g, "'");
   const ackHint = entry
-    ? `add \`"${entry.packageName}#${entry.subpath}"\` to \`ignoreSubpaths\``
+    ? `add \`"${mdSafe(entry.packageName)}#${mdSafe(entry.subpath)}"\` ` +
+      "to `ignoreSubpaths`"
     : "add the subpath to `ignoreSubpaths`";
 
   // Fires when the entry .d.ts is an ambient script (no top-level

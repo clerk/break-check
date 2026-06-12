@@ -111,6 +111,19 @@ test("describeExtractionFailure: entry context names the exact scoped ignoreSubp
   assert.ok(!reason.includes("add the subpath"));
 });
 
+test("describeExtractionFailure: backticks in entry context cannot break the code span", () => {
+  // package.json is attacker-controlled in CI and the hint renders inside a
+  // backtick code span via mdProse (which preserves backticks); neutralize
+  // like the reporter's mdCode does.
+  const reason = describeExtractionFailure(
+    "Internal Error: Unable to determine module for: /repo/x.d.ts",
+    { packageName: "@evil/pkg", subpath: "./a`b" },
+  );
+
+  assert.match(reason, /add `"@evil\/pkg#\.\/a'b"` to `ignoreSubpaths`/);
+  assert.ok(!reason.includes("`b"));
+});
+
 test("describeExtractionFailure: entry context applies to the unresolvable-type guidance too", () => {
   const reason = describeExtractionFailure(
     "Symbol not found for identifier: Cypress",

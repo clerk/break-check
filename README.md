@@ -229,10 +229,11 @@ wildcard match as a real subpath.
 A bare `ignoreSubpaths` entry applies to every configured package. When two
 packages export the same subpath and only one should be ignored (say,
 `@clerk/astro`'s ambient `./env` versus `@clerk/express`'s module `./env`),
-scope the entry with a package prefix and `#`, the same syntax
+scope the entry with a package prefix and `#`, the same separator
 `acknowledgedChanges` uses: `"@clerk/astro#./env"`. Both sides take globs, so
-`"@clerk/*#./internal"` scopes a subpath to one npm scope. Skip-reason warnings
-for unsnapshotable subpaths name the exact scoped entry to copy.
+`"@clerk/*#./internal"` scopes a subpath to one npm scope (unlike
+`acknowledgedChanges`, whose package part is matched exactly). Skip-reason
+warnings for unsnapshotable subpaths name the exact scoped entry to copy.
 
 `acknowledgedChanges` is the escape hatch for a change the differ flags as
 breaking that you have verified is safe. Each entry is the change's qualified
