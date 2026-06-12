@@ -15,6 +15,8 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 
+import { makeScopedSubpathMatcher } from "../dist/utils/api-extractor.js";
+
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = join(repoRoot, "dist", "cli.js");
 
@@ -1330,6 +1332,244 @@ test("a wildcard types pattern that matches no files stays silent", () => {
       "--fail-on-skipped",
     ]);
     assert.equal(strict.status, 0, strict.stderr);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Package-scoped ignoreSubpaths (issue #104)
+// ---------------------------------------------------------------------------
+
+test("makeScopedSubpathMatcher: scoping and glob semantics", () => {
+  const match = makeScopedSubpathMatcher([
+    "@clerk/astro#./env",
+    "@clerk/*#./internal-*",
+    "./chunk-*",
+    "#./any",
+  ]);
+
+  // Package-pinned entry hits only that package.
+  assert.ok(match("@clerk/astro", "./env"));
+  assert.ok(!match("@clerk/express", "./env"));
+
+  // Package glob with a subpath glob on the other side.
+  assert.ok(match("@clerk/shared", "./internal-foo"));
+  assert.ok(!match("@other/shared", "./internal-foo"));
+  assert.ok(!match("@clerk/shared", "./public"));
+
+  // Bare entry keeps today's global semantics.
+  assert.ok(match("@clerk/astro", "./chunk-abc"));
+  assert.ok(match("anything", "./chunk-x"));
+
+  // Empty package part means any package.
+  assert.ok(match("whatever", "./any"));
+});
+
+test("makeScopedSubpathMatcher: package globs follow segment semantics", () => {
+  // `*` stays within a `/`-segment, so it covers unscoped names only;
+  // `**` crosses segments and covers scoped names too.
+  const single = makeScopedSubpathMatcher(["*#./env"]);
+  assert.ok(single("react", "./env"));
+  assert.ok(!single("@clerk/astro", "./env"));
+
+  const double = makeScopedSubpathMatcher(["**#./env"]);
+  assert.ok(double("react", "./env"));
+  assert.ok(double("@clerk/astro", "./env"));
+});
+
+test("makeScopedSubpathMatcher: a leading-dot entry containing # is never split", () => {
+  const match = makeScopedSubpathMatcher(["./weird#name"]);
+  assert.ok(match("any-pkg", "./weird#name"));
+  assert.ok(!match("./weird", "name"));
+});
+
+/**
+ * Like writeSubpathOnlyPackage but parameterized by directory and package
+ * name, for scoped-ignoreSubpaths tests that need two packages exporting the
+ * same subpath key.
+ */
+function writeNamedSubpathPackage(workspace, dir, name, { version, dts }) {
+  const packageDir = join(workspace, dir);
+  mkdirSync(packageDir, { recursive: true });
+
+  const exports = {};
+  for (const [subpath, body] of Object.entries(dts)) {
+    const slug =
+      subpath === "."
+        ? "index"
+        : subpath.replace(/^\.\//, "").replace(/\//g, "_");
+    const file = `./dist/${slug}.d.ts`;
+    writeDts(join(packageDir, file.slice(2)), body);
+    exports[subpath] = { import: { types: file } };
+  }
+  exports["./package.json"] = "./package.json";
+
+  writeJson(join(packageDir, "package.json"), { name, version, exports });
+}
+
+function metadataSubpaths(workspace, pkgSlug) {
+  const metadata = JSON.parse(
+    readFileSync(
+      join(workspace, "snapshots", pkgSlug, "break-check.snapshot.json"),
+      "utf-8",
+    ),
+  );
+  return metadata.entries.map((e) => e.subpath).sort();
+}
+
+test("scoped ignoreSubpaths drops the subpath only in the named package", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace, {
+      packages: ["packages/a", "packages/b"],
+      ignoreSubpaths: ["@demo/a#./env"],
+    });
+    writeNamedSubpathPackage(workspace, "packages/a", "@demo/a", {
+      version: "1.0.0",
+      dts: {
+        ".": "export declare const a: number;\n",
+        "./env": "export declare const envA: number;\n",
+      },
+    });
+    writeNamedSubpathPackage(workspace, "packages/b", "@demo/b", {
+      version: "1.0.0",
+      dts: {
+        ".": "export declare const b: number;\n",
+        "./env": "export declare const envB: number;\n",
+      },
+    });
+
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+
+    assert.deepEqual(metadataSubpaths(workspace, "demo__a"), ["."]);
+    assert.deepEqual(metadataSubpaths(workspace, "demo__b"), [".", "./env"]);
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("scoped ignoreSubpaths suppresses baseline removals only in the named package", () => {
+  const workspace = workspaceDir();
+  try {
+    // Baseline: both packages export ./env, nothing ignored.
+    const configPath = writeConfig(workspace, {
+      packages: ["packages/a", "packages/b"],
+    });
+    const envSurfaces = (tag) => ({
+      version: "1.0.0",
+      dts: {
+        ".": `export declare const ${tag}: number;\n`,
+        "./env": `export declare const env_${tag}: number;\n`,
+      },
+    });
+    writeNamedSubpathPackage(
+      workspace,
+      "packages/a",
+      "@demo/a",
+      envSurfaces("a"),
+    );
+    writeNamedSubpathPackage(
+      workspace,
+      "packages/b",
+      "@demo/b",
+      envSurfaces("b"),
+    );
+
+    const baseline = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "-o",
+      "baseline",
+    ]);
+    assert.equal(baseline.status, 0, baseline.stderr);
+
+    // Current: ./env dropped from BOTH packages; only @demo/a's is ignored.
+    writeConfig(workspace, {
+      packages: ["packages/a", "packages/b"],
+      ignoreSubpaths: ["@demo/a#./env"],
+    });
+    const rootOnly = (tag) => ({
+      version: "1.0.0",
+      dts: { ".": `export declare const ${tag}: number;\n` },
+    });
+    rmSync(join(workspace, "packages", "a", "dist", "env.d.ts"));
+    rmSync(join(workspace, "packages", "b", "dist", "env.d.ts"));
+    writeNamedSubpathPackage(workspace, "packages/a", "@demo/a", rootOnly("a"));
+    writeNamedSubpathPackage(workspace, "packages/b", "@demo/b", rootOnly("b"));
+
+    const detect = runBreakCheck([
+      "detect",
+      "-c",
+      configPath,
+      "--baseline",
+      "baseline",
+      "--format",
+      "json",
+      "--no-ai",
+    ]);
+
+    const result = JSON.parse(detect.stdout);
+    const pkg = (name) => result.packages.find((p) => p.packageName === name);
+
+    const removalsA = pkg("@demo/a").changes.filter(
+      (c) => c.subpath === "./env",
+    );
+    assert.equal(
+      removalsA.length,
+      0,
+      "scoped ignore must suppress the removal in the scoped package",
+    );
+
+    const removalsB = pkg("@demo/b").changes.filter(
+      (c) => c.subpath === "./env" && c.type === "breaking",
+    );
+    assert.ok(
+      removalsB.length > 0,
+      "the other package's ./env removal must still be reported",
+    );
+  } finally {
+    rmSync(workspace, { recursive: true, force: true });
+  }
+});
+
+test("skip warning names the scoped ignoreSubpaths entry, and that entry clears the skip", () => {
+  const workspace = workspaceDir();
+  try {
+    const configPath = writeConfig(workspace);
+    // An ambient .d.ts (no top-level import/export) is the @clerk/astro ./env
+    // shape: API Extractor can never analyze it, so the entry is skipped with
+    // guidance naming the exact scoped config entry.
+    writeSubpathOnlyPackage(workspace, {
+      version: "1.0.0",
+      surfaces: {
+        dts: {
+          ".": "export declare const root: number;\n",
+          "./env": "interface AmbientOnly { x: number }\n",
+        },
+      },
+    });
+
+    const snapshot = runBreakCheck(["snapshot", "-c", configPath]);
+    assert.equal(snapshot.status, 0, snapshot.stderr);
+    assert.match(
+      snapshot.stderr,
+      /add `"@demo\/pkg#\.\/env"` to `ignoreSubpaths`/,
+    );
+
+    // Copying the suggested entry acknowledges the skip.
+    writeConfig(workspace, { ignoreSubpaths: ["@demo/pkg#./env"] });
+    const acknowledged = runBreakCheck([
+      "snapshot",
+      "-c",
+      configPath,
+      "--fail-on-skipped",
+    ]);
+    assert.equal(acknowledged.status, 0, acknowledged.stderr);
+    assert.ok(!acknowledged.stderr.includes("skipping"));
+    assert.deepEqual(metadataSubpaths(workspace, "demo__pkg"), ["."]);
   } finally {
     rmSync(workspace, { recursive: true, force: true });
   }

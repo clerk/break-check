@@ -20,6 +20,7 @@ import {
   getApiExtractorVersion,
   readPackageInfo,
   isHashedChunkSubpath,
+  makeScopedSubpathMatcher,
   makeSubpathMatcher,
 } from "../utils/api-extractor.js";
 import { ApiDiffAnalyzer } from "../analyzers/api-diff.js";
@@ -356,6 +357,7 @@ export class BreakingChangesDetector {
         } catch (error) {
           const reason = describeExtractionFailure(
             error instanceof Error ? error.message : String(error),
+            { packageName: packageInfo.name, subpath: entry.subpath },
           );
           this.skippedEntries.push({
             packageName: packageInfo.name,
@@ -765,17 +767,19 @@ export class BreakingChangesDetector {
     let previousVersion = "0.0.0";
     let aiReviewedBy: string | undefined;
 
-    // Drop baseline entries the user has opted out of (`ignoreSubpaths`, now
-    // glob-aware) so we don't surface removal noise for them. Also drop
-    // content-hashed bundler chunks: an older baseline produced before the
-    // hashed-chunk filter still records them, and the current discovery no
-    // longer enumerates them, so without this they'd read as phantom removals.
-    // Filtering both sides identically reconciles old baselines without a
-    // discovery-version bump.
-    const ignoreMatch = makeSubpathMatcher(this.config.ignoreSubpaths ?? []);
+    // Drop baseline entries the user has opted out of (`ignoreSubpaths`,
+    // glob-aware and optionally package-scoped) so we don't surface removal
+    // noise for them. Also drop content-hashed bundler chunks: an older
+    // baseline produced before the hashed-chunk filter still records them, and
+    // the current discovery no longer enumerates them, so without this they'd
+    // read as phantom removals. Filtering both sides identically reconciles
+    // old baselines without a discovery-version bump.
+    const ignoreMatch = makeScopedSubpathMatcher(
+      this.config.ignoreSubpaths ?? [],
+    );
     const visibleBaselineEntries = baselineEntries.filter(
       (s) =>
-        !ignoreMatch(s.subpath) &&
+        !ignoreMatch(packageInfo.name, s.subpath) &&
         !(this.config.ignoreHashedChunks && isHashedChunkSubpath(s.subpath)),
     );
 

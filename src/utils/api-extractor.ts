@@ -82,7 +82,9 @@ export interface FindEntryPointsOptions {
    * Subpath keys to drop from discovery. An entry without `*` is matched
    * exactly (e.g. `./internal`); an entry containing `*` is treated as a glob
    * (`*` matches within a path segment, `**` across segments) so unstable or
-   * unpredictable subpaths can be suppressed without enumerating them.
+   * unpredictable subpaths can be suppressed without enumerating them. An
+   * entry may carry a package scope (`@clerk/astro#./env`); see
+   * `makeScopedSubpathMatcher`.
    */
   ignoreSubpaths?: string[];
   /**
@@ -170,6 +172,66 @@ export function makeSubpathMatcher(
     exact.has(subpath) || regexes.some((re) => re.test(subpath));
 }
 
+/** Exact match without `*`, glob match with it (same rules as `makeSubpathMatcher`). */
+function compileGlobOrExact(pattern: string): (value: string) => boolean {
+  if (!pattern.includes("*")) return (value) => value === pattern;
+  const re = new RegExp(`^${globToRegExpSource(pattern)}$`);
+  return (value) => re.test(value);
+}
+
+interface ScopedSubpathPattern {
+  /** Package-name predicate, or null for "any package". */
+  matchesPackage: ((packageName: string) => boolean) | null;
+  matchesSubpath: (subpath: string) => boolean;
+}
+
+/**
+ * Package-scoped variant of `makeSubpathMatcher` for `ignoreSubpaths`.
+ *
+ * An entry starting with `.` is a bare subpath pattern that applies to every
+ * configured package, byte-for-byte the historical semantics (subpath keys may
+ * legally contain `#`, so the leading `.` short-circuits the scope split). Any
+ * other entry containing `#` is split at the first `#` into
+ * `<packagePattern>#<subpathPattern>`, mirroring the `acknowledgedChanges`
+ * syntax; the entry then only ignores the subpath in packages matching the
+ * package pattern. Both sides accept the same globs as `makeSubpathMatcher`
+ * (`*` within a `/`-segment, `**` across), so `@clerk/*#./internal` scopes to
+ * one npm scope while `@clerk/astro#./env` pins one package. An empty package
+ * part (`#./env`) means "any package". An entry with neither a leading `.` nor
+ * a `#` can never match an exports key (they all start with `.`) and is kept
+ * only for symmetry with the unscoped matcher.
+ */
+export function makeScopedSubpathMatcher(
+  patterns: string[],
+): (packageName: string, subpath: string) => boolean {
+  if (patterns.length === 0) return () => false;
+
+  const compiled: ScopedSubpathPattern[] = [];
+  for (const pattern of patterns) {
+    const hash = pattern.startsWith(".") ? -1 : pattern.indexOf("#");
+    if (hash === -1) {
+      compiled.push({
+        matchesPackage: null,
+        matchesSubpath: compileGlobOrExact(pattern),
+      });
+      continue;
+    }
+    const pkg = pattern.slice(0, hash);
+    const subpath = pattern.slice(hash + 1);
+    compiled.push({
+      matchesPackage: pkg ? compileGlobOrExact(pkg) : null,
+      matchesSubpath: compileGlobOrExact(subpath),
+    });
+  }
+
+  return (packageName: string, subpath: string): boolean =>
+    compiled.some(
+      (p) =>
+        (p.matchesPackage === null || p.matchesPackage(packageName)) &&
+        p.matchesSubpath(subpath),
+    );
+}
+
 /**
  * Trailing boilerplate API Extractor appends to its InternalError messages.
  * Stripped from skip reasons so reports don't tell maintainers to file an
@@ -189,11 +251,22 @@ const AE_INTERNAL_ERROR_BOILERPLATE =
  * stable for any given release. An unrecognized message passes through with
  * only the boilerplate stripped, so a new AE failure shape is still reported
  * verbatim rather than misclassified.
+ *
+ * When the caller knows which (package, subpath) failed, the guidance names
+ * the exact package-scoped `ignoreSubpaths` entry to copy, so acknowledging
+ * the skip doesn't blanket-ignore the same subpath in every other package.
  */
-export function describeExtractionFailure(message: string): string {
+export function describeExtractionFailure(
+  message: string,
+  entry?: { packageName: string; subpath: string },
+): string {
   const stripped = message.endsWith(AE_INTERNAL_ERROR_BOILERPLATE)
     ? message.slice(0, -AE_INTERNAL_ERROR_BOILERPLATE.length).trim()
     : message.trim();
+
+  const ackHint = entry
+    ? `add \`"${entry.packageName}#${entry.subpath}"\` to \`ignoreSubpaths\``
+    : "add the subpath to `ignoreSubpaths`";
 
   // Fires when the entry .d.ts is an ambient script (no top-level
   // import/export). AE can never analyze such surfaces; see rushstack
@@ -205,8 +278,8 @@ export function describeExtractionFailure(message: string): string {
     return (
       "ambient declaration file (no top-level import or export): " +
       "API Extractor can only analyze module entry points, so this " +
-      "global-augmentation surface cannot be snapshotted; add the subpath " +
-      "to `ignoreSubpaths` to acknowledge it " +
+      `global-augmentation surface cannot be snapshotted; ${ackHint} ` +
+      "to acknowledge it " +
       `(API Extractor: ${stripFirstLinePrefix(stripped)})`
     );
   }
@@ -226,7 +299,7 @@ export function describeExtractionFailure(message: string): string {
       "which cannot be resolved from the entry point; the published types " +
       "are likely broken for consumers (often a dropped import or a types " +
       "package that is only a devDependency); fix the published types, or " +
-      "add the subpath to `ignoreSubpaths` as a stopgap " +
+      `${ackHint} as a stopgap ` +
       `(API Extractor: ${stripFirstLinePrefix(stripped)})`
     );
   }
@@ -546,7 +619,14 @@ function discoverPackageEntries(
     return result;
   }
 
-  const ignoreMatch = makeSubpathMatcher(options.ignoreSubpaths ?? []);
+  // Scoped entries match against the name this package.json declares; a
+  // missing/non-string name leaves bare entries working and scoped entries
+  // inert (nothing to scope against).
+  const packageName =
+    typeof packageJson.name === "string" ? packageJson.name : "";
+  const scopedIgnore = makeScopedSubpathMatcher(options.ignoreSubpaths ?? []);
+  const ignoreMatch = (subpath: string): boolean =>
+    scopedIgnore(packageName, subpath);
   const dropHashedChunks = options.ignoreHashedChunks ?? true;
   const exports = packageJson.exports;
 

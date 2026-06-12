@@ -96,6 +96,33 @@ test("describeExtractionFailure: identifiers beyond \\w+ are captured", () => {
   );
 });
 
+test("describeExtractionFailure: entry context names the exact scoped ignoreSubpaths entry", () => {
+  const reason = describeExtractionFailure(
+    "Internal Error: Unable to determine module for: " +
+      "/repo/packages/astro/env.d.ts" +
+      AE_BOILERPLATE,
+    { packageName: "@clerk/astro", subpath: "./env" },
+  );
+
+  assert.match(
+    reason,
+    /add `"@clerk\/astro#\.\/env"` to `ignoreSubpaths` to acknowledge it/,
+  );
+  assert.ok(!reason.includes("add the subpath"));
+});
+
+test("describeExtractionFailure: entry context applies to the unresolvable-type guidance too", () => {
+  const reason = describeExtractionFailure(
+    "Symbol not found for identifier: Cypress",
+    { packageName: "@clerk/testing", subpath: "./cypress" },
+  );
+
+  assert.match(
+    reason,
+    /add `"@clerk\/testing#\.\/cypress"` to `ignoreSubpaths` as a stopgap/,
+  );
+});
+
 test("describeExtractionFailure: unclassified InternalError loses the boilerplate", () => {
   const reason = describeExtractionFailure(
     "Internal Error: Something nobody has seen before" + AE_BOILERPLATE,
