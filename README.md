@@ -616,12 +616,16 @@ Near-term, in rough priority order:
   diffs only. Classify adding, removing, reordering, or constraining
   type parameters with the same rigor as regular parameters.
 - **Structural-equivalence pass for unions and discriminated unions.**
-  The rule-based diff currently flags reorderings and equivalent
-  rewrites as breaking; the AI reviewer can catch these but we want
-  the rule pass to handle the obvious cases on its own.
-- **Richer report output.** Group changes by package and by entrypoint
-  in the markdown report, and include a stable JSON schema version so
-  downstream tooling can depend on the output shape.
+  Pure member reorderings are already canonicalized by the rule pass, so
+  they no longer read as breaking. What remains is recognizing
+  semantically-equivalent rewrites (e.g. collapsing `A | never` or
+  `true | false` into `boolean`) and discriminated-union equivalence; the
+  AI reviewer can catch these today but we want the rule pass to handle the
+  obvious cases on its own.
+- **Versioned JSON report output.** Add a stable schema version to the
+  `--format json` report so downstream tooling can depend on its shape.
+  (Changes are already grouped by package and by entrypoint in the markdown
+  report.)
 
 Longer-term ideas (less committed):
 
