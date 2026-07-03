@@ -187,19 +187,20 @@ a machine-readable verdict without running detection (and the AI reviewer) twice
 
 ## Configuration
 
-| Option                        | Type     | Default          | Description                                                                      |
-| ----------------------------- | -------- | ---------------- | -------------------------------------------------------------------------------- |
-| `packages`                    | string[] | required         | Package paths to analyze                                                         |
-| `snapshotDir`                 | string   | `.api-snapshots` | Snapshot output directory                                                        |
-| `mainBranch`                  | string   | `main`           | Base branch name for repo-specific workflows                                     |
-| `checkVersionBump`            | boolean  | `true`           | Mark insufficient version bumps in reports                                       |
-| `outputFormat`                | string   | `markdown`       | Default report format                                                            |
-| `ignoreSubpaths`              | string[] | `[]`             | Subpath exports to skip (exact or glob, optionally package-scoped via `pkg#`)    |
-| `ignoreHashedChunks`          | boolean  | `true`           | Drop content-hashed bundler chunks matched by `./*`                              |
-| `acknowledgedChanges`         | string[] | `[]`             | Breaking changes you've verified safe (downgraded + tagged)                      |
-| `resolvableSpecifiers`        | string[] | `[]`             | Module-specifier globs to exempt from the unresolvable-reference guard           |
-| `downgradeRepairedReferences` | boolean  | `true`           | Report a blocked-to-exported specifier swap (a reference repair) as non-breaking |
-| `ai`                          | object   | unset            | AI reviewer options (see below)                                                  |
+| Option                        | Type     | Default          | Description                                                                            |
+| ----------------------------- | -------- | ---------------- | -------------------------------------------------------------------------------------- |
+| `packages`                    | string[] | required         | Package paths to analyze                                                               |
+| `snapshotDir`                 | string   | `.api-snapshots` | Snapshot output directory                                                              |
+| `mainBranch`                  | string   | `main`           | Base branch name for repo-specific workflows                                           |
+| `checkVersionBump`            | boolean  | `true`           | Mark insufficient version bumps in reports                                             |
+| `outputFormat`                | string   | `markdown`       | Default report format                                                                  |
+| `ignoreSubpaths`              | string[] | `[]`             | Subpath exports to skip (exact or glob, optionally package-scoped via `pkg#`)          |
+| `ignoreHashedChunks`          | boolean  | `true`           | Drop content-hashed bundler chunks matched by `./*`                                    |
+| `acknowledgedChanges`         | string[] | `[]`             | Breaking changes you've verified safe (downgraded + tagged)                            |
+| `resolvableSpecifiers`        | string[] | `[]`             | Module-specifier globs to exempt from the unresolvable-reference guard                 |
+| `downgradeRepairedReferences` | boolean  | `true`           | Report a blocked-to-exported specifier swap (a reference repair) as non-breaking       |
+| `downgradeAbsorbingArmUnions` | boolean  | `true`           | Report a union change absorbed by an unchanged `string & {}`-style arm as non-breaking |
+| `ai`                          | object   | unset            | AI reviewer options (see below)                                                        |
 
 Version-bump validation (`checkVersionBump`) compares the bump between the
 baseline and current versions against the severity of the detected changes,
@@ -284,6 +285,26 @@ the change stays breaking. Set `downgradeRepairedReferences: false` to opt out
 compatibility surface). Both directions surface their exports-map verdicts to
 the AI reviewer, so it judges resolvability from resolved facts rather than
 path shapes.
+
+A similar deterministic downgrade covers _suggestion-only union changes_. A
+union carrying an absorbing arm, `string & {}` or
+`string & Record<never, never>` (or the `number` equivalents), accepts every
+value of that primitive regardless of its other arms; the literal and
+template-literal arms exist only to drive editor autocomplete (the
+`Autocomplete` / `LiteralUnion` idiom from type-fest and friends). Swapping,
+adding, or removing such arms while the absorbing arm stays put, e.g.
+`Autocomplete<WithPathPatternWildcard>` becoming
+`Autocomplete<WithPathSegmentWildcard>`, changes the alias text (so the differ
+flags it) without changing the assignable set, so no well-typed consumer can be
+affected in either variance direction. break-check resolves the referenced
+alias definitions from each side's stored API report, proves every changed arm
+is a subtype of the absorbed primitive, and downgrades the change to
+non-breaking, tagged in the report with the absorbing arm and the swapped arms.
+The check is fail-closed: an absorbing arm that itself changed, a changed arm
+that cannot be proven a subtype, or any spelling the resolver cannot
+confidently parse keeps the change breaking. Like a reference repair, the
+downgrade is deterministic, runs with or without the AI reviewer, and the AI
+cannot escalate it back. Set `downgradeAbsorbingArmUnions: false` to opt out.
 
 ### AI reviewer config
 
@@ -572,11 +593,11 @@ compatibility.
 
 Break Check classifies each diff as one of three types.
 
-| Type         | Severity | What it covers                                                                                                                                                                                                                                            |
-| ------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Breaking     | Major    | Removed exports or members; required parameter added; optional parameter or property made required; a parameter's rest-ness changed; parameter or property type changed; return type changed; a member's `static`/`protected`/`abstract` modifier changed |
-| Non-breaking | Minor    | Optional parameter added; rest parameter added; required parameter or property made optional; a type change whose only diff is swapping an unresolvable specifier for an exported one (a reference repair, see Configuration)                             |
-| Addition     | Minor    | New exports, new interface/class members                                                                                                                                                                                                                  |
+| Type         | Severity | What it covers                                                                                                                                                                                                                                                                                                                                 |
+| ------------ | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Breaking     | Major    | Removed exports or members; required parameter added; optional parameter or property made required; a parameter's rest-ness changed; parameter or property type changed; return type changed; a member's `static`/`protected`/`abstract` modifier changed                                                                                      |
+| Non-breaking | Minor    | Optional parameter added; rest parameter added; required parameter or property made optional; a type change whose only diff is swapping an unresolvable specifier for an exported one (a reference repair, see Configuration); a type-alias union change absorbed by an unchanged `string & {}`-style arm (suggestion-only, see Configuration) |
+| Addition     | Minor    | New exports, new interface/class members                                                                                                                                                                                                                                                                                                       |
 
 The analyzer compares parameters, return types, property types, and enum values
 structurally. Overloaded functions and methods are compared per overload
@@ -616,12 +637,13 @@ Near-term, in rough priority order:
   diffs only. Classify adding, removing, reordering, or constraining
   type parameters with the same rigor as regular parameters.
 - **Structural-equivalence pass for unions and discriminated unions.**
-  Pure member reorderings are already canonicalized by the rule pass, so
-  they no longer read as breaking. What remains is recognizing
-  semantically-equivalent rewrites (e.g. collapsing `A | never` or
-  `true | false` into `boolean`) and discriminated-union equivalence; the
-  AI reviewer can catch these today but we want the rule pass to handle the
-  obvious cases on its own.
+  Pure member reorderings are already canonicalized by the rule pass, and
+  suggestion-only changes to `Autocomplete`-style unions (an unchanged
+  `string & {}` absorbing arm) are already downgraded deterministically.
+  What remains is recognizing other semantically-equivalent rewrites (e.g.
+  collapsing `A | never` or `true | false` into `boolean`) and
+  discriminated-union equivalence; the AI reviewer can catch these today but
+  we want the rule pass to handle the obvious cases on its own.
 - **Versioned JSON report output.** Add a stable schema version to the
   `--format json` report so downstream tooling can depend on its shape.
   (Changes are already grouped by package and by entrypoint in the markdown

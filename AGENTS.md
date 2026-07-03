@@ -314,6 +314,35 @@ Before declaring work done: `pnpm check` must pass, and `git diff main
   toggle; the per-change review JSON ships them and system-prompt rules 12/13
   tell the model to trust those verdicts over path shapes. Keep
   `repairedReference` and `referenceResolutions` OUT of `generateChangeId`.
+- **The absorbing-arm downgrade clears suggestion-only union changes (issue
+  #114).** A union carrying `string & {}` / `string & Record<never, never>`
+  (or the `number` equivalents) accepts every value of that primitive; its
+  literal/template-literal arms only drive editor autocomplete (the
+  `Autocomplete`/`LiteralUnion` idiom), and the AI tends to CONFIRM the rule
+  pass's breaking verdict for them, which `--ai-apply-downgrades` cannot relax.
+  `detector.ts#applyAbsorbingArmDowngrades` (right after `applyReferenceRepairs`,
+  before the AI) downgrades a breaking `category: "type"` modification when
+  `findAbsorbingArmEquivalence` (`utils/union-absorption.ts`) proves both sides
+  are unions with an IDENTICAL absorbing arm and every changed arm is a subtype
+  of the primitive (literals, template literals, unions/intersections/
+  conditionals thereof, or same-report alias references, depth-capped). The
+  changed alias's RHS is usually an unexpanded application (`Autocomplete<X>`)
+  of UNEXPORTED aliases, which the `.api.json` doc model omits entirely, so the
+  resolver parses each side's `.api.md` API report (forgotten exports appear
+  there verbatim); a legacy baseline without a stored report never downgrades.
+  Each side resolves against its own report, so a changed `Autocomplete`
+  definition diverges the expansions and fails the match. Everything is
+  fail-closed: reserved-name shadowing (a surface importing or declaring
+  `Record`, a type param named `Record`), substitution into arms with unquoted
+  `:`/`=>`/braces, bindings with depth-0 `|`/`&` spliced into non-bare arms,
+  and unchanged arms that neither prove subtype on BOTH sides nor are
+  reference-free keywords all keep the change breaking (byte-identity of a
+  named reference proves nothing; the name could re-bind between versions).
+  `unresolvableReference` wins over it; the AI records but cannot apply an
+  escalation (mirroring `repairedReference`); system-prompt rule 14 teaches
+  the idiom and the marker; `acknowledgedChanges` still applies. Keep
+  `absorbingArmUnion` OUT of `generateChangeId`. Opt out with
+  `downgradeAbsorbingArmUnions: false`.
 - **Action depends on the published package**: the composite Action's `npx`
   step fetches `@clerk/break-check` from npm at runtime, so consumers pin the
   repo's moving `v1` tag (`clerk/break-check@v1`). Keep the README's Actions

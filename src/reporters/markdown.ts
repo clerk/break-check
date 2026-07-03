@@ -609,6 +609,18 @@ export class MarkdownReporter {
       );
     }
 
+    // Suggestion-only union change (issue #114): both sides keep the same
+    // absorbing arm, so the assignable set is unchanged and the differing
+    // arms only drive editor autocomplete; deterministically downgraded.
+    if (change.absorbingArmUnion) {
+      const { primitive, arm, removed, added } = change.absorbingArmUnion;
+      const fmt = (arms: string[]) =>
+        arms.map((s) => `\`${mdCode(s)}\``).join(", ") || "none";
+      lines.push(
+        `> 🔤 **Suggestion-only union change**: the union keeps its \`${mdCode(arm)}\` arm, which absorbs every \`${primitive}\`; the changed arms (removed: ${fmt(removed)}; added: ${fmt(added)}) only affect editor autocomplete, so no well-typed consumer is affected. Set \`downgradeAbsorbingArmUnions: false\` to keep these breaking.\n`,
+      );
+    }
+
     if (ai) {
       const confidence = Math.round(ai.confidence * 100);
       const label = this.aiReviewLabel(change);

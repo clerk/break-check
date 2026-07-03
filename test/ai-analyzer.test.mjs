@@ -1538,3 +1538,77 @@ test("ai-analyzer: chunks large change lists across multiple calls", async () =>
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("ai-analyzer: absorbingArmUnion refuses an escalation back to breaking (#114)", async () => {
+  const { dir, baseline, current } = makeWorkspace();
+  // The detector already downgraded this change deterministically: both sides
+  // keep the `string & Record<never, never>` arm and the swapped arms are
+  // string subtypes.
+  const change = {
+    ...ruleBasedBreakingChange(),
+    type: ChangeType.NON_BREAKING,
+    severity: ChangeSeverity.MINOR,
+    ruleBasedType: ChangeType.BREAKING,
+    absorbingArmUnion: {
+      primitive: "string",
+      arm: "Record<never,never>&string",
+      removed: ["WithPathPatternWildcard"],
+      added: ["WithPathSegmentWildcard"],
+    },
+  };
+  const { client, calls } = stubClient({
+    verdicts: [
+      {
+        id: change.id,
+        type: ChangeType.BREAKING,
+        confidence: 0.9,
+        rationale: "The template literal arms are structurally different.",
+        migration: "Update pattern strings.",
+      },
+    ],
+    missed: [],
+  });
+  const analyzer = new AiChangeAnalyzer({
+    apiKey: "test-key",
+    client,
+    logger: SILENT_LOGGER,
+  });
+
+  try {
+    const [result] = await analyzer.analyze([change], {
+      packageName: "@demo/pkg",
+      baselineApiJsonPath: baseline,
+      currentApiJsonPath: current,
+    });
+
+    // The deterministic proof wins: the change stays non-breaking, the
+    // model's opinion is recorded as a (non-applied) suggestion, and nothing
+    // is counted as an override.
+    assert.equal(result.type, ChangeType.NON_BREAKING);
+    assert.equal(result.severity, ChangeSeverity.MINOR);
+    assert.equal(result.aiAnalysis.source, "ai-suggested-escalation");
+    assert.equal(result.aiAnalysis.migration, undefined);
+    assert.deepEqual(result.absorbingArmUnion, change.absorbingArmUnion);
+    assert.equal(analyzer.overriddenCount, 0);
+
+    // The per-change review JSON ships the marker so rule 14 can reference
+    // it, and the prompt teaches the idiom.
+    const params = calls[0];
+    const userText = params.messages
+      .flatMap((m) =>
+        typeof m.content === "string"
+          ? [m.content]
+          : m.content.map((b) => b.text ?? ""),
+      )
+      .join("\n");
+    assert.match(userText, /absorbingArmUnion/);
+    const systemText =
+      typeof params.system === "string"
+        ? params.system
+        : (params.system ?? []).map((b) => b.text ?? "").join("\n");
+    assert.match(systemText, /absorbingArmUnion/);
+    assert.match(systemText, /Autocomplete.*LiteralUnion/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

@@ -1,0 +1,5 @@
+---
+"@clerk/break-check": minor
+---
+
+Deterministically downgrade suggestion-only union changes (issue #114). A union carrying an absorbing arm, `string & {}` or `string & Record<never, never>` (or the `number` equivalents, the `Autocomplete`/`LiteralUnion` idiom), accepts every value of that primitive; its literal and template-literal arms only drive editor autocomplete. When a type-alias change keeps that arm identical on both sides and every changed arm is provably a subtype of the primitive, the assignable set is unchanged, so the change is reported non-breaking and tagged with the absorbing arm and the swapped arms. Alias definitions are resolved from each side's stored API report (the referenced aliases are usually unexported and absent from the doc model), and the check is fail-closed: anything it cannot prove keeps the change breaking, and the AI reviewer can record but not apply an escalation. A new system-prompt rule also teaches the reviewer the idiom for spellings the deterministic pass bails on. Opt out with `downgradeAbsorbingArmUnions: false`.
