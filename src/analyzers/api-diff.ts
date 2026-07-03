@@ -10,7 +10,10 @@ import {
   ChangeSeverity,
   ChangeCategory,
 } from "../types.js";
-import { canonicalizeType } from "../utils/canonicalize-type.js";
+import {
+  canonicalizeType,
+  normalizeTypeSpacing,
+} from "../utils/canonicalize-type.js";
 
 interface ExcerptToken {
   kind: string;
@@ -829,18 +832,18 @@ export class ApiDiffAnalyzer {
   }
 
   /**
-   * Collapse whitespace and strip trailing punctuation so cosmetic
+   * Collapse whitespace and strip spacing around punctuation so cosmetic
    * differences don't show up as breaking changes, then canonicalize the order
    * of union/intersection members so a pure reorder (unstable TS emit order,
-   * issue #85) is not a change. Runs on both baseline and current reads, so the
-   * normalization is symmetric.
+   * issue #85) is not a change. Spacing is normalized only OUTSIDE quoted
+   * regions: a string or template literal's interior is real type content, and
+   * a quote-blind collapse made `'a | b'` and `'a|b'` compare equal, silently
+   * hiding a genuine literal change. Runs on both baseline and current reads,
+   * so the normalization is symmetric and committed baselines need no
+   * regeneration.
    */
   private normalizeType(text: string): string {
-    const collapsed = text
-      .replace(/\s+/g, " ")
-      .replace(/\s*([,;:()<>[\]{}|&])\s*/g, "$1")
-      .trim();
-    return canonicalizeType(collapsed);
+    return canonicalizeType(normalizeTypeSpacing(text));
   }
 
   private generateChangeId(change: Omit<ApiChange, "id">): string {

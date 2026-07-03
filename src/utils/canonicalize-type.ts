@@ -186,6 +186,56 @@ function sortUnique(members: string[]): string[] {
 }
 
 /**
+ * Apply `fn` to every unquoted span of `s`, leaving string/template literal
+ * contents byte-for-byte intact. An unterminated quote appends the remainder
+ * raw, so downstream compares see the malformed text as-is (fail-closed).
+ */
+function mapUnquoted(s: string, fn: (span: string) => string): string {
+  let out = "";
+  let span = "";
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '"' || c === "'" || c === "`") {
+      out += fn(span);
+      span = "";
+      const close = skipQuote(s, i);
+      if (close < 0) {
+        out += s.slice(i);
+        return out;
+      }
+      out += s.slice(i, close);
+      i = close;
+      continue;
+    }
+    span += c;
+    i++;
+  }
+  return out + fn(span);
+}
+
+/**
+ * Collapse whitespace runs to single spaces outside quoted regions, and trim.
+ * A string or template literal's interior is significant type content
+ * (`'a  b'` and `'a b'` are different types), so it is never touched.
+ */
+export function collapseUnquotedWhitespace(text: string): string {
+  return mapUnquoted(text, (span) => span.replace(/\s+/g, " ")).trim();
+}
+
+/**
+ * Comparison-key spacing normalization for a type string: collapse whitespace
+ * runs and drop spaces around punctuation, outside quoted regions only. A
+ * quote-blind version of this conflates two literals that differ only in
+ * internal spacing (`'a | b'` vs `'a|b'`), silently hiding a real change.
+ */
+export function normalizeTypeSpacing(text: string): string {
+  return mapUnquoted(text, (span) =>
+    span.replace(/\s+/g, " ").replace(/\s*([,;:()<>[\]{}|&])\s*/g, "$1"),
+  ).trim();
+}
+
+/**
  * Canonicalize a bare type expression: sort its top-level union members, or
  * (when there is no top-level union) its top-level intersection members. `&`
  * binds tighter than `|`, so unions are handled first and each union member's
