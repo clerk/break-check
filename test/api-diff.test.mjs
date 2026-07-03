@@ -16,7 +16,7 @@ function runBreakCheck(args, cwd) {
   });
 }
 
-function setup({ baseline, current, acknowledgedChanges }) {
+function setup({ baseline, current, acknowledgedChanges, config }) {
   const workspace = mkdtempSync(join(tmpdir(), "break-check-diff-"));
   const pkgDir = join(workspace, "packages", "pkg");
   mkdirSync(join(pkgDir, "dist"), { recursive: true });
@@ -31,6 +31,7 @@ function setup({ baseline, current, acknowledgedChanges }) {
         checkVersionBump: true,
         outputFormat: "json",
         ...(acknowledgedChanges ? { acknowledgedChanges } : {}),
+        ...(config ?? {}),
       },
       null,
       2,
@@ -116,6 +117,23 @@ test("whitespace-only signature change is ignored", () => {
     nonBreaking: 0,
     additions: 0,
   });
+});
+
+test("a change confined to a string literal's internal spacing is breaking", () => {
+  // 'a | b' and 'a|b' are different string-literal types. A quote-blind
+  // normalizer conflated them and the change went unreported.
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export type P = 'a | b';\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts: "export type P = 'a|b';\n",
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+  assert.match(changesFor(result)[0].description, /Type changed/);
 });
 
 test("parameter rename is not a breaking change", () => {
@@ -1442,4 +1460,66 @@ test("a stable-version breaking change with a patch bump stays insufficient", ()
     },
   });
   assert.equal(result.packages[0].isValidBump, false);
+});
+
+// The Autocomplete/LiteralUnion idiom (issue #114): swapping a literal arm
+// while the `string & Record<never, never>` arm stays put is suggestion-only.
+const ABSORBING_BASELINE = `type Autocomplete<U extends T, T = string> = U | (T & Record<never, never>);
+type WithPathPatternWildcard<T = string> = \`\${T & string}(.*)\`;
+export type PathPattern = Autocomplete<WithPathPatternWildcard>;
+export {};
+`;
+const ABSORBING_CURRENT = `type Autocomplete<U extends T, T = string> = U | (T & Record<never, never>);
+type WithPathSegmentWildcard<T = string> = T extends '/' ? '/:path*' : \`\${T & string}/:path*\`;
+export type PathPattern = Autocomplete<WithPathSegmentWildcard>;
+export {};
+`;
+
+test("detect: an absorbing-arm union change is downgraded to non-breaking (#114, end-to-end)", () => {
+  const result = setup({
+    baseline: { version: "1.0.0", dts: ABSORBING_BASELINE },
+    current: { version: "1.0.1", dts: ABSORBING_CURRENT },
+  });
+  assert.equal(counts(result).breaking, 0);
+  assert.equal(counts(result).nonBreaking, 1);
+  const change = changesFor(result).find((c) => c.name === "PathPattern");
+  assert.ok(change, "expected a PathPattern change");
+  assert.equal(change.type, "non-breaking");
+  assert.equal(change.ruleBasedType, "breaking");
+  assert.equal(change.absorbingArmUnion.primitive, "string");
+  assert.match(change.absorbingArmUnion.arm, /Record<never,never>/);
+  assert.deepEqual(change.absorbingArmUnion.removed, [
+    "WithPathPatternWildcard",
+  ]);
+  assert.deepEqual(change.absorbingArmUnion.added, ["WithPathSegmentWildcard"]);
+  assert.equal(result.packages[0].recommendedVersionBump, "minor");
+});
+
+test("detect: downgradeAbsorbingArmUnions: false keeps the change breaking", () => {
+  const result = setup({
+    baseline: { version: "1.0.0", dts: ABSORBING_BASELINE },
+    current: { version: "1.0.1", dts: ABSORBING_CURRENT },
+    config: { downgradeAbsorbingArmUnions: false },
+  });
+  assert.equal(counts(result).breaking, 1);
+  const change = changesFor(result).find((c) => c.name === "PathPattern");
+  assert.equal(change.type, "breaking");
+  assert.equal(change.absorbingArmUnion, undefined);
+});
+
+test("detect: removing the absorbing arm itself stays breaking (#114, end-to-end)", () => {
+  const result = setup({
+    baseline: { version: "1.0.0", dts: ABSORBING_BASELINE },
+    current: {
+      version: "2.0.0",
+      dts: `type WithPathSegmentWildcard<T = string> = T extends '/' ? '/:path*' : \`\${T & string}/:path*\`;
+export type PathPattern = WithPathSegmentWildcard;
+export {};
+`,
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+  const change = changesFor(result).find((c) => c.name === "PathPattern");
+  assert.equal(change.type, "breaking");
+  assert.equal(change.absorbingArmUnion, undefined);
 });

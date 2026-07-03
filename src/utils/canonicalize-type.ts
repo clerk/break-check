@@ -53,6 +53,10 @@ interface TopScan {
   gated: boolean;
   /** Depth-0 bracket groups, as [openIndex, closeIndex] inclusive of both. */
   groups: Array<{ open: number; close: number }>;
+  /** Depth-0 conditional `?` (never the optional-property `?:`). */
+  questions: number[];
+  /** Depth-0 start indices of the `extends` keyword (a conditional check). */
+  extendsKw: number[];
 }
 
 /** Advance past a quoted region; return the index just after the close quote, or -1 if unterminated. */
@@ -100,6 +104,8 @@ function scanTop(s: string): TopScan {
     eqs: [],
     gated: false,
     groups: [],
+    questions: [],
+    extendsKw: [],
   };
   let depth = 0;
   let groupStart = -1;
@@ -150,9 +156,13 @@ function scanTop(s: string): TopScan {
       else if (c === "=") res.eqs.push(i);
       else if (c === "?") {
         // `?:` is an optional-property marker, not a conditional type.
-        if (nextNonSpace(s, i + 1) !== ":") res.gated = true;
+        if (nextNonSpace(s, i + 1) !== ":") {
+          res.gated = true;
+          res.questions.push(i);
+        }
       } else if (matchesWordAt(s, i, "extends")) {
         res.gated = true;
+        res.extendsKw.push(i);
         i += "extends".length;
         continue;
       }
@@ -183,6 +193,56 @@ function sortUnique(members: string[]): string[] {
     if (out.length === 0 || out[out.length - 1] !== m) out.push(m);
   }
   return out;
+}
+
+/**
+ * Apply `fn` to every unquoted span of `s`, leaving string/template literal
+ * contents byte-for-byte intact. An unterminated quote appends the remainder
+ * raw, so downstream compares see the malformed text as-is (fail-closed).
+ */
+function mapUnquoted(s: string, fn: (span: string) => string): string {
+  let out = "";
+  let span = "";
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '"' || c === "'" || c === "`") {
+      out += fn(span);
+      span = "";
+      const close = skipQuote(s, i);
+      if (close < 0) {
+        out += s.slice(i);
+        return out;
+      }
+      out += s.slice(i, close);
+      i = close;
+      continue;
+    }
+    span += c;
+    i++;
+  }
+  return out + fn(span);
+}
+
+/**
+ * Collapse whitespace runs to single spaces outside quoted regions, and trim.
+ * A string or template literal's interior is significant type content
+ * (`'a  b'` and `'a b'` are different types), so it is never touched.
+ */
+export function collapseUnquotedWhitespace(text: string): string {
+  return mapUnquoted(text, (span) => span.replace(/\s+/g, " ")).trim();
+}
+
+/**
+ * Comparison-key spacing normalization for a type string: collapse whitespace
+ * runs and drop spaces around punctuation, outside quoted regions only. A
+ * quote-blind version of this conflates two literals that differ only in
+ * internal spacing (`'a | b'` vs `'a|b'`), silently hiding a real change.
+ */
+export function normalizeTypeSpacing(text: string): string {
+  return mapUnquoted(text, (span) =>
+    span.replace(/\s+/g, " ").replace(/\s*([,;:()<>[\]{}|&])\s*/g, "$1"),
+  ).trim();
 }
 
 /**
@@ -281,4 +341,69 @@ export function canonicalizeType(text: string): string {
   } catch {
     return text;
   }
+}
+
+/**
+ * Split a bare type expression into its top-level union arms. Returns null when
+ * the string cannot be confidently parsed as a flat union (malformed, or gated
+ * by a depth-0 function type / conditional), so callers stay fail-closed. A
+ * type with no top-level `|` returns a single-element array.
+ */
+export function splitTopLevelUnion(text: string): string[] | null {
+  const r = text.trim();
+  const scan = scanTop(r);
+  if (!scan.ok || scan.gated) return null;
+  if (scan.pipes.length === 0) return [r];
+  return splitAt(r, scan.pipes)
+    .map((m) => m.trim())
+    .filter((m) => m.length > 0);
+}
+
+/**
+ * Split a bare type expression into its top-level intersection members, with
+ * the same fail-closed contract as `splitTopLevelUnion`. A top-level `|` means
+ * the expression is a union, not an intersection, so it also returns null.
+ */
+export function splitTopLevelIntersection(text: string): string[] | null {
+  const r = text.trim();
+  const scan = scanTop(r);
+  if (!scan.ok || scan.gated || scan.pipes.length > 0) return null;
+  if (scan.amps.length === 0) return [r];
+  return splitAt(r, scan.amps)
+    .map((m) => m.trim())
+    .filter((m) => m.length > 0);
+}
+
+/**
+ * Split a depth-0 conditional type (`C extends E ? T : F`) into its true and
+ * false branches. Conditionals are right-associative, so the matching `:` for
+ * the first `?` is found by counting subsequent depth-0 `?`/`:` pairs (a nested
+ * conditional in the true branch adds one of each). Returns null when the
+ * expression is not confidently a depth-0 conditional.
+ */
+export function splitTopLevelConditional(
+  text: string,
+): { trueType: string; falseType: string } | null {
+  const r = text.trim();
+  const scan = scanTop(r);
+  if (!scan.ok) return null;
+  if (scan.extendsKw.length === 0 || scan.questions.length === 0) return null;
+  const firstExtends = scan.extendsKw[0];
+  const firstQ = scan.questions.find((q) => q > firstExtends);
+  if (firstQ === undefined) return null;
+  const events = [
+    ...scan.questions.filter((i) => i > firstQ).map((i) => ({ i, open: true })),
+    ...scan.colons.filter((i) => i > firstQ).map((i) => ({ i, open: false })),
+  ].sort((a, b) => a.i - b.i);
+  let depth = 1;
+  for (const e of events) {
+    depth += e.open ? 1 : -1;
+    if (depth === 0) {
+      const trueType = r.slice(firstQ + 1, e.i).trim();
+      const falseType = r.slice(e.i + 1).trim();
+      if (!trueType || !falseType) return null;
+      return { trueType, falseType };
+    }
+  }
+  return null;
 }

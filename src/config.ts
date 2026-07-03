@@ -148,6 +148,19 @@ export const ConfigSchema = z.object({
    */
   downgradeRepairedReferences: z.boolean().default(true),
 
+  /**
+   * Downgrade suggestion-only union changes to non-breaking. A union carrying
+   * an absorbing arm (`string & {}` / `string & Record<never, never>`, or the
+   * `number` equivalents, the `Autocomplete`/`LiteralUnion` idiom) accepts
+   * every value of that primitive regardless of its literal arms; those arms
+   * exist only to drive editor autocomplete. When the absorbing arm is
+   * unchanged on both sides and every changed arm is provably a subtype of
+   * the primitive, the assignable set is identical before and after, so no
+   * well-typed consumer can be affected (issue #114). On by default; set to
+   * `false` to keep reporting such changes as breaking.
+   */
+  downgradeAbsorbingArmUnions: z.boolean().default(true),
+
   /** Optional AI analyzer configuration. */
   ai: AiConfigSchema.optional(),
 });
@@ -177,6 +190,7 @@ export function createDefaultConfig(): BreakCheckConfig {
     acknowledgedChanges: [],
     resolvableSpecifiers: [],
     downgradeRepairedReferences: true,
+    downgradeAbsorbingArmUnions: true,
   };
 }
 

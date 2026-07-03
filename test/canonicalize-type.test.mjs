@@ -73,3 +73,35 @@ test("canonicalizeType: leaves non-union strings untouched", () => {
   assert.equal(canonicalizeType("Promise<void>"), "Promise<void>");
   assert.equal(canonicalizeType(""), "");
 });
+
+import {
+  collapseUnquotedWhitespace,
+  normalizeTypeSpacing,
+} from "../dist/utils/canonicalize-type.js";
+
+test("normalizeTypeSpacing: strips spacing outside quotes only", () => {
+  assert.equal(
+    normalizeTypeSpacing("{ a : string ; b : number }"),
+    "{a:string;b:number}",
+  );
+  // The literal's interior is real type content: 'a | b' and 'a|b' are
+  // different types and must not normalize to the same key.
+  assert.equal(normalizeTypeSpacing("'a | b' | 'c'"), "'a | b'|'c'");
+  assert.notEqual(
+    normalizeTypeSpacing("'a | b'"),
+    normalizeTypeSpacing("'a|b'"),
+  );
+  assert.equal(normalizeTypeSpacing("`x ${ string } y`"), "`x ${ string } y`");
+});
+
+test("normalizeTypeSpacing: leaves an unterminated quote as-is (fail-closed)", () => {
+  assert.equal(normalizeTypeSpacing("foo : 'bar"), "foo:'bar");
+});
+
+test("collapseUnquotedWhitespace: collapses runs outside quotes only", () => {
+  assert.equal(collapseUnquotedWhitespace("a   :   'x  y'  "), "a : 'x  y'");
+  assert.notEqual(
+    collapseUnquotedWhitespace("'a  b'"),
+    collapseUnquotedWhitespace("'a b'"),
+  );
+});

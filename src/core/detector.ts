@@ -33,6 +33,11 @@ import {
   findUnresolvableReference,
 } from "../utils/exports-resolution.js";
 import {
+  AliasSurface,
+  findAbsorbingArmEquivalence,
+  loadAliasSurface,
+} from "../utils/union-absorption.js";
+import {
   AnalysisResult,
   ApiChange,
   ApiSnapshot,
@@ -865,6 +870,20 @@ export class BreakingChangesDetector {
       // so a change it flagged is never downgraded.
       this.applyReferenceRepairs(entryChanges, packageInfo.path);
 
+      // Deterministic downgrade for suggestion-only union changes (issue
+      // #114): a type-alias change where both sides keep the same absorbing
+      // `string & {}` / `string & Record<never, never>` arm and the changed
+      // arms are subtypes of the primitive cannot affect any well-typed
+      // consumer. Resolves alias definitions from the two `.api.md` reports
+      // (the referenced aliases are usually unexported, so the doc model
+      // omits them). Runs before the AI so the model sees the verdict (and
+      // may not escalate it), mirroring `repairedReference`.
+      this.applyAbsorbingArmDowngrades(
+        entryChanges,
+        baselineSnap.apiReportPath,
+        currentSnap.apiReportPath,
+      );
+
       const ai = this.ensureAiAnalyzer();
       // No rule-based changes means baseline and current matched for this
       // entry, so there is nothing to review. We deliberately do not invoke the
@@ -1062,6 +1081,67 @@ export class BreakingChangesDetector {
       change.type = ChangeType.NON_BREAKING;
       change.severity = ChangeSeverity.MINOR;
       change.repairedReference = repair;
+    }
+  }
+
+  /**
+   * Apply the suggestion-only union downgrade (issue #114): a breaking
+   * type-alias change whose baseline and current RHS both resolve to unions
+   * carrying the same absorbing arm (`string & {}` / `string &
+   * Record<never, never>`, or the `number` equivalents), with every changed
+   * arm a proven subtype of the primitive, is flipped to non-breaking. The
+   * absorbing arm is mutually assignable with the bare primitive, so the
+   * assignable set is identical before and after; the literal arms only drive
+   * editor autocomplete (the `Autocomplete`/`LiteralUnion` idiom).
+   *
+   * The changed alias's RHS is usually an unexpanded application
+   * (`Autocomplete<X>`) of aliases that are NOT exported, so the doc model
+   * omits their declarations; the check resolves them from the two `.api.md`
+   * API reports instead (which list forgotten exports verbatim), each side
+   * against its own snapshot, so a changed `Autocomplete` definition diverges
+   * the expansions and fails the match (fail-closed). A legacy baseline
+   * without a recorded report simply never downgrades. Restricted to
+   * `category: "type"` because a TypeAlias is the only item that maps to it
+   * and its only possible breaking modification is the RHS diff, so proving
+   * RHS equivalence clears the whole change. A change the
+   * unresolvable-reference guard flagged is never downgraded. Like
+   * `repairedReference`, the AI may record but not apply an escalation, and
+   * `acknowledgedChanges` still wins. `downgradeAbsorbingArmUnions: false` is
+   * the config opt-out.
+   */
+  private applyAbsorbingArmDowngrades(
+    changes: ApiChange[],
+    baselineApiReportPath: string,
+    currentApiReportPath: string,
+  ): void {
+    if (this.config.downgradeAbsorbingArmUnions === false) return;
+    if (!baselineApiReportPath || !currentApiReportPath) return;
+    // Parsed lazily so entries without a candidate change pay nothing.
+    let surfaces:
+      | { baseline: AliasSurface; current: AliasSurface }
+      | null
+      | undefined;
+    for (const change of changes) {
+      if (change.type !== ChangeType.BREAKING) continue;
+      if (change.category !== "type") continue;
+      if (change.unresolvableReference) continue;
+      if (!change.beforeSnippet || !change.afterSnippet) continue;
+      if (surfaces === undefined) {
+        const baseline = loadAliasSurface(baselineApiReportPath);
+        const current = loadAliasSurface(currentApiReportPath);
+        surfaces = baseline && current ? { baseline, current } : null;
+      }
+      if (!surfaces) return;
+      const hit = findAbsorbingArmEquivalence(
+        change.name,
+        surfaces.baseline,
+        surfaces.current,
+      );
+      if (!hit) continue;
+      change.ruleBasedType = change.ruleBasedType ?? change.type;
+      change.type = ChangeType.NON_BREAKING;
+      change.severity = ChangeSeverity.MINOR;
+      change.absorbingArmUnion = hit;
     }
   }
 

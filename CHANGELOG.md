@@ -1,5 +1,15 @@
 # @clerk/break-check
 
+## 0.6.0
+
+### Minor Changes
+
+- [#115](https://github.com/clerk/break-check/pull/115) [`757f609`](https://github.com/clerk/break-check/commit/757f60907e2211304b8e098718a87c9fb5c57b61) Thanks [@jacekradko](https://github.com/jacekradko)! - Deterministically downgrade suggestion-only union changes (issue [#114](https://github.com/clerk/break-check/issues/114)). A union carrying an absorbing arm, `string & {}` or `string & Record<never, never>` (or the `number` equivalents, the `Autocomplete`/`LiteralUnion` idiom), accepts every value of that primitive; its literal and template-literal arms only drive editor autocomplete. When a type-alias change keeps that arm identical on both sides and every changed arm is provably a subtype of the primitive, the assignable set is unchanged, so the change is reported non-breaking and tagged with the absorbing arm and the swapped arms. Alias definitions are resolved from each side's stored API report (the referenced aliases are usually unexported and absent from the doc model), and the check is fail-closed: anything it cannot prove keeps the change breaking, and the AI reviewer can record but not apply an escalation. A new system-prompt rule also teaches the reviewer the idiom for spellings the deterministic pass bails on. Opt out with `downgradeAbsorbingArmUnions: false`.
+
+### Patch Changes
+
+- [#116](https://github.com/clerk/break-check/pull/116) [`68efe14`](https://github.com/clerk/break-check/commit/68efe149f4604e58e58c7c948b0d50d5bc76e0e5) Thanks [@jacekradko](https://github.com/jacekradko)! - Fix quote-blind whitespace normalization in the differ. The compare-time normalizer collapsed whitespace and stripped spacing around punctuation inside string and template literals too, so two types differing only in a literal's internal spacing (`'a | b'` vs `'a|b'`) compared equal and the change went unreported. Spacing is now normalized only outside quoted regions, in both the rule-based differ and the AI reviewer's surface lines. Compare-time only and symmetric across both reads, so committed baselines need no regeneration.
+
 ## 0.5.0
 
 ### Minor Changes
