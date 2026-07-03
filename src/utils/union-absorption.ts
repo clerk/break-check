@@ -345,9 +345,9 @@ function unquotedText(s: string): string {
 
 /**
  * Collapse whitespace and strip spaces around punctuation, but never inside a
- * string or template literal (the differ's `normalizeType` is quote-blind; two
- * literals differing only in internal spacing must not conflate here, where a
- * conflation could hide a change instead of just missing one).
+ * string or template literal: two literals differing only in internal spacing
+ * are different types, and a conflation here could hide a change instead of
+ * just missing one.
  */
 function normalizeTypeText(text: string): string {
   return mapUnquoted(text, (span) =>
