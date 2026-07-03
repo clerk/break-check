@@ -526,6 +526,47 @@ test("markdown reporter: a repaired reference shows the repair callout and the A
   assert.match(out, /suggests breaking, not applied/);
 });
 
+test("markdown reporter: an absorbing-arm downgrade shows the suggestion-only callout (#114)", () => {
+  const change = {
+    id: "a1",
+    type: ChangeType.NON_BREAKING,
+    severity: ChangeSeverity.MINOR,
+    category: "type",
+    name: "PathPattern",
+    description: "Type changed",
+    beforeSnippet:
+      "export type PathPattern = Autocomplete<WithPathPatternWildcard>;",
+    afterSnippet:
+      "export type PathPattern = Autocomplete<WithPathSegmentWildcard>;",
+    ruleBasedType: ChangeType.BREAKING,
+    absorbingArmUnion: {
+      primitive: "string",
+      arm: "Record<never,never>&string",
+      removed: ["WithPathPatternWildcard"],
+      added: ["WithPathSegmentWildcard"],
+    },
+    aiAnalysis: {
+      source: "ai-suggested-escalation",
+      confidence: 0.9,
+      rationale: "The template literal arms are structurally different.",
+      model: "claude-test",
+    },
+  };
+  const out = new MarkdownReporter({ includeFooter: false }).generate(
+    makeResult(change),
+  );
+  assert.match(out, /Suggestion-only union change/);
+  assert.ok(
+    out.includes("Record<never,never>&string") &&
+      out.includes("WithPathPatternWildcard") &&
+      out.includes("WithPathSegmentWildcard"),
+    "callout should name the absorbing arm and both changed arms",
+  );
+  assert.match(out, /downgradeAbsorbingArmUnions: false/);
+  // The refused escalation is labeled as a recorded, non-applied opinion.
+  assert.match(out, /suggests breaking, not applied/);
+});
+
 function makeBumpResult({
   previous,
   current,

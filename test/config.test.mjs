@@ -96,3 +96,15 @@ test("config: findConfigFile terminates on a relative startDir", () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("config: downgradeAbsorbingArmUnions defaults to true and loads false", () => {
+  withConfig({ packages: ["pkg"] }, (file) => {
+    assert.equal(loadConfig(file).downgradeAbsorbingArmUnions, true);
+  });
+  withConfig(
+    { packages: ["pkg"], downgradeAbsorbingArmUnions: false },
+    (file) => {
+      assert.equal(loadConfig(file).downgradeAbsorbingArmUnions, false);
+    },
+  );
+});

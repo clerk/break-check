@@ -237,6 +237,7 @@ Reasoning rules:
 11. Adding a *required* property to a type is breaking only when consumers construct or assign values of that type (a parameter / input position, or an object literal they author against the type). For a type consumers only read (a return / response / output type, e.g. the resolved value of a \`Promise<T>\` return or a hook result field), adding a property is non-breaking. Determine the direction from the "Usage sites" block: a \`Promise<T>\` result, a function return, or a result field is output. If any usage is an input position, or no usage sites are shown, keep "breaking".
 12. A reference whose module specifier is not a public, exported entry point of its package is breaking regardless of structural shape: the consumer cannot resolve the module, so the type degrades to \`any\` (skipLibCheck) or fails to compile (TS2307). Treat a specifier that contains a \`/_chunks/\` segment, ends in a content-hashed bundler chunk basename (a \`-<hash>\` suffix), or names a subpath a package blocks/omits in its \`exports\` as non-resolvable. Do NOT downgrade such a change on structural-equivalence grounds (rule 2 does not apply): "the shape is identical" is true but irrelevant when the consumer never receives the type. When a change carries a \`referenceResolutions\` list, entries with \`"deterministic": true\` were resolved against the dependency's actual \`exports\` map: \`blocked\` means consumers cannot resolve the specifier, \`exported\` means it is a public entry point. Trust those over any guess from the specifier's path shape. An \`"unknown"\` verdict verified nothing (dependency not installed, no \`exports\` map, or a relative/absolute specifier); fall back to the shape heuristics above for those.
 13. The inverse swap is a repair, not a break: when a change's only difference is that a non-resolvable specifier (per rule 12) was replaced by one whose \`referenceResolutions\` verdict is \`exported\`, the old type was never consumable (it errored or degraded to \`any\`), so no well-typed consumer can be broken by the swap. Judge it "non-breaking" even though the imported alias name changed with the specifier (bundlers minify chunk-internal names, e.g. \`Xm\` for \`Without\`). A change carrying \`repairedReference\` was already verified this way deterministically; confirm it as non-breaking rather than escalating.
+14. A union containing \`string & {}\` or \`string & Record<never, never>\` (or the \`number\` equivalents) accepts every value of that primitive; its literal and template-literal arms affect only editor autocomplete suggestions (the \`Autocomplete\`/\`LiteralUnion\` idiom). Changing, adding, or removing those arms while the absorbing arm remains unchanged is non-breaking: the assignable set is exactly the primitive both before and after, in both variance directions. Resolve aliases like \`Autocomplete<X>\` from the API surface to see the absorbing arm before judging. A change carrying \`absorbingArmUnion\` was already verified this way deterministically; confirm it as non-breaking rather than escalating.
 
 Output protocol:
 - Always respond by calling the submit_review tool. Never reply with plain text.
@@ -539,15 +540,20 @@ export class AiChangeAnalyzer {
         continue;
       }
 
-      // The mirror guard for repaired references (issue #98): the detector's
-      // downgrade is deterministic (every dropped specifier unconsumable, every
-      // introduced one exported, signature otherwise identical), and the swap
-      // is the entire diff, so a model escalation cannot be adding information.
-      // Record the opinion without applying it; the reporter explains why.
+      // The mirror guard for deterministic downgrades: a repaired reference
+      // (issue #98; every dropped specifier unconsumable, every introduced one
+      // exported, signature otherwise identical) or an absorbing-arm union
+      // (issue #114; the unchanged `string & {}`-style arm keeps the
+      // assignable set identical) was verified mechanically, so a model
+      // escalation cannot be adding information. Record the opinion without
+      // applying it; the reporter explains why.
       const isEscalation =
         change.type === ChangeType.NON_BREAKING &&
         verdictType === ChangeType.BREAKING;
-      if (isEscalation && change.repairedReference) {
+      if (
+        isEscalation &&
+        (change.repairedReference || change.absorbingArmUnion)
+      ) {
         enriched.push({
           ...change,
           aiAnalysis: {
@@ -642,6 +648,9 @@ export class AiChangeAnalyzer {
         : {}),
       ...(c.repairedReference
         ? { repairedReference: c.repairedReference }
+        : {}),
+      ...(c.absorbingArmUnion
+        ? { absorbingArmUnion: c.absorbingArmUnion }
         : {}),
     }));
 

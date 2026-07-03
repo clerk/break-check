@@ -119,6 +119,24 @@ export interface RepairedReference {
 }
 
 /**
+ * Recorded when a breaking type-alias change was deterministically downgraded
+ * because both sides are unions carrying the same unchanged absorbing arm
+ * (`string & {}` / `string & Record<never, never>`, or the `number`
+ * equivalents) and every changed arm is a proven subtype of that primitive
+ * (see `ApiChange.absorbingArmUnion`).
+ */
+export interface AbsorbingArmUnion {
+  /** The primitive the absorbing arm is mutually assignable with. */
+  primitive: "string" | "number";
+  /** Canonical text of the unchanged absorbing arm. */
+  arm: string;
+  /** Canonical texts of the arms only the baseline union carried. */
+  removed: string[];
+  /** Canonical texts of the arms only the current union carries. */
+  added: string[];
+}
+
+/**
  * Represents a single API change detected between versions
  */
 export interface ApiChange {
@@ -180,6 +198,19 @@ export interface ApiChange {
    * field; `ruleBasedType` records the original verdict.
    */
   repairedReference?: RepairedReference;
+  /**
+   * Set when the change was deterministically downgraded to non-breaking
+   * because both the baseline and current type-alias RHS are unions carrying
+   * the same absorbing arm (`string & {}` / `string & Record<never, never>`,
+   * or the `number` equivalents) and every changed arm is a proven subtype of
+   * that primitive. The absorbing arm is mutually assignable with the bare
+   * primitive, so the assignable set is identical before and after; the
+   * changed arms only affect editor autocomplete (the `Autocomplete` /
+   * `LiteralUnion` idiom, issue #114). The AI may not escalate a change
+   * carrying this field; `ruleBasedType` records the original verdict. Kept
+   * out of `generateChangeId`.
+   */
+  absorbingArmUnion?: AbsorbingArmUnion;
   /**
    * Exports-map verdicts for the inline import specifiers this change dropped
    * or introduced. Attached whenever the specifier sets differ between the
