@@ -22,7 +22,10 @@ import {
   ChangeSeverity,
   ChangeType,
 } from "../types.js";
-import { canonicalizeType } from "../utils/canonicalize-type.js";
+import {
+  canonicalizeType,
+  collapseUnquotedWhitespace,
+} from "../utils/canonicalize-type.js";
 
 /* ------------------------------------------------------------------ types -- */
 
@@ -932,13 +935,13 @@ interface WalkedSurface {
   allNodes: SurfaceNode[];
 }
 
+// Whitespace collapses only outside quoted regions: a literal's interior is
+// real type content, and a quote-blind collapse would conflate two literals
+// differing only in internal spacing (hiding them from the missed-breaks
+// audit's surface diff).
 function normalizeExcerpt(tokens?: ExcerptToken[]): string {
   return canonicalizeType(
-    (tokens ?? [])
-      .map((t) => t.text)
-      .join("")
-      .replace(/\s+/g, " ")
-      .trim(),
+    collapseUnquotedWhitespace((tokens ?? []).map((t) => t.text).join("")),
   );
 }
 

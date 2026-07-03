@@ -119,6 +119,23 @@ test("whitespace-only signature change is ignored", () => {
   });
 });
 
+test("a change confined to a string literal's internal spacing is breaking", () => {
+  // 'a | b' and 'a|b' are different string-literal types. A quote-blind
+  // normalizer conflated them and the change went unreported.
+  const result = setup({
+    baseline: {
+      version: "1.0.0",
+      dts: "export type P = 'a | b';\n",
+    },
+    current: {
+      version: "2.0.0",
+      dts: "export type P = 'a|b';\n",
+    },
+  });
+  assert.equal(counts(result).breaking, 1);
+  assert.match(changesFor(result)[0].description, /Type changed/);
+});
+
 test("parameter rename is not a breaking change", () => {
   const result = setup({
     baseline: {
